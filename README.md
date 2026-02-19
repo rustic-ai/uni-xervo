@@ -224,6 +224,12 @@ Integration tests for real providers are gated by `EXPENSIVE_TESTS=1` and releva
 
 ## Docs
 
+- Contributing guide: `CONTRIBUTING.md`
+- Development guide: `DEVELOPMENT.md`
+- Community guidelines: `COMMUNITY.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+- Support guide: `SUPPORT.md`
+- Security policy: `SECURITY.md`
 - User guide: `docs/USER_GUIDE.md`
 - Testing guide: `TESTING.md`
 - Website docs: `website/`
