@@ -18,4 +18,5 @@ This repository uses tag-driven crate publishing.
 ## Notes
 
 - `publish.yml` validates that the pushed tag matches `Cargo.toml` version.
-- Repository secret `UNI_CRATES_IO` must be configured for publish.
+- Publishing uses crates.io trusted publishing via GitHub OIDC (no long-lived token secret).
+- Configure this repository as a trusted publisher on crates.io before tagging a release.
