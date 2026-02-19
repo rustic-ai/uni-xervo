@@ -18,4 +18,4 @@ This repository uses tag-driven crate publishing.
 ## Notes
 
 - `publish.yml` validates that the pushed tag matches `Cargo.toml` version.
-- Repository secret `CARGO_REGISTRY_TOKEN` must be configured for publish.
+- Repository secret `UNI_CRATES_IO` must be configured for publish.
