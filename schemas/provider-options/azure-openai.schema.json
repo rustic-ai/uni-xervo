@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Azure OpenAI Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "api_key_env": {
+      "type": "string",
+      "description": "Environment variable name that contains the Azure OpenAI API key."
+    },
+    "resource_name": {
+      "type": "string",
+      "description": "Azure resource name (the subdomain in {resource}.openai.azure.com)."
+    },
+    "api_version": {
+      "type": "string",
+      "description": "Azure OpenAI API version (default: '2024-10-21')."
+    }
+  }
+}

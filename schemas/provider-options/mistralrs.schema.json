@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mistral.rs Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "isq": {
+      "type": "string",
+      "description": "In-situ quantization type (for example, Q4K, Q8_0)."
+    },
+    "force_cpu": {
+      "type": "boolean",
+      "description": "Force CPU inference."
+    },
+    "paged_attention": {
+      "type": "boolean",
+      "description": "Enable paged attention."
+    },
+    "max_num_seqs": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum concurrent sequences."
+    },
+    "chat_template": {
+      "type": "string",
+      "description": "Custom chat template."
+    },
+    "tokenizer_json": {
+      "type": "string",
+      "description": "Path to tokenizer.json."
+    },
+    "embedding_dimensions": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Override output dimensions for embeddings."
+    },
+    "gguf_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "GGUF filenames to load in GGUF mode."
+    }
+  }
+}

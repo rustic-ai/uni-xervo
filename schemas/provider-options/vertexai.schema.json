@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vertex AI Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "api_token_env": {
+      "type": "string",
+      "description": "Environment variable name that contains the Vertex AI OAuth bearer token."
+    },
+    "project_id": {
+      "type": "string",
+      "description": "Google Cloud project ID. If omitted, VERTEX_AI_PROJECT is used."
+    },
+    "location": {
+      "type": "string",
+      "description": "Vertex AI region (for example, us-central1)."
+    },
+    "publisher": {
+      "type": "string",
+      "description": "Model publisher, usually 'google'."
+    },
+    "embedding_dimensions": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional explicit embedding dimension for model handles."
+    }
+  }
+}

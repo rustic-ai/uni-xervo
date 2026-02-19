@@ -1,0 +1,22 @@
+[profile.default]
+retries = 0
+test-threads = "num-cpus"
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "pass"
+final-status-level = "flaky"
+
+[profile.ci]
+retries = 2
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "skip"
+final-status-level = "flaky"
+
+[[profile.default.overrides]]
+filter = 'test(real_providers)'
+retries = 0  # Don't retry expensive tests by default locally
+
+[[profile.ci.overrides]]
+filter = 'test(real_providers)'
+retries = 2  # Do retry expensive tests in CI to handle transient network issues

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cohere Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "api_key_env": {
+      "type": "string",
+      "description": "Environment variable name that contains the Cohere API key."
+    },
+    "input_type": {
+      "type": "string",
+      "description": "Embedding input type (e.g. 'search_document', 'search_query')."
+    }
+  }
+}

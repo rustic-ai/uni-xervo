@@ -1,0 +1,74 @@
+name: Deploy Website
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "website/**"
+      - "src/**"
+      - "Cargo.toml"
+      - ".github/workflows/website-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install website dependencies
+        working-directory: website
+        run: poetry install --no-interaction --no-root
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build rustdoc API reference
+        run: >-
+          cargo doc --no-deps --features
+          provider-candle,provider-fastembed,provider-openai,provider-gemini,provider-vertexai,provider-mistral,provider-anthropic,provider-voyageai,provider-cohere,provider-azure-openai
+
+      - name: Copy rustdoc into MkDocs source
+        run: cp -r target/doc website/docs/api
+
+      - name: Build MkDocs site
+        working-directory: website
+        run: poetry run mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

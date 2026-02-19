@@ -1,0 +1,28 @@
+# Rust
+/target
+Cargo.lock
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Temporary files
+*.log
+tmp/
+
+# Unified model cache
+.uni_cache/
+conductor/
+
+website/site/
+website/docs/api/

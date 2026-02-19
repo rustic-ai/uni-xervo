@@ -1,0 +1,108 @@
+[package]
+name = "uni-xervo"
+version = "0.1.0"
+description = "Unified Rust runtime for local and remote embedding, reranking, and generation models"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Dragonscale Industries Inc. <dev@dragonscale.ai>"]
+license = "Apache-2.0"
+repository = "https://github.com/rustic-ai/uni-xervo"
+homepage = "https://www.rustic.ai"
+documentation = "https://rustic-ai.github.io/uni-xervo"
+readme = "README.md"
+keywords = ["machine-learning", "embeddings", "reranking", "inference", "runtime"]
+categories = ["api-bindings", "asynchronous"]
+include = [
+    "/src/**",
+    "/benches/**",
+    "/examples/**",
+    "/tests/**",
+    "/schemas/**",
+    "/build.rs",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE*",
+]
+
+[features]
+default = ["provider-candle"]
+provider-candle = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:tokenizers",
+    "dep:hf-hub",
+]
+provider-fastembed = ["dep:fastembed"]
+provider-openai = ["dep:reqwest"]
+provider-gemini = ["dep:reqwest"]
+provider-vertexai = ["dep:reqwest"]
+provider-mistral = ["dep:reqwest"]
+provider-anthropic = ["dep:reqwest"]
+provider-voyageai = ["dep:reqwest"]
+provider-cohere = ["dep:reqwest"]
+provider-azure-openai = ["dep:reqwest"]
+provider-mistralrs = ["dep:mistralrs"]
+
+# GPU acceleration — enable alongside one or more provider features.
+# Requires a working CUDA toolkit (nvcc, cuDNN) at build time.
+gpu-cuda = [
+    "candle-core/cuda",
+    "candle-nn/cuda",
+    "candle-transformers/cuda",
+    "fastembed/cuda",
+    "mistralrs/cuda",
+]
+# gpu-metal: Metal (Apple Silicon / macOS) support.
+#
+# IMPORTANT: This feature must be declared ONLY when building on macOS.
+# candle-core's `metal` feature unconditionally lists `candle-metal-kernels`
+# as an optional dep (not target-gated), which in turn requires macOS-only
+# Objective-C framework crates. Cargo resolves the full feature graph for all
+# declared features regardless of target, so merely declaring this feature
+# breaks `cargo check` on Linux/Windows — even without activating it.
+#
+# candle-core upstream should gate candle-metal-kernels behind
+# [target.'cfg(target_os = "macos")'.dependencies] as mistralrs-core does.
+# Until then, uncomment this block only when building on macOS:
+#
+# gpu-metal = [
+#     "candle-core/metal",
+#     "candle-nn/metal",
+#     "candle-transformers/metal",
+#     "fastembed/metal",
+#     "mistralrs/metal",
+# ]
+#
+# build.rs will emit a compile error if gpu-metal is activated on a non-Apple target.
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+metrics = "0.23"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+
+# Optional dependencies for providers
+candle-core = { version = "0.9.2", optional = true }
+candle-nn = { version = "0.9.2", optional = true }
+candle-transformers = { version = "0.9.2", optional = true }
+tokenizers = { version = "0.21", default-features = false, features = ["onig", "http"], optional = true }
+hf-hub = { version = "0.4", features = ["tokio"], optional = true }
+fastembed = { version = "5.9.0", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"], optional = true }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], optional = true }
+mistralrs = { version = "0.7", default-features = true, optional = true }
+
+[dev-dependencies]
+anyhow = "1.0"
+criterion = { version = "0.5", features = ["async_tokio"] }
+metrics-util = "0.17"
+
+[[bench]]
+name = "runtime_bench"
+harness = false

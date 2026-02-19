@@ -1,0 +1,87 @@
+site_name: Uni-Xervo Documentation
+site_description: Unified model runtime for local and remote embedding, reranking, and generation.
+site_url: https://rustic-ai.github.io/uni-xervo
+repo_url: https://github.com/rustic-ai/uni-xervo
+repo_name: rustic-ai/uni-xervo
+
+copyright: Copyright &copy; 2024-2026 Dragonscale Industries Inc. - Part of The Rustic Initiative
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Overview: getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+      - CLI Reference: getting-started/cli-reference.md
+  - Concepts:
+      - Overview: concepts/index.md
+      - Model Catalog: concepts/model-catalog.md
+      - Runtime Loading: concepts/runtime-loading.md
+      - Reliability: concepts/reliability.md
+  - Guides:
+      - Overview: guides/index.md
+      - Provider Selection: guides/provider-selection.md
+      - Config Validation: guides/config-validation.md
+  - Reference:
+      - Overview: reference/index.md
+      - Configuration: reference/configuration.md
+      - Error Taxonomy: reference/errors.md
+      - Feature Flags: reference/feature-flags.md
+      - Providers:
+          - Overview: reference/providers/index.md
+          - local/candle: reference/providers/candle.md
+          - local/fastembed: reference/providers/fastembed.md
+          - local/mistralrs: reference/providers/mistralrs.md
+          - remote/openai: reference/providers/openai.md
+          - remote/gemini: reference/providers/gemini.md
+          - remote/vertexai: reference/providers/vertexai.md
+          - remote/mistral: reference/providers/mistral.md
+          - remote/anthropic: reference/providers/anthropic.md
+          - remote/voyageai: reference/providers/voyageai.md
+          - remote/cohere: reference/providers/cohere.md
+          - remote/azure-openai: reference/providers/azure-openai.md
+  - Internals:
+      - Overview: internals/index.md
+      - Architecture: internals/architecture.md
+  - API Reference: api/uni_xervo/index.html
+
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  primary: custom
+  features:
+    - content.tabs.link
+
+extra_css:
+  - assets/stylesheets/theme.css
+
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+  - assets/javascripts/mermaid-init.js
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true

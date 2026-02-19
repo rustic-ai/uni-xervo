@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Voyage AI Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "api_key_env": {
+      "type": "string",
+      "description": "Environment variable name that contains the Voyage AI API key."
+    }
+  }
+}

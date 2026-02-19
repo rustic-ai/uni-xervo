@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenAI Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "api_key_env": {
+      "type": "string",
+      "description": "Environment variable name that contains the OpenAI API key."
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "uni-xervo-docs"
+version = "0.1.0"
+description = "Documentation site for Uni-Xervo, the unified model runtime"
+authors = ["Dragonscale Industries Inc. <dev@dragonscale.ai>"]
+readme = "README.md"
+package-mode = false
+homepage = "https://www.rustic.ai"
+repository = "https://github.com/rustic-ai/uni-xervo"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+mkdocs = "^1.6"
+mkdocs-material = "^9.5"
+pymdown-extensions = "^10.0"
+mkdocs-jupyter = "^0.25"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

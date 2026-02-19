@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Anthropic Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "api_key_env": {
+      "type": "string",
+      "description": "Environment variable name that contains the Anthropic API key."
+    },
+    "anthropic_version": {
+      "type": "string",
+      "description": "Anthropic API version header value (default: '2023-06-01')."
+    }
+  }
+}

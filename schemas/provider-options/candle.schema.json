@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candle Provider Options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "cache_dir": {
+      "type": "string",
+      "description": "Path to the per-model cache directory."
+    }
+  }
+}
