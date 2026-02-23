@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.1] - 2026-02-23
+
+### Changed
+- Upgraded `thiserror` from 1.0 to 2, aligning with the transitive dependency ecosystem.
+- Upgraded `reqwest` from 0.11 to 0.12, replacing the legacy `hyper` 0.14 / `http` 0.2 HTTP stack with the modern `hyper` 1.x stack and eliminating several duplicate transitive dependencies.
+
 ## [0.1.0] - 2026-02-19
 
 ### Added
