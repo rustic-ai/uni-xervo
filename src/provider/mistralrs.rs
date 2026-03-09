@@ -7,7 +7,7 @@ use crate::traits::{
 use async_trait::async_trait;
 use mistralrs::{
     EmbeddingModelBuilder, EmbeddingRequestBuilder, GgufModelBuilder, IsqType, Model,
-    PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, TextModelBuilder,
+    ModelDType, PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, TextModelBuilder,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -138,6 +138,11 @@ impl LocalMistralRsProvider {
                 builder = builder.with_force_cpu();
             }
 
+            if let Some(ref dtype_str) = opts.dtype {
+                let dtype = parse_model_dtype(dtype_str)?;
+                builder = builder.with_dtype(dtype);
+            }
+
             if let Some(ref rev) = spec.revision {
                 builder = builder.with_hf_revision(rev);
             }
@@ -227,6 +232,11 @@ impl LocalMistralRsProvider {
                 builder = builder.with_force_cpu();
             }
 
+            if let Some(ref dtype_str) = opts.dtype {
+                let dtype = parse_model_dtype(dtype_str)?;
+                builder = builder.with_dtype(dtype);
+            }
+
             if let Some(ref rev) = spec.revision {
                 builder = builder.with_hf_revision(rev);
             }
@@ -295,6 +305,9 @@ struct MistralRsOptions {
     embedding_dimensions: Option<u32>,
     /// List of GGUF filenames (enables GGUF mode)
     gguf_files: Option<Vec<String>>,
+    /// Model data type: "auto" (default), "f16", "bf16", or "f32"
+    /// Use "f32" on CPU to avoid NaN issues with F16 computation
+    dtype: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +345,23 @@ fn parse_isq_type(s: &str) -> Result<IsqType> {
 }
 
 // ---------------------------------------------------------------------------
+// ModelDType parsing
+// ---------------------------------------------------------------------------
+
+fn parse_model_dtype(s: &str) -> Result<ModelDType> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(ModelDType::Auto),
+        "f16" => Ok(ModelDType::F16),
+        "bf16" => Ok(ModelDType::BF16),
+        "f32" => Ok(ModelDType::F32),
+        other => Err(RuntimeError::Config(format!(
+            "Unknown dtype '{}'. Valid types: auto, f16, bf16, f32",
+            other
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Embedding service
 // ---------------------------------------------------------------------------
 
@@ -354,6 +384,21 @@ impl EmbeddingModel for MistralRsEmbeddingService {
         let embeddings = self.model.generate_embeddings(request).await.map_err(|e| {
             RuntimeError::InferenceError(format!("Embedding inference failed: {}", e))
         })?;
+
+        // Validate embeddings to detect NaN/Inf values that can occur
+        // when using F16 dtype on CPU without native hardware support
+        for (idx, emb) in embeddings.iter().enumerate() {
+            if emb.iter().any(|v| v.is_nan() || v.is_infinite()) {
+                let nan_count = emb.iter().filter(|v| v.is_nan()).count();
+                let inf_count = emb.iter().filter(|v| v.is_infinite()).count();
+                return Err(RuntimeError::InferenceError(format!(
+                    "Embedding model produced invalid values for text {}: {} NaN, {} Inf. \
+                     This may be caused by F16 computation on CPU. \
+                     Try setting options: {{\"dtype\": \"f32\"}} in the model alias.",
+                    idx, nan_count, inf_count
+                )));
+            }
+        }
 
         Ok(embeddings)
     }

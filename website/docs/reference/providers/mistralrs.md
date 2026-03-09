@@ -16,6 +16,9 @@
 - `tokenizer_json` (string)
 - `embedding_dimensions` (integer > 0, embed task only)
 - `gguf_files` (array of strings)
+- `dtype` (string: "auto", "f16", "bf16", "f32")
+
+**Note**: When running on CPU, use `"dtype": "f32"` to avoid NaN values caused by F16 computation without native hardware support.
 
 Authoritative Uni-Xervo option schema:
 
@@ -52,6 +55,20 @@ Uni-Xervo generation API currently exposes:
     "isq": "Q4K",
     "paged_attention": true,
     "max_num_seqs": 8
+  }
+}
+```
+
+## Example for CPU embedding (avoiding NaN issues)
+
+```json
+{
+  "alias": "embed/default",
+  "task": "embed",
+  "provider_id": "local/mistralrs",
+  "model_id": "google/embeddinggemma-300m",
+  "options": {
+    "dtype": "f32"
   }
 }
 ```
