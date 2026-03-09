@@ -6,7 +6,7 @@ use crate::traits::{
 };
 use async_trait::async_trait;
 use mistralrs::{
-    EmbeddingModelBuilder, EmbeddingRequestBuilder, GgufModelBuilder, IsqType, Model,
+    EmbeddingModelBuilder, EmbeddingRequestBuilder, GgufModelBuilder, IsqType, Model, ModelDType,
     PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, TextModelBuilder,
 };
 use serde::Deserialize;
@@ -150,6 +150,11 @@ impl LocalMistralRsProvider {
                 builder = builder.with_tokenizer_json(tok_json);
             }
 
+            if let Some(ref dtype_str) = opts.dtype {
+                let dtype = parse_model_dtype(dtype_str)?;
+                builder = builder.with_dtype(dtype);
+            }
+
             builder = builder.with_logging();
 
             builder.build().await.map_err(|e| {
@@ -251,6 +256,11 @@ impl LocalMistralRsProvider {
                 builder = builder.with_max_num_seqs(max_seqs);
             }
 
+            if let Some(ref dtype_str) = opts.dtype {
+                let dtype = parse_model_dtype(dtype_str)?;
+                builder = builder.with_dtype(dtype);
+            }
+
             builder = builder.with_logging();
 
             builder.build().await.map_err(|e| {
@@ -295,6 +305,8 @@ struct MistralRsOptions {
     embedding_dimensions: Option<u32>,
     /// List of GGUF filenames (enables GGUF mode)
     gguf_files: Option<Vec<String>>,
+    /// Compute dtype override, e.g. "f32", "f16", "bf16", "auto"
+    dtype: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +338,21 @@ fn parse_isq_type(s: &str) -> Result<IsqType> {
         other => Err(RuntimeError::Config(format!(
             "Unknown ISQ type '{}'. Valid types: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, \
              Q2K, Q3K, Q4K, Q5K, Q6K, Q8K, HQQ4, HQQ8, F8E4M3, AFQ2-AFQ8",
+            other
+        ))),
+    }
+}
+
+fn parse_model_dtype(s: &str) -> Result<ModelDType> {
+    // Valid values mirror those accepted by `validate_mistralrs_options` in
+    // options_validation.rs (which runs at build time without mistralrs types).
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(ModelDType::Auto),
+        "f32" => Ok(ModelDType::F32),
+        "f16" => Ok(ModelDType::F16),
+        "bf16" => Ok(ModelDType::BF16),
+        other => Err(RuntimeError::Config(format!(
+            "Unknown dtype '{}'. Valid values: auto, f32, f16, bf16",
             other
         ))),
     }

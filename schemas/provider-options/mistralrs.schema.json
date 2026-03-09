@@ -40,6 +40,11 @@
         "type": "string"
       },
       "description": "GGUF filenames to load in GGUF mode."
+    },
+    "dtype": {
+      "type": "string",
+      "enum": ["auto", "f32", "f16", "bf16"],
+      "description": "Compute dtype override. Use 'f32' for CPU inference without native F16 support to avoid NaN values. Defaults to 'auto' (mistral.rs selects based on hardware)."
     }
   }
 }

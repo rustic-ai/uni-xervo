@@ -1913,6 +1913,15 @@ mod mistralrs_tests {
         );
         assert_eq!(model.model_id(), "google/embeddinggemma-300m");
 
+        let nan_count = embeddings[0].iter().filter(|v| v.is_nan()).count();
+        assert_eq!(
+            nan_count,
+            0,
+            "Embedding contains {nan_count}/{} NaN values — possible F16-on-CPU issue; \
+             try setting options: {{\"dtype\": \"f32\"}}",
+            embeddings[0].len()
+        );
+
         println!("✓ mistralrs embeddinggemma test passed");
         println!("  Model:      google/embeddinggemma-300m (Gemma3TextModel)");
         println!("  Dimensions: {}", model.dimensions());
