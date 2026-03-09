@@ -16,6 +16,17 @@
 - `tokenizer_json` (string)
 - `embedding_dimensions` (integer > 0, embed task only)
 - `gguf_files` (array of strings)
+- `dtype` (string: `"auto"` | `"f32"` | `"f16"` | `"bf16"`, default: `"auto"`)
+
+  Overrides the compute dtype used by the model. The default `"auto"` lets
+  mistral.rs select the best dtype for the detected hardware (typically F16 on
+  GPU, BF16 on newer CPUs). On CPUs **without** native F16 hardware support,
+  `"auto"` may select F16 and produce all-NaN embedding vectors. Set
+  `"dtype": "f32"` to avoid this:
+
+  ```json
+  { "dtype": "f32" }
+  ```
 
 Authoritative Uni-Xervo option schema:
 
@@ -52,6 +63,20 @@ Uni-Xervo generation API currently exposes:
     "isq": "Q4K",
     "paged_attention": true,
     "max_num_seqs": 8
+  }
+}
+```
+
+### CPU-only embedding example (avoids F16 NaN issue)
+
+```json
+{
+  "alias": "embed/default",
+  "task": "embed",
+  "provider_id": "local/mistralrs",
+  "model_id": "google/embeddinggemma-300m",
+  "options": {
+    "dtype": "f32"
   }
 }
 ```
