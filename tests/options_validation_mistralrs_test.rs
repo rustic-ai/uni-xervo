@@ -20,6 +20,22 @@ fn mistralrs_spec(task: ModelTask, options: serde_json::Value) -> ModelAliasSpec
     }
 }
 
+fn mistralrs_generate_spec(options: serde_json::Value) -> ModelAliasSpec {
+    ModelAliasSpec {
+        alias: "generate/default".to_string(),
+        task: ModelTask::Generate,
+        provider_id: "local/mistralrs".to_string(),
+        model_id: "meta-llama/Llama-3.2-1B-Instruct".to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options,
+    }
+}
+
 #[tokio::test]
 async fn builder_rejects_unknown_mistralrs_option_key() {
     let runtime = ModelRuntime::builder()
@@ -138,7 +154,7 @@ async fn builder_rejects_non_string_dtype() {
 }
 
 #[tokio::test]
-async fn builder_accepts_null_options() {
+async fn builder_accepts_null_mistralrs_options() {
     let runtime = ModelRuntime::builder()
         .register_provider(LocalMistralRsProvider::new())
         .catalog(vec![mistralrs_spec(
@@ -149,4 +165,42 @@ async fn builder_accepts_null_options() {
         .await;
 
     assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_generate_accepts_dtype_f32() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_generate_spec(serde_json::json!({"dtype": "f32"}))])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_generate_accepts_dtype_auto() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_generate_spec(serde_json::json!({"dtype": "auto"}))])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_generate_rejects_invalid_dtype_value() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_generate_spec(serde_json::json!({"dtype": "int8"}))])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    let err = runtime.err().unwrap().to_string();
+    assert!(
+        err.contains("invalid value") || err.contains("dtype"),
+        "Expected dtype error message, got: {err}"
+    );
 }

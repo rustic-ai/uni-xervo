@@ -1881,7 +1881,7 @@ mod mistralrs_tests {
                 timeout: None,
                 load_timeout: None,
                 retry: None,
-                options: serde_json::Value::Null,
+                options: serde_json::json!({"dtype": "f32"}),
             }])
             .build()
             .await
