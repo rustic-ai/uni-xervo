@@ -216,15 +216,10 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
     require_embedding_dimensions(provider_id, task, map)?;
 
     if let Some(value) = map.get("dtype") {
-        let Some(dtype_str) = value.as_str() else {
-            return Err(RuntimeError::Config(format!(
-                "Option 'dtype' for provider '{}' must be a string",
-                provider_id
-            )));
-        };
+        // require_string_keys above has already guaranteed dtype is a string.
         // Valid values must stay in sync with `parse_model_dtype` in
         // src/provider/mistralrs.rs, which performs the conversion at load time.
-        match dtype_str.to_lowercase().as_str() {
+        match value.as_str().unwrap().to_lowercase().as_str() {
             "auto" | "f32" | "f16" | "bf16" => {}
             other => {
                 return Err(RuntimeError::Config(format!(
