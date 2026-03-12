@@ -1881,7 +1881,7 @@ mod mistralrs_tests {
                 timeout: None,
                 load_timeout: None,
                 retry: None,
-                options: serde_json::Value::Null,
+                options: serde_json::json!({"dtype": "f32"}),
             }])
             .build()
             .await
@@ -1907,6 +1907,12 @@ mod mistralrs_tests {
             embeddings[1].len(),
             "Both embeddings must have same dimensions"
         );
+        for (i, emb) in embeddings.iter().enumerate() {
+            assert!(
+                emb.iter().all(|v| v.is_finite()),
+                "Embedding {i} contains NaN or Inf values"
+            );
+        }
         assert!(
             model.dimensions() > 0,
             "dimensions() should return non-zero value"
@@ -2026,6 +2032,251 @@ mod mistralrs_tests {
         assert!(usage.total_tokens > 0, "Total tokens should be > 0");
 
         println!("mistralrs local generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using SmolLM2-135M-Instruct with dtype f32.
+    /// This test verifies that the dtype option works correctly for generator
+    /// models on CPU, preventing NaN values from F16 auto-selection.
+    /// SmolLM2-135M uses the LlamaForCausalLM architecture (~270 MB download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_smollm2_f32() {
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/smollm2".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"dtype": "f32"}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/smollm2")
+            .await
+            .expect("Failed to resolve SmolLM2 generator model");
+
+        let messages = vec!["Say 'Hello from SmolLM2' and nothing else.".to_string()];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs SmolLM2 f32 generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using Qwen3-0.6B with dtype f32.
+    /// Qwen3 uses the Qwen3ForCausalLM architecture with native mistralrs support.
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_qwen3() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/qwen3".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"dtype": "f32"}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/qwen3")
+            .await
+            .expect("Failed to resolve Qwen3 generator model");
+
+        let messages = vec!["Say 'Hello from Qwen3' and nothing else.".to_string()];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs Qwen3-0.6B f32 generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using SmolLM2-135M-Instruct in GGUF format.
+    /// This tests the GGUF loading path (`GgufModelBuilder`) with a Llama-arch
+    /// model. SmolLM2 uses LlamaForCausalLM which maps to the `Llama` GGUF
+    /// architecture (~90 MB Q4_K_M download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_smollm2_gguf() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/smollm2-gguf".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "bartowski/SmolLM2-135M-Instruct-GGUF".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"gguf_files": ["SmolLM2-135M-Instruct-Q4_K_M.gguf"]}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/smollm2-gguf")
+            .await
+            .expect("Failed to resolve SmolLM2 GGUF generator model");
+
+        let messages = vec!["Say 'Hello from SmolLM2' and nothing else.".to_string()];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs SmolLM2 GGUF generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using Qwen3-0.6B in GGUF format.
+    /// This tests the GGUF loading path (`GgufModelBuilder`) with the Qwen3
+    /// architecture (~400 MB Q4_K_M download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_qwen3_gguf() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/qwen3-gguf".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "bartowski/Qwen_Qwen3-0.6B-GGUF".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"gguf_files": ["Qwen_Qwen3-0.6B-Q4_K_M.gguf"]}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/qwen3-gguf")
+            .await
+            .expect("Failed to resolve Qwen3 GGUF generator model");
+
+        // Qwen3 defaults to thinking mode (<think>...</think>) which consumes
+        // many tokens before producing visible output, so we need a higher limit.
+        let messages = vec!["Say 'Hello from Qwen3' and nothing else.".to_string()];
+        let options = GenerationOptions {
+            max_tokens: Some(200),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs Qwen3 GGUF generation test passed");
         println!("  Generated: {}", result.text);
         println!(
             "  Tokens: {} prompt + {} completion = {} total",

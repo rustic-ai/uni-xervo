@@ -6,7 +6,7 @@ use crate::traits::{
 };
 use async_trait::async_trait;
 use mistralrs::{
-    EmbeddingModelBuilder, EmbeddingRequestBuilder, GgufModelBuilder, IsqType, Model,
+    EmbeddingModelBuilder, EmbeddingRequestBuilder, GgufModelBuilder, IsqType, Model, ModelDType,
     PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, TextModelBuilder,
 };
 use serde::Deserialize;
@@ -110,6 +110,9 @@ impl LocalMistralRsProvider {
 
         // When gguf_files is set, model_id is treated as the GGUF directory path.
         let model = if let Some(files) = &opts.gguf_files {
+            if opts.dtype.is_some() {
+                tracing::debug!("dtype option ignored for GGUF models");
+            }
             let mut builder = GgufModelBuilder::new(spec.model_id.clone(), files.clone());
 
             if let Some(ref chat_tmpl) = opts.chat_template {
@@ -128,6 +131,9 @@ impl LocalMistralRsProvider {
             })?
         } else {
             let mut builder = EmbeddingModelBuilder::new(&spec.model_id);
+
+            let dtype = resolve_model_dtype(opts)?;
+            builder = builder.with_dtype(dtype);
 
             if let Some(ref isq_str) = opts.isq {
                 let isq = parse_isq_type(isq_str)?;
@@ -164,6 +170,11 @@ impl LocalMistralRsProvider {
                 let probe = model.generate_embedding("probe").await.map_err(|e| {
                     RuntimeError::Load(format!("Failed to probe embedding dimensions: {}", e))
                 })?;
+                validate_embeddings(std::slice::from_ref(&probe)).map_err(|e| {
+                    RuntimeError::Load(format!(
+                        "Probe returned invalid values: {e}. Try dtype: \"f32\""
+                    ))
+                })?;
                 probe.len() as u32
             }
         };
@@ -192,6 +203,9 @@ impl LocalMistralRsProvider {
         tracing::info!(model_id = %spec.model_id, "Loading mistralrs generator model");
 
         let model = if let Some(files) = &opts.gguf_files {
+            if opts.dtype.is_some() {
+                tracing::debug!("dtype option ignored for GGUF models");
+            }
             let mut builder = GgufModelBuilder::new(spec.model_id.clone(), files.clone());
 
             if let Some(ref chat_tmpl) = opts.chat_template {
@@ -217,6 +231,9 @@ impl LocalMistralRsProvider {
             })?
         } else {
             let mut builder = TextModelBuilder::new(&spec.model_id);
+
+            let dtype = resolve_model_dtype(opts)?;
+            builder = builder.with_dtype(dtype);
 
             if let Some(ref isq_str) = opts.isq {
                 let isq = parse_isq_type(isq_str)?;
@@ -295,6 +312,8 @@ struct MistralRsOptions {
     embedding_dimensions: Option<u32>,
     /// List of GGUF filenames (enables GGUF mode)
     gguf_files: Option<Vec<String>>,
+    /// Model data type: "auto", "f16", "bf16", "f32"
+    dtype: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +351,62 @@ fn parse_isq_type(s: &str) -> Result<IsqType> {
 }
 
 // ---------------------------------------------------------------------------
+// Model dtype parsing
+// ---------------------------------------------------------------------------
+
+fn parse_model_dtype(s: &str) -> Result<ModelDType> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(ModelDType::Auto),
+        "f16" => Ok(ModelDType::F16),
+        "bf16" => Ok(ModelDType::BF16),
+        "f32" => Ok(ModelDType::F32),
+        other => Err(RuntimeError::Config(format!(
+            "Unknown dtype '{}'. Valid values: auto, f16, bf16, f32",
+            other
+        ))),
+    }
+}
+
+fn resolve_model_dtype(opts: &MistralRsOptions) -> Result<ModelDType> {
+    if let Some(ref s) = opts.dtype {
+        return parse_model_dtype(s);
+    }
+    if opts.force_cpu || !has_gpu_support() {
+        tracing::info!("No GPU detected or force_cpu=true; defaulting dtype to F32");
+        Ok(ModelDType::F32)
+    } else {
+        Ok(ModelDType::Auto)
+    }
+}
+
+#[allow(unexpected_cfgs)]
+fn has_gpu_support() -> bool {
+    cfg!(any(feature = "gpu-cuda", feature = "gpu-metal"))
+}
+
+// ---------------------------------------------------------------------------
+// Embedding validation
+// ---------------------------------------------------------------------------
+
+fn validate_embeddings(embeddings: &[Vec<f32>]) -> Result<()> {
+    for (i, vec) in embeddings.iter().enumerate() {
+        let nan_count = vec.iter().filter(|v| v.is_nan()).count();
+        let inf_count = vec.iter().filter(|v| v.is_infinite()).count();
+        if nan_count > 0 || inf_count > 0 {
+            return Err(RuntimeError::InferenceError(format!(
+                "Embedding vector {} contains invalid values ({} NaN, {} Inf out of {} dims). \
+                 This typically happens with F16 on CPU. Set options: {{\"dtype\": \"f32\"}}.",
+                i,
+                nan_count,
+                inf_count,
+                vec.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Embedding service
 // ---------------------------------------------------------------------------
 
@@ -354,6 +429,8 @@ impl EmbeddingModel for MistralRsEmbeddingService {
         let embeddings = self.model.generate_embeddings(request).await.map_err(|e| {
             RuntimeError::InferenceError(format!("Embedding inference failed: {}", e))
         })?;
+
+        validate_embeddings(&embeddings)?;
 
         Ok(embeddings)
     }
@@ -437,5 +514,103 @@ impl GeneratorModel for MistralRsGeneratorService {
             text,
             usage: Some(usage),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // validate_embeddings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_embeddings_valid() {
+        let vecs = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
+        assert!(validate_embeddings(&vecs).is_ok());
+    }
+
+    #[test]
+    fn validate_embeddings_empty() {
+        assert!(validate_embeddings(&[]).is_ok());
+    }
+
+    #[test]
+    fn validate_embeddings_nan() {
+        let vecs = vec![vec![1.0, f32::NAN, 3.0]];
+        let err = validate_embeddings(&vecs).unwrap_err();
+        assert!(err.to_string().contains("NaN"));
+    }
+
+    #[test]
+    fn validate_embeddings_inf() {
+        let vecs = vec![vec![1.0, f32::INFINITY, 3.0]];
+        let err = validate_embeddings(&vecs).unwrap_err();
+        assert!(err.to_string().contains("Inf"));
+    }
+
+    #[test]
+    fn validate_embeddings_all_nan() {
+        let vecs = vec![vec![f32::NAN, f32::NAN, f32::NAN]];
+        let err = validate_embeddings(&vecs).unwrap_err();
+        assert!(err.to_string().contains("3 NaN"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_model_dtype
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_model_dtype_valid() {
+        assert!(matches!(parse_model_dtype("auto"), Ok(ModelDType::Auto)));
+        assert!(matches!(parse_model_dtype("f16"), Ok(ModelDType::F16)));
+        assert!(matches!(parse_model_dtype("bf16"), Ok(ModelDType::BF16)));
+        assert!(matches!(parse_model_dtype("f32"), Ok(ModelDType::F32)));
+    }
+
+    #[test]
+    fn parse_model_dtype_case_insensitive() {
+        assert!(matches!(parse_model_dtype("F16"), Ok(ModelDType::F16)));
+        assert!(matches!(parse_model_dtype("BF16"), Ok(ModelDType::BF16)));
+        assert!(matches!(parse_model_dtype("Auto"), Ok(ModelDType::Auto)));
+    }
+
+    #[test]
+    fn parse_model_dtype_invalid() {
+        let err = parse_model_dtype("int8").unwrap_err();
+        assert!(err.to_string().contains("Unknown dtype"));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_model_dtype
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_model_dtype_explicit_overrides_force_cpu() {
+        let opts = MistralRsOptions {
+            dtype: Some("f16".to_string()),
+            force_cpu: true,
+            ..Default::default()
+        };
+        assert!(matches!(resolve_model_dtype(&opts), Ok(ModelDType::F16)));
+    }
+
+    #[test]
+    fn resolve_model_dtype_force_cpu_defaults_f32() {
+        let opts = MistralRsOptions {
+            force_cpu: true,
+            ..Default::default()
+        };
+        assert!(matches!(resolve_model_dtype(&opts), Ok(ModelDType::F32)));
+    }
+
+    #[test]
+    fn resolve_model_dtype_no_gpu_defaults_f32() {
+        // Without gpu-cuda or gpu-metal features, has_gpu_support() returns false.
+        let opts = MistralRsOptions::default();
+        if !has_gpu_support() {
+            assert!(matches!(resolve_model_dtype(&opts), Ok(ModelDType::F32)));
+        }
     }
 }

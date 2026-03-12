@@ -191,13 +191,14 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
             "tokenizer_json",
             "embedding_dimensions",
             "gguf_files",
+            "dtype",
         ],
     )?;
 
     require_string_keys(
         provider_id,
         map,
-        &["isq", "chat_template", "tokenizer_json"],
+        &["isq", "chat_template", "tokenizer_json", "dtype"],
     )?;
 
     for key in ["force_cpu", "paged_attention"] {
@@ -208,6 +209,18 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
                 "Option '{}' for provider '{}' must be a boolean",
                 key, provider_id
             )));
+        }
+    }
+
+    if let Some(value) = map.get("dtype") {
+        if let Some(s) = value.as_str() {
+            let valid = ["auto", "f16", "bf16", "f32"];
+            if !valid.contains(&s.to_lowercase().as_str()) {
+                return Err(RuntimeError::Config(format!(
+                    "Option 'dtype' for provider '{}' must be one of: auto, f16, bf16, f32",
+                    provider_id
+                )));
+            }
         }
     }
 
