@@ -40,7 +40,7 @@ Catalogs are JSON arrays of `ModelAliasSpec` entries.
 | --- | --- | --- |
 | `local/candle` | `cache_dir` | Per-model local cache path |
 | `local/fastembed` | `cache_dir` | Per-model local cache path |
-| `local/mistralrs` | `isq`, `force_cpu`, `paged_attention`, `max_num_seqs`, `chat_template`, `tokenizer_json`, `embedding_dimensions`, `gguf_files` | Quantization and local runtime tuning |
+| `local/mistralrs` | `pipeline`, `dtype`, `isq`, `force_cpu`, `paged_attention`, `max_num_seqs`, `chat_template`, `tokenizer_json`, `embedding_dimensions`, `gguf_files`, `diffusion_loader_type`, `speech_loader_type` | Multimodal pipelines (text, vision, diffusion, speech), quantization, and local runtime tuning |
 | `remote/openai` | `api_key_env` | Override env var name for API key |
 | `remote/gemini` | `api_key_env` | Override env var name for API key |
 | `remote/vertexai` | `api_token_env`, `project_id`, `location`, `publisher`, `embedding_dimensions` | OAuth token + project/location metadata |

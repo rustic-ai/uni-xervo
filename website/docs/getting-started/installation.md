@@ -6,14 +6,14 @@ Add Uni-Xervo to your Rust project.
 
 ```toml
 [dependencies]
-uni-xervo = "0.1.0"
+uni-xervo = "0.2.0"
 ```
 
 ## Explicit feature selection (recommended)
 
 ```toml
 [dependencies]
-uni-xervo = { version = "0.1.0", default-features = false, features = [
+uni-xervo = { version = "0.2.0", default-features = false, features = [
   "provider-candle",
   "provider-fastembed",
   "provider-mistralrs",
@@ -34,7 +34,7 @@ Enable only what you need to keep build and binary size smaller.
 
 ```toml
 [dependencies]
-uni-xervo = { version = "0.1.0", default-features = false, features = [
+uni-xervo = { version = "0.2.0", default-features = false, features = [
   "provider-candle",
   "gpu-cuda"
 ] }

@@ -40,6 +40,26 @@
         "type": "string"
       },
       "description": "GGUF filenames to load in GGUF mode."
+    },
+    "pipeline": {
+      "type": "string",
+      "enum": ["text", "vision", "diffusion", "speech"],
+      "description": "Pipeline type. Defaults to text."
+    },
+    "dtype": {
+      "type": "string",
+      "enum": ["auto", "f16", "bf16", "f32"],
+      "description": "Model precision. Defaults to f32 on CPU, auto otherwise."
+    },
+    "diffusion_loader_type": {
+      "type": "string",
+      "enum": ["flux", "flux_offloaded"],
+      "description": "Diffusion model loader type. Required when pipeline is diffusion."
+    },
+    "speech_loader_type": {
+      "type": "string",
+      "enum": ["dia"],
+      "description": "Speech model loader type. Required when pipeline is speech."
     }
   }
 }

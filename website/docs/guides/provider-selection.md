@@ -8,7 +8,7 @@ Choose providers based on task coverage, latency profile, data governance, and o
 | --- | --- | --- | --- | --- |
 | `local/candle` | Yes | No | No | Low-latency local embedding with simple deploys |
 | `local/fastembed` | Yes | No | No | ONNX-backed local embedding |
-| `local/mistralrs` | Yes | No | Yes | Self-hosted local embedding + generation |
+| `local/mistralrs` | Yes | No | Yes | Self-hosted local embedding + multimodal generation (text, vision, diffusion, speech) |
 | `remote/openai` | Yes | No | Yes | Hosted general-purpose embeddings and chat |
 | `remote/gemini` | Yes | No | Yes | Hosted Google model family |
 | `remote/vertexai` | Yes | No | Yes | GCP-native hosted models |
@@ -38,6 +38,11 @@ Choose providers based on task coverage, latency profile, data governance, and o
   - embed via `remote/voyageai`
   - rerank via `remote/cohere`
   - generate via `remote/azure-openai`
+- Multimodal local pipelines:
+  - `generate/local` -> `local/mistralrs` (text pipeline, default)
+  - `vision/qwen` -> `local/mistralrs` (vision pipeline for image understanding)
+  - `image/flux` -> `local/mistralrs` (diffusion pipeline for image generation)
+  - `tts/dia` -> `local/mistralrs` (speech pipeline for audio synthesis)
 
 ## Developer notes
 

@@ -22,6 +22,7 @@ nav:
       - Overview: guides/index.md
       - Provider Selection: guides/provider-selection.md
       - Config Validation: guides/config-validation.md
+      - Multimodal Generation: guides/multimodal-generation.md
   - Reference:
       - Overview: reference/index.md
       - Configuration: reference/configuration.md
