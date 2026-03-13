@@ -219,6 +219,30 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
         "text"
     };
 
+    // Shared validation across all pipelines
+    require_string_keys(provider_id, map, &["dtype"])?;
+
+    if let Some(value) = map.get("dtype") {
+        if let Some(s) = value.as_str() {
+            let valid = ["auto", "f16", "bf16", "f32"];
+            if !valid.contains(&s.to_lowercase().as_str()) {
+                return Err(RuntimeError::Config(format!(
+                    "Option 'dtype' for provider '{}' must be one of: auto, f16, bf16, f32",
+                    provider_id
+                )));
+            }
+        }
+    }
+
+    if let Some(value) = map.get("force_cpu")
+        && !value.is_boolean()
+    {
+        return Err(RuntimeError::Config(format!(
+            "Option 'force_cpu' for provider '{}' must be a boolean",
+            provider_id
+        )));
+    }
+
     // Pipeline-specific validation
     match pipeline {
         "vision" => {
@@ -233,6 +257,20 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
                         .to_string(),
                 ));
             }
+            require_string_keys(
+                provider_id,
+                map,
+                &["isq", "chat_template", "tokenizer_json"],
+            )?;
+            if let Some(value) = map.get("paged_attention")
+                && !value.is_boolean()
+            {
+                return Err(RuntimeError::Config(format!(
+                    "Option 'paged_attention' for provider '{}' must be a boolean",
+                    provider_id
+                )));
+            }
+            require_positive_u64(provider_id, map, "max_num_seqs")?;
         }
         "diffusion" => {
             // Validate diffusion_loader_type
@@ -311,30 +349,16 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
             require_string_keys(
                 provider_id,
                 map,
-                &["isq", "chat_template", "tokenizer_json", "dtype"],
+                &["isq", "chat_template", "tokenizer_json"],
             )?;
 
-            for key in ["force_cpu", "paged_attention"] {
-                if let Some(value) = map.get(key)
-                    && !value.is_boolean()
-                {
-                    return Err(RuntimeError::Config(format!(
-                        "Option '{}' for provider '{}' must be a boolean",
-                        key, provider_id
-                    )));
-                }
-            }
-
-            if let Some(value) = map.get("dtype") {
-                if let Some(s) = value.as_str() {
-                    let valid = ["auto", "f16", "bf16", "f32"];
-                    if !valid.contains(&s.to_lowercase().as_str()) {
-                        return Err(RuntimeError::Config(format!(
-                            "Option 'dtype' for provider '{}' must be one of: auto, f16, bf16, f32",
-                            provider_id
-                        )));
-                    }
-                }
+            if let Some(value) = map.get("paged_attention")
+                && !value.is_boolean()
+            {
+                return Err(RuntimeError::Config(format!(
+                    "Option 'paged_attention' for provider '{}' must be a boolean",
+                    provider_id
+                )));
             }
 
             require_positive_u64(provider_id, map, "max_num_seqs")?;

@@ -542,8 +542,11 @@ fn resolve_model_dtype(opts: &MistralRsOptions) -> Result<ModelDType> {
     if let Some(ref s) = opts.dtype {
         return parse_model_dtype(s);
     }
-    if opts.force_cpu || !has_gpu_support() {
-        tracing::info!("No GPU detected or force_cpu=true; defaulting dtype to F32");
+    if opts.force_cpu {
+        tracing::info!("force_cpu=true; defaulting dtype to F32");
+        Ok(ModelDType::F32)
+    } else if !has_gpu_support() {
+        tracing::info!("GPU feature not enabled (gpu-cuda/gpu-metal); defaulting dtype to F32");
         Ok(ModelDType::F32)
     } else {
         Ok(ModelDType::Auto)
@@ -553,6 +556,21 @@ fn resolve_model_dtype(opts: &MistralRsOptions) -> Result<ModelDType> {
 #[allow(unexpected_cfgs)]
 fn has_gpu_support() -> bool {
     cfg!(any(feature = "gpu-cuda", feature = "gpu-metal"))
+}
+
+/// Extract the text of the last user message, which is the most relevant
+/// prompt for single-shot pipelines like diffusion and speech.
+fn extract_last_user_prompt(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == MessageRole::User)
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            ContentBlock::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -715,31 +733,24 @@ impl GeneratorModel for MistralRsVisionService {
             };
 
             // Collect images from this message
-            let images: Vec<image::DynamicImage> = msg
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Image(img_input) => {
-                        let bytes = match img_input {
-                            crate::traits::ImageInput::Bytes { data, .. } => data.clone(),
-                            crate::traits::ImageInput::Url(_url) => {
-                                tracing::warn!(
-                                    "URL-based image input not yet supported in vision pipeline"
-                                );
-                                return None;
-                            }
-                        };
-                        match image::load_from_memory(&bytes) {
-                            Ok(img) => Some(img),
-                            Err(e) => {
-                                tracing::error!("Failed to decode image: {}", e);
-                                None
-                            }
+            let mut images: Vec<image::DynamicImage> = Vec::new();
+            for block in &msg.content {
+                if let ContentBlock::Image(img_input) = block {
+                    let bytes = match img_input {
+                        crate::traits::ImageInput::Bytes { data, .. } => data.clone(),
+                        crate::traits::ImageInput::Url(_url) => {
+                            return Err(RuntimeError::Config(
+                                "URL-based image input not yet supported in vision pipeline"
+                                    .to_string(),
+                            ));
                         }
-                    }
-                    _ => None,
-                })
-                .collect();
+                    };
+                    let img = image::load_from_memory(&bytes).map_err(|e| {
+                        RuntimeError::InferenceError(format!("Failed to decode image: {}", e))
+                    })?;
+                    images.push(img);
+                }
+            }
 
             let text = msg.text();
 
@@ -819,15 +830,8 @@ impl GeneratorModel for MistralRsDiffusionService {
     ) -> Result<GenerationResult> {
         use mistralrs::DiffusionGenerationParams;
 
-        // Extract the text prompt from messages
-        let prompt = messages
-            .iter()
-            .flat_map(|m| m.content.iter())
-            .find_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        // Extract the text prompt from the last user message
+        let prompt = extract_last_user_prompt(messages);
 
         let height = options.height.unwrap_or(720) as usize;
         let width = options.width.unwrap_or(1280) as usize;
@@ -845,7 +849,10 @@ impl GeneratorModel for MistralRsDiffusionService {
             })?;
 
         // The response is a base64-encoded image
-        let b64 = response.data[0].b64_json.as_deref().ok_or_else(|| {
+        let first = response.data.first().ok_or_else(|| {
+            RuntimeError::InferenceError("Diffusion response returned no image data".to_string())
+        })?;
+        let b64 = first.b64_json.as_deref().ok_or_else(|| {
             RuntimeError::InferenceError("Diffusion response missing b64_json data".to_string())
         })?;
         let image_data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
@@ -882,15 +889,8 @@ impl GeneratorModel for MistralRsSpeechService {
         messages: &[Message],
         _options: GenerationOptions,
     ) -> Result<GenerationResult> {
-        // Extract the text prompt from messages
-        let prompt = messages
-            .iter()
-            .flat_map(|m| m.content.iter())
-            .find_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        // Extract the text prompt from the last user message
+        let prompt = extract_last_user_prompt(messages);
 
         let (pcm_data, sample_rate, channels) =
             self.model.generate_speech(prompt).await.map_err(|e| {
@@ -1004,6 +1004,34 @@ mod tests {
         let opts = MistralRsOptions::default();
         if !has_gpu_support() {
             assert!(matches!(resolve_model_dtype(&opts), Ok(ModelDType::F32)));
+        }
+    }
+
+    mod extract_last_user_prompt_tests {
+        use super::*;
+
+        #[test]
+        fn returns_last_user_text() {
+            let messages = vec![
+                Message::user("first"),
+                Message::assistant("reply"),
+                Message::user("second"),
+            ];
+            assert_eq!(extract_last_user_prompt(&messages), "second");
+        }
+
+        #[test]
+        fn skips_system_and_assistant() {
+            let messages = vec![
+                Message::system("system prompt"),
+                Message::assistant("assistant reply"),
+            ];
+            assert_eq!(extract_last_user_prompt(&messages), "");
+        }
+
+        #[test]
+        fn empty_messages_returns_empty() {
+            assert_eq!(extract_last_user_prompt(&[]), "");
         }
     }
 }

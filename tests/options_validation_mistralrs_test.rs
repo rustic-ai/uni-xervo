@@ -273,3 +273,49 @@ async fn builder_rejects_invalid_speech_loader_type() {
             .contains("must be one of")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Shared validation tests (dtype / force_cpu across pipelines)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn builder_rejects_invalid_dtype_for_vision_pipeline() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "vision", "dtype": "int8"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must be one of")
+    );
+}
+
+#[tokio::test]
+async fn builder_rejects_non_bool_force_cpu_for_diffusion_pipeline() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "diffusion", "force_cpu": "yes"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must be a boolean")
+    );
+}

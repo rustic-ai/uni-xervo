@@ -376,4 +376,33 @@ mod tests {
         assert!((temperature - 0.7).abs() < 1e-6);
         assert!((top_p - 0.9).abs() < 1e-6);
     }
+
+    #[test]
+    fn generation_payload_extracts_system_instruction() {
+        use crate::traits::Message;
+        let messages = vec![Message::system("you are helpful"), Message::user("hello")];
+        let payload = build_google_generate_payload(&messages, &GenerationOptions::default());
+
+        // System message should be extracted into system_instruction
+        let si = &payload["system_instruction"];
+        assert_eq!(si["parts"][0]["text"], "you are helpful");
+
+        // Contents should only have the user message
+        let contents = payload["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0]["role"], "user");
+    }
+
+    #[test]
+    fn generation_payload_no_system_instruction_without_system_messages() {
+        use crate::traits::Message;
+        let messages = vec![Message::user("hello"), Message::assistant("hi")];
+        let payload = build_google_generate_payload(&messages, &GenerationOptions::default());
+
+        // No system_instruction field should be present
+        assert!(payload.get("system_instruction").is_none());
+
+        let contents = payload["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 2);
+    }
 }

@@ -141,12 +141,21 @@ pub(crate) fn build_google_generate_payload(
 ) -> serde_json::Value {
     use crate::traits::MessageRole;
 
+    // Collect system messages into a separate system_instruction field
+    let system_parts: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == MessageRole::System)
+        .map(|m| m.text())
+        .collect();
+
     let contents: Vec<_> = messages
         .iter()
+        .filter(|m| m.role != MessageRole::System)
         .map(|message| {
             let role = match message.role {
-                MessageRole::User | MessageRole::System => "user",
+                MessageRole::User => "user",
                 MessageRole::Assistant => "model",
+                MessageRole::System => unreachable!("system messages filtered above"),
             };
             json!({
                 "role": role,
@@ -157,6 +166,14 @@ pub(crate) fn build_google_generate_payload(
 
     let mut payload = serde_json::Map::new();
     payload.insert("contents".to_string(), json!(contents));
+
+    if !system_parts.is_empty() {
+        let combined = system_parts.join("\n");
+        payload.insert(
+            "system_instruction".to_string(),
+            json!({ "parts": [{ "text": combined }] }),
+        );
+    }
 
     let mut generation_config = serde_json::Map::new();
     if let Some(temperature) = options.temperature {

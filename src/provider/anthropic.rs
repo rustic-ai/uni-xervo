@@ -107,6 +107,7 @@ fn build_anthropic_payload(
     model_id: &str,
     messages: &[serde_json::Value],
     options: &GenerationOptions,
+    system: Option<&str>,
 ) -> serde_json::Value {
     let max_tokens = options.max_tokens.unwrap_or(1024);
 
@@ -116,6 +117,9 @@ fn build_anthropic_payload(
         "messages": messages,
     });
 
+    if let Some(system_text) = system {
+        body["system"] = json!(system_text);
+    }
     if let Some(temperature) = options.temperature {
         body["temperature"] = json!(temperature);
     }
@@ -133,12 +137,26 @@ impl GeneratorModel for AnthropicGeneratorModel {
         messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult> {
+        // Extract system messages into a single combined string
+        let system_parts: Vec<String> = messages
+            .iter()
+            .filter(|m| m.role == MessageRole::System)
+            .map(|m| m.text())
+            .collect();
+        let system_text = if system_parts.is_empty() {
+            None
+        } else {
+            Some(system_parts.join("\n"))
+        };
+
         let messages: Vec<serde_json::Value> = messages
             .iter()
+            .filter(|msg| msg.role != MessageRole::System)
             .map(|msg| {
                 let role = match msg.role {
-                    MessageRole::System | MessageRole::User => "user",
+                    MessageRole::User => "user",
                     MessageRole::Assistant => "assistant",
+                    MessageRole::System => unreachable!("system messages filtered above"),
                 };
                 json!({ "role": role, "content": msg.text() })
             })
@@ -146,7 +164,12 @@ impl GeneratorModel for AnthropicGeneratorModel {
 
         self.cb
             .call(move || async move {
-                let body = build_anthropic_payload(&self.model_id, &messages, &options);
+                let body = build_anthropic_payload(
+                    &self.model_id,
+                    &messages,
+                    &options,
+                    system_text.as_deref(),
+                );
 
                 let response = self
                     .client
@@ -311,6 +334,7 @@ mod tests {
             "claude-sonnet-4-5-20250929",
             &messages,
             &GenerationOptions::default(),
+            None,
         );
         assert_eq!(payload["max_tokens"], 1024);
     }
@@ -325,7 +349,32 @@ mod tests {
                 max_tokens: Some(512),
                 ..Default::default()
             },
+            None,
         );
         assert_eq!(payload["max_tokens"], 512);
+    }
+
+    #[test]
+    fn payload_includes_system_field() {
+        let messages = vec![json!({"role": "user", "content": "hello"})];
+        let payload = build_anthropic_payload(
+            "claude-sonnet-4-5-20250929",
+            &messages,
+            &GenerationOptions::default(),
+            Some("you are helpful"),
+        );
+        assert_eq!(payload["system"], "you are helpful");
+    }
+
+    #[test]
+    fn payload_omits_system_field_when_none() {
+        let messages = vec![json!({"role": "user", "content": "hello"})];
+        let payload = build_anthropic_payload(
+            "claude-sonnet-4-5-20250929",
+            &messages,
+            &GenerationOptions::default(),
+            None,
+        );
+        assert!(payload.get("system").is_none());
     }
 }
