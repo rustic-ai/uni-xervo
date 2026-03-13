@@ -3,7 +3,8 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::traits::{
-    EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel, RerankerModel, ScoredDoc,
+    EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel, Message, RerankerModel,
+    ScoredDoc,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -240,7 +241,7 @@ pub struct InstrumentedGeneratorModel {
 impl GeneratorModel for InstrumentedGeneratorModel {
     async fn generate(
         &self,
-        messages: &[String],
+        messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult> {
         let start = Instant::now();

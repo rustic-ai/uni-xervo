@@ -10,7 +10,7 @@ This quickstart shows:
 ```rust
 use uni_xervo::api::catalog_from_file;
 use uni_xervo::runtime::ModelRuntime;
-use uni_xervo::traits::GenerationOptions;
+use uni_xervo::traits::{GenerationOptions, Message};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,11 +40,12 @@ async fn main() -> anyhow::Result<()> {
     let generator = runtime.generator("generate/default").await?;
     let out = generator
         .generate(
-            &["You are a concise assistant.".into(), "Summarize Rust ownership in one sentence.".into()],
+            &[Message::user("You are a concise assistant."), Message::user("Summarize Rust ownership in one sentence.")],
             GenerationOptions {
                 max_tokens: Some(120),
                 temperature: Some(0.2),
                 top_p: Some(0.95),
+                ..Default::default()
             },
         )
         .await?;

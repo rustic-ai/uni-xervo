@@ -24,13 +24,13 @@ Uni-Xervo providers are feature-gated.
 
 ```toml
 # Local-only footprint
-uni-xervo = { version = "0.1.0", default-features = false, features = [
+uni-xervo = { version = "0.2.0", default-features = false, features = [
   "provider-candle",
   "provider-fastembed"
 ] }
 
 # Remote-only footprint
-uni-xervo = { version = "0.1.0", default-features = false, features = [
+uni-xervo = { version = "0.2.0", default-features = false, features = [
   "provider-openai",
   "provider-cohere",
   "provider-vertexai"

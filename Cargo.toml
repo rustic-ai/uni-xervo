@@ -1,6 +1,6 @@
 [package]
 name = "uni-xervo"
-version = "0.1.1"
+version = "0.2.0"
 description = "Unified Rust runtime for local and remote embedding, reranking, and generation models"
 edition = "2024"
 rust-version = "1.85"
@@ -44,7 +44,7 @@ provider-anthropic = ["dep:reqwest"]
 provider-voyageai = ["dep:reqwest"]
 provider-cohere = ["dep:reqwest"]
 provider-azure-openai = ["dep:reqwest"]
-provider-mistralrs = ["dep:mistralrs"]
+provider-mistralrs = ["dep:mistralrs", "dep:image", "dep:base64"]
 
 # GPU acceleration — enable alongside one or more provider features.
 # Requires a working CUDA toolkit (nvcc, cuDNN) at build time.
@@ -97,11 +97,14 @@ hf-hub = { version = "0.4", features = ["tokio"], optional = true }
 fastembed = { version = "5.9.0", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"], optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
 mistralrs = { version = "0.7", default-features = true, optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"
 criterion = { version = "0.5", features = ["async_tokio"] }
 metrics-util = "0.17"
+reqwest = { version = "0.12", features = ["rustls-tls"] }
 
 [[bench]]
 name = "runtime_bench"

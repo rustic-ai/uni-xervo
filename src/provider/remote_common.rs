@@ -134,27 +134,46 @@ impl RemoteProviderBase {
 }
 
 /// Build a Google-style generateContent payload used by Gemini and Vertex AI.
-///
-/// Messages alternate roles: even indices are `"user"`, odd are `"model"`.
 #[cfg(any(feature = "provider-gemini", feature = "provider-vertexai"))]
 pub(crate) fn build_google_generate_payload(
-    messages: &[String],
+    messages: &[crate::traits::Message],
     options: &crate::traits::GenerationOptions,
 ) -> serde_json::Value {
+    use crate::traits::MessageRole;
+
+    // Collect system messages into a separate system_instruction field
+    let system_parts: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == MessageRole::System)
+        .map(|m| m.text())
+        .collect();
+
     let contents: Vec<_> = messages
         .iter()
-        .enumerate()
-        .map(|(i, message)| {
-            let role = if i % 2 == 0 { "user" } else { "model" };
+        .filter(|m| m.role != MessageRole::System)
+        .map(|message| {
+            let role = match message.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "model",
+                MessageRole::System => unreachable!("system messages filtered above"),
+            };
             json!({
                 "role": role,
-                "parts": [{ "text": message }]
+                "parts": [{ "text": message.text() }]
             })
         })
         .collect();
 
     let mut payload = serde_json::Map::new();
     payload.insert("contents".to_string(), json!(contents));
+
+    if !system_parts.is_empty() {
+        let combined = system_parts.join("\n");
+        payload.insert(
+            "system_instruction".to_string(),
+            json!({ "parts": [{ "text": combined }] }),
+        );
+    }
 
     let mut generation_config = serde_json::Map::new();
     if let Some(temperature) = options.temperature {

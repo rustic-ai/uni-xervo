@@ -7,8 +7,9 @@ use uni_xervo::api::{ModelAliasSpec, ModelTask, WarmupPolicy};
 use uni_xervo::error::{Result, RuntimeError};
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::traits::{
-    EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel, LoadedModelHandle,
-    ModelProvider, ProviderCapabilities, ProviderHealth, RerankerModel, ScoredDoc, TokenUsage,
+    AudioOutput, ContentBlock, EmbeddingModel, GeneratedImage, GenerationOptions, GenerationResult,
+    GeneratorModel, LoadedModelHandle, Message, ModelProvider, ProviderCapabilities,
+    ProviderHealth, RerankerModel, ScoredDoc, TokenUsage,
 };
 
 pub struct MockEmbeddingModel {
@@ -163,6 +164,8 @@ impl RerankerModel for MockRerankerModel {
 
 pub struct MockGeneratorModel {
     response_text: String,
+    response_images: Vec<GeneratedImage>,
+    response_audio: Option<AudioOutput>,
     fail_on_generate: bool,
     call_count: AtomicU32,
     warmup_count: AtomicU32,
@@ -172,6 +175,8 @@ impl MockGeneratorModel {
     pub fn new(response_text: String) -> Self {
         Self {
             response_text,
+            response_images: vec![],
+            response_audio: None,
             fail_on_generate: false,
             call_count: AtomicU32::new(0),
             warmup_count: AtomicU32::new(0),
@@ -180,6 +185,16 @@ impl MockGeneratorModel {
 
     pub fn with_failure(mut self, fail: bool) -> Self {
         self.fail_on_generate = fail;
+        self
+    }
+
+    pub fn with_images(mut self, images: Vec<GeneratedImage>) -> Self {
+        self.response_images = images;
+        self
+    }
+
+    pub fn with_audio(mut self, audio: AudioOutput) -> Self {
+        self.response_audio = Some(audio);
         self
     }
 
@@ -192,7 +207,7 @@ impl MockGeneratorModel {
 impl GeneratorModel for MockGeneratorModel {
     async fn generate(
         &self,
-        messages: &[String],
+        messages: &[Message],
         _options: GenerationOptions,
     ) -> Result<GenerationResult> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -203,14 +218,27 @@ impl GeneratorModel for MockGeneratorModel {
             ));
         }
 
+        // Extract text from all ContentBlock::Text blocks for word counting.
+        let all_text: String = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
         Ok(GenerationResult {
             text: self.response_text.clone(),
             usage: Some(TokenUsage {
-                prompt_tokens: messages.join(" ").split_whitespace().count(),
+                prompt_tokens: all_text.split_whitespace().count(),
                 completion_tokens: self.response_text.split_whitespace().count(),
-                total_tokens: messages.join(" ").split_whitespace().count()
+                total_tokens: all_text.split_whitespace().count()
                     + self.response_text.split_whitespace().count(),
             }),
+            images: self.response_images.clone(),
+            audio: self.response_audio.clone(),
         })
     }
 

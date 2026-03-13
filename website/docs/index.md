@@ -14,6 +14,7 @@ Uni-Xervo is a unified Rust runtime for model serving across local and remote pr
   - inference timeout (`timeout`)
   - load timeout (`load_timeout`)
   - retry policy (`retry`)
+- Multimodal generation: vision (image understanding), diffusion (image generation), and speech synthesis via `local/mistralrs`.
 - Strict provider option validation with JSON Schema support.
 
 ## Capability matrix
@@ -22,7 +23,7 @@ Uni-Xervo is a unified Rust runtime for model serving across local and remote pr
 | --- | --- | --- | --- | --- | --- | --- |
 | `local/candle` | local | Yes | No | No | N/A | `cache_dir` |
 | `local/fastembed` | local | Yes | No | No | N/A | `cache_dir` |
-| `local/mistralrs` | local | Yes | No | Yes | N/A | `isq`, `force_cpu`, `paged_attention`, `max_num_seqs`, `chat_template`, `tokenizer_json`, `embedding_dimensions`, `gguf_files` |
+| `local/mistralrs` | local | Yes | No | Yes | N/A | `pipeline`, `dtype`, `isq`, `force_cpu`, `paged_attention`, `max_num_seqs`, `chat_template`, `tokenizer_json`, `embedding_dimensions`, `gguf_files`, `diffusion_loader_type`, `speech_loader_type` |
 | `remote/openai` | remote | Yes | No | Yes | `OPENAI_API_KEY` | `api_key_env` |
 | `remote/gemini` | remote | Yes | No | Yes | `GEMINI_API_KEY` | `api_key_env` |
 | `remote/vertexai` | remote | Yes | No | Yes | `VERTEX_AI_TOKEN` | `api_token_env`, `project_id`, `location`, `publisher`, `embedding_dimensions` |

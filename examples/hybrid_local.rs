@@ -17,7 +17,7 @@ use uni_xervo::provider::mistralrs::LocalMistralRsProvider;
 #[cfg(feature = "provider-mistralrs")]
 use uni_xervo::runtime::ModelRuntime;
 #[cfg(feature = "provider-mistralrs")]
-use uni_xervo::traits::GenerationOptions;
+use uni_xervo::traits::{GenerationOptions, Message};
 
 #[cfg(feature = "provider-mistralrs")]
 #[tokio::main]
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generator = runtime.generator("chat/gemma3").await?;
     let res = generator
         .generate(
-            &["Explain the importance of Rust safety.".to_string()],
+            &[Message::user("Explain the importance of Rust safety.")],
             GenerationOptions::default(),
         )
         .await?;

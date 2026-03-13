@@ -21,7 +21,7 @@
 use std::env;
 use uni_xervo::api::{ModelAliasSpec, ModelTask, WarmupPolicy};
 use uni_xervo::runtime::ModelRuntime;
-use uni_xervo::traits::GenerationOptions;
+use uni_xervo::traits::{GenerationOptions, Message};
 
 /// Helper to check if expensive tests should run
 fn should_run_expensive_tests() -> bool {
@@ -440,11 +440,12 @@ async fn test_openai_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from OpenAI' and nothing else.".to_string()];
+        let messages = vec![Message::user("Say 'Hello from OpenAI' and nothing else.")];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.0),
             top_p: None,
+            ..Default::default()
         };
 
         let result = model
@@ -665,11 +666,12 @@ async fn test_gemini_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from Gemini' and nothing else.".to_string()];
+        let messages = vec![Message::user("Say 'Hello from Gemini' and nothing else.")];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.1),
             top_p: Some(0.9),
+            ..Default::default()
         };
 
         let result = model
@@ -729,11 +731,14 @@ async fn test_vertexai_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from Vertex AI' and nothing else.".to_string()];
+        let messages = vec![Message::user(
+            "Say 'Hello from Vertex AI' and nothing else.",
+        )];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.1),
             top_p: Some(0.9),
+            ..Default::default()
         };
 
         let result = model
@@ -873,7 +878,7 @@ async fn test_multi_provider_integration() {
     if has_api_key("GEMINI_API_KEY") {
         let gen_model = runtime.generator("generate/remote").await;
         if let Ok(model) = gen_model {
-            let messages = vec!["Say hello.".to_string()];
+            let messages = vec![Message::user("Say hello.")];
             let result = model
                 .generate(&messages, GenerationOptions::default())
                 .await
@@ -1013,7 +1018,7 @@ async fn test_rag_workflow() {
             );
 
             let result = gen_model
-                .generate(&[prompt.to_string()], GenerationOptions::default())
+                .generate(&[Message::user(&prompt)], GenerationOptions::default())
                 .await
                 .expect("Failed to generate answer");
 
@@ -1125,11 +1130,12 @@ async fn test_mistral_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from Mistral' and nothing else.".to_string()];
+        let messages = vec![Message::user("Say 'Hello from Mistral' and nothing else.")];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.0),
             top_p: None,
+            ..Default::default()
         };
 
         let result = model
@@ -1226,11 +1232,14 @@ async fn test_anthropic_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from Anthropic' and nothing else.".to_string()];
+        let messages = vec![Message::user(
+            "Say 'Hello from Anthropic' and nothing else.",
+        )];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.0),
             top_p: None,
+            ..Default::default()
         };
 
         let result = model
@@ -1499,11 +1508,12 @@ async fn test_cohere_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from Cohere' and nothing else.".to_string()];
+        let messages = vec![Message::user("Say 'Hello from Cohere' and nothing else.")];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.0),
             top_p: None,
+            ..Default::default()
         };
 
         let result = model
@@ -1687,11 +1697,12 @@ async fn test_azure_openai_remote_generation() {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from Azure' and nothing else.".to_string()];
+        let messages = vec![Message::user("Say 'Hello from Azure' and nothing else.")];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.0),
             top_p: None,
+            ..Default::default()
         };
 
         let result = model
@@ -1757,7 +1768,7 @@ async fn test_azure_openai_rerank_capability_mismatch() {
 mod mistralrs_tests {
     use super::*;
     use uni_xervo::provider::mistralrs::LocalMistralRsProvider;
-    use uni_xervo::traits::ModelProvider;
+    use uni_xervo::traits::{ContentBlock, ImageInput, ModelProvider};
 
     #[tokio::test]
     async fn test_mistralrs_rerank_capability_mismatch() {
@@ -1881,7 +1892,7 @@ mod mistralrs_tests {
                 timeout: None,
                 load_timeout: None,
                 retry: None,
-                options: serde_json::Value::Null,
+                options: serde_json::json!({"dtype": "f32"}),
             }])
             .build()
             .await
@@ -1907,6 +1918,12 @@ mod mistralrs_tests {
             embeddings[1].len(),
             "Both embeddings must have same dimensions"
         );
+        for (i, emb) in embeddings.iter().enumerate() {
+            assert!(
+                emb.iter().all(|v| v.is_finite()),
+                "Embedding {i} contains NaN or Inf values"
+            );
+        }
         assert!(
             model.dimensions() > 0,
             "dimensions() should return non-zero value"
@@ -2004,11 +2021,14 @@ mod mistralrs_tests {
             .await
             .expect("Failed to resolve generator model");
 
-        let messages = vec!["Say 'Hello from mistral.rs' and nothing else.".to_string()];
+        let messages = vec![Message::user(
+            "Say 'Hello from mistral.rs' and nothing else.",
+        )];
         let options = GenerationOptions {
             max_tokens: Some(20),
             temperature: Some(0.1),
             top_p: Some(0.9),
+            ..Default::default()
         };
 
         let result = model
@@ -2031,5 +2051,710 @@ mod mistralrs_tests {
             "  Tokens: {} prompt + {} completion = {} total",
             usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
         );
+    }
+
+    /// Generation via mistralrs using SmolLM2-135M-Instruct with dtype f32.
+    /// This test verifies that the dtype option works correctly for generator
+    /// models on CPU, preventing NaN values from F16 auto-selection.
+    /// SmolLM2-135M uses the LlamaForCausalLM architecture (~270 MB download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_smollm2_f32() {
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/smollm2".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"dtype": "f32"}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/smollm2")
+            .await
+            .expect("Failed to resolve SmolLM2 generator model");
+
+        let messages = vec![Message::user("Say 'Hello from SmolLM2' and nothing else.")];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs SmolLM2 f32 generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using Qwen3-0.6B with dtype f32.
+    /// Qwen3 uses the Qwen3ForCausalLM architecture with native mistralrs support.
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_qwen3() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/qwen3".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "Qwen/Qwen3-0.6B".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"dtype": "f32"}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/qwen3")
+            .await
+            .expect("Failed to resolve Qwen3 generator model");
+
+        let messages = vec![Message::user("Say 'Hello from Qwen3' and nothing else.")];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs Qwen3-0.6B f32 generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using SmolLM2-135M-Instruct in GGUF format.
+    /// This tests the GGUF loading path (`GgufModelBuilder`) with a Llama-arch
+    /// model. SmolLM2 uses LlamaForCausalLM which maps to the `Llama` GGUF
+    /// architecture (~90 MB Q4_K_M download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_smollm2_gguf() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/smollm2-gguf".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "bartowski/SmolLM2-135M-Instruct-GGUF".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"gguf_files": ["SmolLM2-135M-Instruct-Q4_K_M.gguf"]}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/smollm2-gguf")
+            .await
+            .expect("Failed to resolve SmolLM2 GGUF generator model");
+
+        let messages = vec![Message::user("Say 'Hello from SmolLM2' and nothing else.")];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs SmolLM2 GGUF generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Generation via mistralrs using Qwen3-0.6B in GGUF format.
+    /// This tests the GGUF loading path (`GgufModelBuilder`) with the Qwen3
+    /// architecture (~400 MB Q4_K_M download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_local_generation_qwen3_gguf() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/qwen3-gguf".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "bartowski/Qwen_Qwen3-0.6B-GGUF".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"gguf_files": ["Qwen_Qwen3-0.6B-Q4_K_M.gguf"]}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/qwen3-gguf")
+            .await
+            .expect("Failed to resolve Qwen3 GGUF generator model");
+
+        // Qwen3 defaults to thinking mode (<think>...</think>) which consumes
+        // many tokens before producing visible output, so we need a higher limit.
+        let messages = vec![Message::user("Say 'Hello from Qwen3' and nothing else.")];
+        let options = GenerationOptions {
+            max_tokens: Some(200),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs Qwen3 GGUF generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Verify that text generation correctly returns empty multimodal fields
+    /// (images=[], audio=None). Uses SmolLM2-135M-Instruct (~270 MB download).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_text_generation_multimodal_fields() {
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/smollm2-mm".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({"dtype": "f32"}),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/smollm2-mm")
+            .await
+            .expect("Failed to resolve SmolLM2 generator model");
+
+        let messages = vec![Message::user("Say 'hello' and nothing else.")];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+        assert!(
+            result.images.is_empty(),
+            "Text generation should return no images"
+        );
+        assert!(
+            result.audio.is_none(),
+            "Text generation should return no audio"
+        );
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        println!("✓ mistralrs text generation multimodal fields test passed");
+        println!("  Generated: {}", result.text);
+        println!("  images: [], audio: None ✓");
+    }
+
+    /// Vision pipeline test using Qwen2-VL-2B-Instruct (~2.2 GB download).
+    /// Sends a minimal 1x1 red PNG pixel with a text prompt and verifies
+    /// the model produces a text description with usage stats.
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_vision_generation() {
+        require_expensive_tests!();
+
+        // Minimal valid 1x1 red PNG (67 bytes)
+        let png_1x1_red: Vec<u8> = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // 8-bit RGB
+            0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, // IDAT chunk
+            0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, // compressed data
+            0x00, 0x00, 0x03, 0x00, 0x01, 0x36, 0x28, 0x19, // ...
+            0xFD, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, // IEND chunk
+            0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/vision".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "Qwen/Qwen2-VL-2B-Instruct".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({
+                    "pipeline": "vision",
+                    "dtype": "f32",
+                    "isq": "Q4K"
+                }),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/vision")
+            .await
+            .expect("Failed to resolve vision generator model");
+
+        let messages = vec![Message {
+            role: uni_xervo::traits::MessageRole::User,
+            content: vec![
+                ContentBlock::Text("Describe this image.".to_string()),
+                ContentBlock::Image(ImageInput::Bytes {
+                    data: png_1x1_red,
+                    media_type: "image/png".to_string(),
+                }),
+            ],
+        }];
+        let options = GenerationOptions {
+            max_tokens: Some(50),
+            temperature: Some(0.1),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Vision generation failed");
+
+        assert!(
+            !result.text.is_empty(),
+            "Vision model should produce text output"
+        );
+        assert!(result.usage.is_some(), "Usage stats should be present");
+
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
+
+        assert!(
+            result.images.is_empty(),
+            "Vision model should not produce images"
+        );
+        assert!(
+            result.audio.is_none(),
+            "Vision model should not produce audio"
+        );
+
+        println!("✓ mistralrs vision generation test passed");
+        println!("  Generated: {}", result.text);
+        println!(
+            "  Tokens: {} prompt + {} completion = {} total",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    }
+
+    /// Diffusion pipeline test using FLUX.1-schnell (~23.8 GB download).
+    /// Generates a tiny 64x64 image to minimize compute.
+    /// WARNING: Requires GPU and significant disk space (~24 GB).
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_diffusion_generation() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/diffusion".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "black-forest-labs/FLUX.1-schnell".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({
+                    "pipeline": "diffusion",
+                    "diffusion_loader_type": "flux"
+                }),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/diffusion")
+            .await
+            .expect("Failed to resolve diffusion generator model");
+
+        let messages = vec![Message::user("A red circle on white background")];
+        let options = GenerationOptions {
+            width: Some(64),
+            height: Some(64),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Diffusion generation failed");
+
+        assert_eq!(
+            result.images.len(),
+            1,
+            "Diffusion model should produce exactly 1 image"
+        );
+        assert!(
+            !result.images[0].data.is_empty(),
+            "Generated image data should not be empty"
+        );
+        assert_eq!(
+            result.images[0].media_type, "image/png",
+            "Generated image should be PNG"
+        );
+        assert!(
+            result.text.is_empty(),
+            "Diffusion model should not produce text"
+        );
+        assert!(
+            result.audio.is_none(),
+            "Diffusion model should not produce audio"
+        );
+
+        println!("✓ mistralrs diffusion generation test passed");
+        println!("  Image size: {} bytes", result.images[0].data.len());
+    }
+
+    /// Speech pipeline test using Dia-1.6B (~12.9 GB download).
+    /// Generates PCM audio from a short text prompt.
+    /// WARNING: Requires ~13 GB disk space for model download.
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_speech_generation() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/speech".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "nari-labs/Dia-1.6B".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({
+                    "pipeline": "speech",
+                    "speech_loader_type": "dia"
+                }),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/speech")
+            .await
+            .expect("Failed to resolve speech generator model");
+
+        let messages = vec![Message::user("Hello, this is a test of speech synthesis.")];
+        let options = GenerationOptions::default();
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Speech generation failed");
+
+        assert!(result.audio.is_some(), "Speech model should produce audio");
+        let audio = result.audio.unwrap();
+        assert!(
+            !audio.pcm_data.is_empty(),
+            "PCM audio data should not be empty"
+        );
+        assert!(audio.sample_rate > 0, "Sample rate should be > 0");
+        assert!(audio.channels > 0, "Channel count should be > 0");
+
+        assert!(
+            result.text.is_empty(),
+            "Speech model should not produce text"
+        );
+        assert!(
+            result.images.is_empty(),
+            "Speech model should not produce images"
+        );
+
+        println!("✓ mistralrs speech generation test passed");
+        println!(
+            "  Audio: {} samples, {}Hz, {} channel(s)",
+            audio.pcm_data.len(),
+            audio.sample_rate,
+            audio.channels
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_gemma3n_text_generation() {
+        require_expensive_tests!();
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/gemma3n-text".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "google/gemma-3n-E2B-it".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({
+                    "pipeline": "vision",
+                    "dtype": "f32",
+                    "isq": "Q4K"
+                }),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/gemma3n-text")
+            .await
+            .expect("Failed to get generator");
+
+        let messages = vec![Message::user(
+            "What is the capital of France? Answer in one word.",
+        )];
+        let options = GenerationOptions {
+            max_tokens: Some(20),
+            temperature: Some(0.1),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(!result.text.is_empty(), "Expected non-empty text response");
+        assert!(result.usage.is_some(), "Expected usage information");
+        let usage = result.usage.unwrap();
+        assert!(usage.total_tokens > 0, "Expected total_tokens > 0");
+        assert!(
+            result.images.is_empty(),
+            "Text generation should not produce images"
+        );
+        assert!(
+            result.audio.is_none(),
+            "Text generation should not produce audio"
+        );
+
+        println!("✓ mistralrs gemma3n text generation test passed");
+        println!("  Response: {}", result.text);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_mistralrs_gemma3n_object_detection() {
+        require_expensive_tests!();
+
+        // Download a real photograph (Wikimedia Commons, public domain)
+        let image_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/220px-Cat_November_2010-1a.jpg";
+        let image_bytes = reqwest::get(image_url)
+            .await
+            .expect("Failed to download test image")
+            .bytes()
+            .await
+            .expect("Failed to read image bytes")
+            .to_vec();
+        assert!(
+            !image_bytes.is_empty(),
+            "Downloaded image should not be empty"
+        );
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(LocalMistralRsProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/gemma3n-vision".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "local/mistralrs".to_string(),
+                model_id: "google/gemma-3n-E2B-it".to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({
+                    "pipeline": "vision",
+                    "dtype": "f32",
+                    "isq": "Q4K"
+                }),
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/gemma3n-vision")
+            .await
+            .expect("Failed to get generator");
+
+        let messages = vec![Message {
+            role: uni_xervo::traits::MessageRole::User,
+            content: vec![
+                ContentBlock::Text("List all objects you can see in this image.".to_string()),
+                ContentBlock::Image(ImageInput::Bytes {
+                    data: image_bytes,
+                    media_type: "image/jpeg".to_string(),
+                }),
+            ],
+        }];
+        let options = GenerationOptions {
+            max_tokens: Some(200),
+            temperature: Some(0.1),
+            ..Default::default()
+        };
+
+        let result = model
+            .generate(&messages, options)
+            .await
+            .expect("Generation failed");
+
+        assert!(!result.text.is_empty(), "Expected non-empty text response");
+        assert!(
+            result.text.len() > 10,
+            "Expected substantive description, got: {}",
+            result.text
+        );
+        assert!(result.usage.is_some(), "Expected usage information");
+        assert!(
+            result.images.is_empty(),
+            "Vision model should not produce images"
+        );
+        assert!(
+            result.audio.is_none(),
+            "Vision model should not produce audio"
+        );
+
+        println!("✓ mistralrs gemma3n object detection test passed");
+        println!("  Response: {}", result.text);
     }
 }
