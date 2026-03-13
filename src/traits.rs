@@ -111,6 +111,90 @@ pub trait RerankerModel: Send + Sync {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Multimodal message types
+// ---------------------------------------------------------------------------
+
+/// The role of a message in a conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRole {
+    /// System-level instructions.
+    System,
+    /// A user turn.
+    User,
+    /// An assistant (model) turn.
+    Assistant,
+}
+
+/// Image data that can be passed as part of a [`ContentBlock`].
+#[derive(Debug, Clone)]
+pub enum ImageInput {
+    /// Raw image bytes with a MIME type (e.g. `"image/png"`).
+    Bytes { data: Vec<u8>, media_type: String },
+    /// A URL pointing to an image.
+    Url(String),
+}
+
+/// A single block of content within a [`Message`].
+#[derive(Debug, Clone)]
+pub enum ContentBlock {
+    /// Plain text content.
+    Text(String),
+    /// An image (for vision models).
+    Image(ImageInput),
+}
+
+/// A single message in a conversation, containing one or more content blocks.
+#[derive(Debug, Clone)]
+pub struct Message {
+    /// The role of the message sender.
+    pub role: MessageRole,
+    /// The content blocks that make up this message.
+    pub content: Vec<ContentBlock>,
+}
+
+impl Message {
+    /// Create a user message with a single text block.
+    pub fn user(text: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text(text.into())],
+        }
+    }
+
+    /// Create an assistant message with a single text block.
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text(text.into())],
+        }
+    }
+
+    /// Create a system message with a single text block.
+    pub fn system(text: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text(text.into())],
+        }
+    }
+
+    /// Extract the concatenated text from all [`ContentBlock::Text`] blocks.
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generation options and results
+// ---------------------------------------------------------------------------
+
 /// Sampling and length parameters for text generation.
 #[derive(Debug, Clone, Default)]
 pub struct GenerationOptions {
@@ -120,15 +204,43 @@ pub struct GenerationOptions {
     pub temperature: Option<f32>,
     /// Nucleus sampling threshold.
     pub top_p: Option<f32>,
+    /// Desired image width (for diffusion models; ignored by text/vision).
+    pub width: Option<u32>,
+    /// Desired image height (for diffusion models; ignored by text/vision).
+    pub height: Option<u32>,
 }
 
-/// The output of a text generation call.
+/// An image produced by a generation call (e.g. from a diffusion model).
+#[derive(Debug, Clone)]
+pub struct GeneratedImage {
+    /// Raw image bytes (e.g. PNG).
+    pub data: Vec<u8>,
+    /// MIME type (e.g. `"image/png"`).
+    pub media_type: String,
+}
+
+/// Audio output produced by a speech model.
+#[derive(Debug, Clone)]
+pub struct AudioOutput {
+    /// PCM sample data.
+    pub pcm_data: Vec<f32>,
+    /// Sample rate in Hz.
+    pub sample_rate: usize,
+    /// Number of audio channels.
+    pub channels: usize,
+}
+
+/// The output of a generation call.
 #[derive(Debug, Clone)]
 pub struct GenerationResult {
-    /// The generated text.
+    /// The generated text (may be empty for image/audio-only results).
     pub text: String,
     /// Token usage statistics, if reported by the provider.
     pub usage: Option<TokenUsage>,
+    /// Generated images (non-empty for diffusion models).
+    pub images: Vec<GeneratedImage>,
+    /// Generated audio (present for speech models).
+    pub audio: Option<AudioOutput>,
 }
 
 /// Token counts for a generation request.
@@ -142,16 +254,18 @@ pub struct TokenUsage {
     pub total_tokens: usize,
 }
 
-/// A model that generates text from a conversational message history.
+/// A model that generates text, images, or audio from a conversational
+/// message history.
 ///
-/// Messages are passed as a flat `&[String]` slice where even-indexed entries
-/// (0, 2, 4, ...) are user turns and odd-indexed entries are assistant turns.
+/// Messages carry explicit roles via [`Message`] and may contain multimodal
+/// content (text and images). The output [`GenerationResult`] is a union:
+/// text, images, and audio fields — consumers check what is populated.
 #[async_trait]
 pub trait GeneratorModel: Send + Sync {
     /// Generate a response given a conversation history and sampling options.
     async fn generate(
         &self,
-        messages: &[String],
+        messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult>;
 

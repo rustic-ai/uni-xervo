@@ -16,12 +16,13 @@ Core tasks:
 
 - `embed` for vector embeddings
 - `rerank` for relevance scoring
-- `generate` for LLM text generation
+- `generate` for text generation, vision, image generation, and speech synthesis
 
 ## Why Uni-Xervo?
 
 - Keep product code provider-agnostic.
 - Mix local and remote models in one runtime.
+- Multimodal generation: text, vision, diffusion (image gen), and speech pipelines.
 - Enforce config correctness with schema-backed option validation.
 - Control startup behavior with lazy, eager, or background warmup.
 - Add retries/timeouts per model alias instead of hard-coding behavior.
@@ -32,7 +33,7 @@ Core tasks:
 | --- | --- | --- |
 | `local/candle` | `embed` | `provider-candle` |
 | `local/fastembed` | `embed` | `provider-fastembed` |
-| `local/mistralrs` | `embed`, `generate` | `provider-mistralrs` |
+| `local/mistralrs` | `embed`, `generate` (text, vision, diffusion, speech) | `provider-mistralrs` |
 | `remote/openai` | `embed`, `generate` | `provider-openai` |
 | `remote/gemini` | `embed`, `generate` | `provider-gemini` |
 | `remote/vertexai` | `embed`, `generate` | `provider-vertexai` |
@@ -48,7 +49,7 @@ Use only the features you need.
 
 ```toml
 [dependencies]
-uni-xervo = { version = "0.1.0", default-features = false, features = ["provider-candle"] }
+uni-xervo = { version = "0.2.0", default-features = false, features = ["provider-candle"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -60,7 +61,7 @@ If you want local embeddings + OpenAI generation:
 
 ```toml
 [dependencies]
-uni-xervo = { version = "0.1.0", default-features = false, features = ["provider-candle", "provider-openai"] }
+uni-xervo = { version = "0.2.0", default-features = false, features = ["provider-candle", "provider-openai"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -145,7 +146,7 @@ Model catalogs are JSON arrays of `ModelAliasSpec`.
 ```rust
 use uni_xervo::provider::{LocalCandleProvider, RemoteOpenAIProvider};
 use uni_xervo::runtime::ModelRuntime;
-use uni_xervo::traits::GenerationOptions;
+use uni_xervo::traits::{GenerationOptions, Message};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -160,14 +161,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = llm
         .generate(
             &[
-                "You are a concise assistant.".to_string(),
-                "Understood.".to_string(),
-                "Explain what embeddings are in one paragraph.".to_string(),
+                Message::user("You are a concise assistant."),
+                Message::assistant("Understood."),
+                Message::user("Explain what embeddings are in one paragraph."),
             ],
             GenerationOptions {
                 max_tokens: Some(200),
                 temperature: Some(0.3),
                 top_p: Some(0.9),
+                ..Default::default()
             },
         )
         .await?;

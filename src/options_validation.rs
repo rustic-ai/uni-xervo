@@ -173,12 +173,13 @@ fn validate_vertexai_options(provider_id: &str, task: ModelTask, options: &Value
 }
 
 /// Validate mistral.rs-specific options: ISQ type, boolean flags, GGUF files,
-/// and embedding dimensions.
+/// pipeline selection, and embedding dimensions.
 fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
 
+    // All known keys across all pipelines
     reject_unknown_keys(
         provider_id,
         map,
@@ -192,53 +193,167 @@ fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Valu
             "embedding_dimensions",
             "gguf_files",
             "dtype",
+            "pipeline",
+            "diffusion_loader_type",
+            "speech_loader_type",
         ],
     )?;
 
-    require_string_keys(
-        provider_id,
-        map,
-        &["isq", "chat_template", "tokenizer_json", "dtype"],
-    )?;
-
-    for key in ["force_cpu", "paged_attention"] {
-        if let Some(value) = map.get(key)
-            && !value.is_boolean()
-        {
+    // Validate pipeline value if present
+    let pipeline = if let Some(value) = map.get("pipeline") {
+        let s = value.as_str().ok_or_else(|| {
+            RuntimeError::Config(format!(
+                "Option 'pipeline' for provider '{}' must be a string",
+                provider_id
+            ))
+        })?;
+        let valid = ["text", "vision", "diffusion", "speech"];
+        if !valid.contains(&s) {
             return Err(RuntimeError::Config(format!(
-                "Option '{}' for provider '{}' must be a boolean",
-                key, provider_id
+                "Option 'pipeline' for provider '{}' must be one of: text, vision, diffusion, speech",
+                provider_id
             )));
         }
-    }
+        s
+    } else {
+        "text"
+    };
 
-    if let Some(value) = map.get("dtype") {
-        if let Some(s) = value.as_str() {
-            let valid = ["auto", "f16", "bf16", "f32"];
-            if !valid.contains(&s.to_lowercase().as_str()) {
-                return Err(RuntimeError::Config(format!(
-                    "Option 'dtype' for provider '{}' must be one of: auto, f16, bf16, f32",
-                    provider_id
-                )));
+    // Pipeline-specific validation
+    match pipeline {
+        "vision" => {
+            if map.contains_key("gguf_files") {
+                return Err(RuntimeError::Config(
+                    "Option 'gguf_files' is not supported for the vision pipeline".to_string(),
+                ));
+            }
+            if map.contains_key("embedding_dimensions") {
+                return Err(RuntimeError::Config(
+                    "Option 'embedding_dimensions' is not supported for the vision pipeline"
+                        .to_string(),
+                ));
             }
         }
-    }
+        "diffusion" => {
+            // Validate diffusion_loader_type
+            if let Some(value) = map.get("diffusion_loader_type") {
+                let s = value.as_str().ok_or_else(|| {
+                    RuntimeError::Config(format!(
+                        "Option 'diffusion_loader_type' for provider '{}' must be a string",
+                        provider_id
+                    ))
+                })?;
+                let valid = ["flux", "flux_offloaded"];
+                if !valid.contains(&s) {
+                    return Err(RuntimeError::Config(format!(
+                        "Option 'diffusion_loader_type' for provider '{}' must be one of: flux, flux_offloaded",
+                        provider_id
+                    )));
+                }
+            }
+            // Reject options not relevant to diffusion
+            for key in [
+                "isq",
+                "paged_attention",
+                "max_num_seqs",
+                "chat_template",
+                "tokenizer_json",
+                "embedding_dimensions",
+                "gguf_files",
+                "speech_loader_type",
+            ] {
+                if map.contains_key(key) {
+                    return Err(RuntimeError::Config(format!(
+                        "Option '{}' is not supported for the diffusion pipeline",
+                        key
+                    )));
+                }
+            }
+        }
+        "speech" => {
+            // Validate speech_loader_type
+            if let Some(value) = map.get("speech_loader_type") {
+                let s = value.as_str().ok_or_else(|| {
+                    RuntimeError::Config(format!(
+                        "Option 'speech_loader_type' for provider '{}' must be a string",
+                        provider_id
+                    ))
+                })?;
+                let valid = ["dia"];
+                if !valid.contains(&s) {
+                    return Err(RuntimeError::Config(format!(
+                        "Option 'speech_loader_type' for provider '{}' must be one of: dia",
+                        provider_id
+                    )));
+                }
+            }
+            // Reject options not relevant to speech
+            for key in [
+                "isq",
+                "paged_attention",
+                "max_num_seqs",
+                "chat_template",
+                "tokenizer_json",
+                "embedding_dimensions",
+                "gguf_files",
+                "diffusion_loader_type",
+            ] {
+                if map.contains_key(key) {
+                    return Err(RuntimeError::Config(format!(
+                        "Option '{}' is not supported for the speech pipeline",
+                        key
+                    )));
+                }
+            }
+        }
+        _ => {
+            // text pipeline (default) — full validation
+            require_string_keys(
+                provider_id,
+                map,
+                &["isq", "chat_template", "tokenizer_json", "dtype"],
+            )?;
 
-    require_positive_u64(provider_id, map, "max_num_seqs")?;
-    require_embedding_dimensions(provider_id, task, map)?;
+            for key in ["force_cpu", "paged_attention"] {
+                if let Some(value) = map.get(key)
+                    && !value.is_boolean()
+                {
+                    return Err(RuntimeError::Config(format!(
+                        "Option '{}' for provider '{}' must be a boolean",
+                        key, provider_id
+                    )));
+                }
+            }
 
-    if let Some(value) = map.get("gguf_files") {
-        let Some(items) = value.as_array() else {
-            return Err(RuntimeError::Config(format!(
-                "Option 'gguf_files' for provider '{}' must be an array of strings",
-                provider_id
-            )));
-        };
-        if items.iter().any(|item| !item.is_string()) {
-            return Err(RuntimeError::Config(format!(
-                "Option 'gguf_files' for provider '{}' must be an array of strings",
-                provider_id
-            )));
+            if let Some(value) = map.get("dtype") {
+                if let Some(s) = value.as_str() {
+                    let valid = ["auto", "f16", "bf16", "f32"];
+                    if !valid.contains(&s.to_lowercase().as_str()) {
+                        return Err(RuntimeError::Config(format!(
+                            "Option 'dtype' for provider '{}' must be one of: auto, f16, bf16, f32",
+                            provider_id
+                        )));
+                    }
+                }
+            }
+
+            require_positive_u64(provider_id, map, "max_num_seqs")?;
+            require_embedding_dimensions(provider_id, task, map)?;
+
+            if let Some(value) = map.get("gguf_files") {
+                let Some(items) = value.as_array() else {
+                    return Err(RuntimeError::Config(format!(
+                        "Option 'gguf_files' for provider '{}' must be an array of strings",
+                        provider_id
+                    )));
+                };
+                if items.iter().any(|item| !item.is_string()) {
+                    return Err(RuntimeError::Config(format!(
+                        "Option 'gguf_files' for provider '{}' must be an array of strings",
+                        provider_id
+                    )));
+                }
+            }
         }
     }
 

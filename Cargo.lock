@@ -6118,16 +6118,18 @@ checksum = "eeba86d422ce181a719445e51872fa30f1f7413b62becb52e95ec91aa262d85c"
 
 [[package]]
 name = "uni-xervo"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "candle-core",
  "candle-nn",
  "candle-transformers",
  "criterion",
  "fastembed",
  "hf-hub",
+ "image",
  "metrics",
  "metrics-util",
  "mistralrs",

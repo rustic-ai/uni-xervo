@@ -134,21 +134,23 @@ impl RemoteProviderBase {
 }
 
 /// Build a Google-style generateContent payload used by Gemini and Vertex AI.
-///
-/// Messages alternate roles: even indices are `"user"`, odd are `"model"`.
 #[cfg(any(feature = "provider-gemini", feature = "provider-vertexai"))]
 pub(crate) fn build_google_generate_payload(
-    messages: &[String],
+    messages: &[crate::traits::Message],
     options: &crate::traits::GenerationOptions,
 ) -> serde_json::Value {
+    use crate::traits::MessageRole;
+
     let contents: Vec<_> = messages
         .iter()
-        .enumerate()
-        .map(|(i, message)| {
-            let role = if i % 2 == 0 { "user" } else { "model" };
+        .map(|message| {
+            let role = match message.role {
+                MessageRole::User | MessageRole::System => "user",
+                MessageRole::Assistant => "model",
+            };
             json!({
                 "role": role,
-                "parts": [{ "text": message }]
+                "parts": [{ "text": message.text() }]
             })
         })
         .collect();

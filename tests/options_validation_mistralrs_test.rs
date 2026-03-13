@@ -5,9 +5,13 @@ use uni_xervo::provider::LocalMistralRsProvider;
 use uni_xervo::runtime::ModelRuntime;
 
 fn mistralrs_spec(options: serde_json::Value) -> ModelAliasSpec {
+    mistralrs_spec_with_task(ModelTask::Embed, options)
+}
+
+fn mistralrs_spec_with_task(task: ModelTask, options: serde_json::Value) -> ModelAliasSpec {
     ModelAliasSpec {
-        alias: "embed/default".to_string(),
-        task: ModelTask::Embed,
+        alias: "test/default".to_string(),
+        task,
         provider_id: "local/mistralrs".to_string(),
         model_id: "test-model".to_string(),
         revision: None,
@@ -89,4 +93,183 @@ async fn builder_accepts_dtype_with_other_options() {
         .await;
 
     assert!(runtime.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline validation tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn builder_accepts_valid_pipeline_vision() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "vision"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_accepts_valid_pipeline_diffusion() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "diffusion"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_accepts_valid_pipeline_speech() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "speech"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_rejects_invalid_pipeline() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "audio"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must be one of")
+    );
+}
+
+#[tokio::test]
+async fn builder_rejects_gguf_for_vision_pipeline() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "vision", "gguf_files": ["model.gguf"]}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("not supported for the vision pipeline")
+    );
+}
+
+#[tokio::test]
+async fn builder_accepts_diffusion_loader_type() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "diffusion", "diffusion_loader_type": "flux"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_rejects_invalid_diffusion_loader_type() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "diffusion", "diffusion_loader_type": "invalid"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must be one of")
+    );
+}
+
+#[tokio::test]
+async fn builder_rejects_isq_for_diffusion_pipeline() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "diffusion", "isq": "Q4K"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("not supported for the diffusion pipeline")
+    );
+}
+
+#[tokio::test]
+async fn builder_accepts_speech_loader_type() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "speech", "speech_loader_type": "dia"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_ok());
+}
+
+#[tokio::test]
+async fn builder_rejects_invalid_speech_loader_type() {
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalMistralRsProvider::new())
+        .catalog(vec![mistralrs_spec_with_task(
+            ModelTask::Generate,
+            serde_json::json!({"pipeline": "speech", "speech_loader_type": "invalid"}),
+        )])
+        .build()
+        .await;
+
+    assert!(runtime.is_err());
+    assert!(
+        runtime
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must be one of")
+    );
 }

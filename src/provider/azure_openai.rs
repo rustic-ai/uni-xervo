@@ -3,7 +3,7 @@ use crate::error::{Result, RuntimeError};
 use crate::provider::remote_common::{RemoteProviderBase, check_http_status, resolve_api_key};
 use crate::traits::{
     EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel, LoadedModelHandle,
-    ModelProvider, ProviderCapabilities, ProviderHealth, TokenUsage,
+    Message, MessageRole, ModelProvider, ProviderCapabilities, ProviderHealth, TokenUsage,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -221,15 +221,18 @@ struct AzureOpenAIGeneratorModel {
 impl GeneratorModel for AzureOpenAIGeneratorModel {
     async fn generate(
         &self,
-        messages: &[String],
+        messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult> {
         let messages: Vec<serde_json::Value> = messages
             .iter()
-            .enumerate()
-            .map(|(i, content)| {
-                let role = if i % 2 == 0 { "user" } else { "assistant" };
-                json!({ "role": role, "content": content })
+            .map(|msg| {
+                let role = match msg.role {
+                    MessageRole::System => "system",
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                };
+                json!({ "role": role, "content": msg.text() })
             })
             .collect();
 
@@ -276,7 +279,12 @@ impl GeneratorModel for AzureOpenAIGeneratorModel {
                     total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as usize,
                 });
 
-                Ok(GenerationResult { text, usage })
+                Ok(GenerationResult {
+                    text,
+                    usage,
+                    images: vec![],
+                    audio: None,
+                })
             })
             .await
     }

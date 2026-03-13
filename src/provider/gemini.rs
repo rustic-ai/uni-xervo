@@ -5,7 +5,7 @@ use crate::provider::remote_common::{
 };
 use crate::traits::{
     EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel, LoadedModelHandle,
-    ModelProvider, ProviderCapabilities, ProviderHealth,
+    Message, ModelProvider, ProviderCapabilities, ProviderHealth,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -191,10 +191,10 @@ pub struct GeminiGeneratorModel {
 impl GeneratorModel for GeminiGeneratorModel {
     async fn generate(
         &self,
-        messages: &[String],
+        messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult> {
-        let messages: Vec<String> = messages.iter().map(|s| s.to_string()).collect();
+        let messages: Vec<Message> = messages.to_vec();
 
         self.cb
             .call(move || async move {
@@ -243,6 +243,8 @@ impl GeneratorModel for GeminiGeneratorModel {
                 Ok(GenerationResult {
                     text,
                     usage: None,
+                    images: vec![],
+                    audio: None,
                 })
             })
             .await
@@ -340,10 +342,11 @@ mod tests {
 
     #[test]
     fn generation_payload_alternates_roles() {
+        use crate::traits::Message;
         let messages = vec![
-            "user question".to_string(),
-            "assistant answer".to_string(),
-            "user follow-up".to_string(),
+            Message::user("user question"),
+            Message::assistant("assistant answer"),
+            Message::user("user follow-up"),
         ];
         let payload = build_google_generate_payload(&messages, &GenerationOptions::default());
         let contents = payload["contents"].as_array().unwrap();
@@ -355,13 +358,15 @@ mod tests {
 
     #[test]
     fn generation_payload_includes_generation_options() {
-        let messages = vec!["hello".to_string()];
+        use crate::traits::Message;
+        let messages = vec![Message::user("hello")];
         let payload = build_google_generate_payload(
             &messages,
             &GenerationOptions {
                 max_tokens: Some(64),
                 temperature: Some(0.7),
                 top_p: Some(0.9),
+                ..Default::default()
             },
         );
 

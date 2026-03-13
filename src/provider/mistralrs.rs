@@ -1,8 +1,9 @@
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
 use crate::traits::{
-    EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel, LoadedModelHandle,
-    ModelProvider, ProviderCapabilities, ProviderHealth, TokenUsage,
+    ContentBlock, EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel,
+    LoadedModelHandle, Message, MessageRole, ModelProvider, ProviderCapabilities, ProviderHealth,
+    TokenUsage,
 };
 use async_trait::async_trait;
 use mistralrs::{
@@ -200,7 +201,25 @@ impl LocalMistralRsProvider {
         spec: &ModelAliasSpec,
         opts: &MistralRsOptions,
     ) -> Result<LoadedModelHandle> {
-        tracing::info!(model_id = %spec.model_id, "Loading mistralrs generator model");
+        let pipeline = opts.pipeline.as_deref().unwrap_or("text");
+        match pipeline {
+            "text" => self.load_text_generator(spec, opts).await,
+            "vision" => self.load_vision_generator(spec, opts).await,
+            "diffusion" => self.load_diffusion_generator(spec, opts).await,
+            "speech" => self.load_speech_generator(spec, opts).await,
+            _ => Err(RuntimeError::Config(format!(
+                "Unknown pipeline '{}'. Valid: text, vision, diffusion, speech",
+                pipeline
+            ))),
+        }
+    }
+
+    async fn load_text_generator(
+        &self,
+        spec: &ModelAliasSpec,
+        opts: &MistralRsOptions,
+    ) -> Result<LoadedModelHandle> {
+        tracing::info!(model_id = %spec.model_id, "Loading mistralrs text generator model");
 
         let model = if let Some(files) = &opts.gguf_files {
             if opts.dtype.is_some() {
@@ -285,6 +304,152 @@ impl LocalMistralRsProvider {
         let handle: Arc<dyn GeneratorModel> = Arc::new(service);
         Ok(Arc::new(handle) as LoadedModelHandle)
     }
+
+    async fn load_vision_generator(
+        &self,
+        spec: &ModelAliasSpec,
+        opts: &MistralRsOptions,
+    ) -> Result<LoadedModelHandle> {
+        use mistralrs::VisionModelBuilder;
+
+        if opts.gguf_files.is_some() {
+            return Err(RuntimeError::Config(
+                "GGUF is not supported for the vision pipeline".to_string(),
+            ));
+        }
+
+        tracing::info!(model_id = %spec.model_id, "Loading mistralrs vision generator model");
+
+        let mut builder = VisionModelBuilder::new(&spec.model_id);
+        let dtype = resolve_model_dtype(opts)?;
+        builder = builder.with_dtype(dtype);
+
+        if let Some(ref isq_str) = opts.isq {
+            let isq = parse_isq_type(isq_str)?;
+            builder = builder.with_isq(isq);
+        }
+        if opts.force_cpu {
+            builder = builder.with_force_cpu();
+        }
+        if let Some(ref rev) = spec.revision {
+            builder = builder.with_hf_revision(rev);
+        }
+        if opts.paged_attention {
+            builder = builder
+                .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())
+                .map_err(|e| {
+                    RuntimeError::Load(format!("Failed to configure paged attention: {}", e))
+                })?;
+        }
+        if let Some(ref chat_tmpl) = opts.chat_template {
+            builder = builder.with_chat_template(chat_tmpl);
+        }
+        if let Some(ref tok_json) = opts.tokenizer_json {
+            builder = builder.with_tokenizer_json(tok_json);
+        }
+        if let Some(max_seqs) = opts.max_num_seqs {
+            builder = builder.with_max_num_seqs(max_seqs);
+        }
+        builder = builder.with_logging();
+
+        let model = builder.build().await.map_err(|e| {
+            RuntimeError::Load(format!("Failed to build mistralrs vision model: {}", e))
+        })?;
+
+        tracing::info!(model_id = %spec.model_id, "mistralrs vision model loaded");
+
+        let service = MistralRsVisionService {
+            model,
+            model_id: spec.model_id.clone(),
+        };
+        let handle: Arc<dyn GeneratorModel> = Arc::new(service);
+        Ok(Arc::new(handle) as LoadedModelHandle)
+    }
+
+    async fn load_diffusion_generator(
+        &self,
+        spec: &ModelAliasSpec,
+        opts: &MistralRsOptions,
+    ) -> Result<LoadedModelHandle> {
+        use mistralrs::{DiffusionLoaderType, DiffusionModelBuilder};
+
+        let loader_type = match opts.diffusion_loader_type.as_deref().unwrap_or("flux") {
+            "flux" => DiffusionLoaderType::Flux,
+            "flux_offloaded" => DiffusionLoaderType::FluxOffloaded,
+            other => {
+                return Err(RuntimeError::Config(format!(
+                    "Unknown diffusion_loader_type '{}'. Valid: flux, flux_offloaded",
+                    other
+                )));
+            }
+        };
+
+        tracing::info!(model_id = %spec.model_id, "Loading mistralrs diffusion model");
+
+        let mut builder = DiffusionModelBuilder::new(&spec.model_id, loader_type);
+        if opts.force_cpu {
+            builder = builder.with_force_cpu();
+        }
+        let dtype = resolve_model_dtype(opts)?;
+        builder = builder.with_dtype(dtype);
+        builder = builder.with_logging();
+
+        let model = builder.build().await.map_err(|e| {
+            RuntimeError::Load(format!("Failed to build mistralrs diffusion model: {}", e))
+        })?;
+
+        tracing::info!(model_id = %spec.model_id, "mistralrs diffusion model loaded");
+
+        let service = MistralRsDiffusionService {
+            model,
+            #[allow(dead_code)]
+            model_id: spec.model_id.clone(),
+        };
+        let handle: Arc<dyn GeneratorModel> = Arc::new(service);
+        Ok(Arc::new(handle) as LoadedModelHandle)
+    }
+
+    async fn load_speech_generator(
+        &self,
+        spec: &ModelAliasSpec,
+        opts: &MistralRsOptions,
+    ) -> Result<LoadedModelHandle> {
+        use mistralrs::{SpeechLoaderType, SpeechModelBuilder};
+
+        let loader_type = match opts.speech_loader_type.as_deref().unwrap_or("dia") {
+            "dia" => SpeechLoaderType::Dia,
+            other => {
+                return Err(RuntimeError::Config(format!(
+                    "Unknown speech_loader_type '{}'. Valid: dia",
+                    other
+                )));
+            }
+        };
+
+        tracing::info!(model_id = %spec.model_id, "Loading mistralrs speech model");
+
+        let mut builder = SpeechModelBuilder::new(&spec.model_id, loader_type);
+        if opts.force_cpu {
+            builder = builder.with_force_cpu();
+        }
+        let dtype = resolve_model_dtype(opts)?;
+        builder = builder.with_dtype(dtype);
+        builder = builder.with_logging();
+
+        let model = builder.build().await.map_err(|e| {
+            RuntimeError::Load(format!("Failed to build mistralrs speech model: {}", e))
+        })?;
+
+        tracing::info!(model_id = %spec.model_id, "mistralrs speech model loaded");
+
+        let service = MistralRsSpeechService {
+            model,
+            #[allow(dead_code)]
+            model_id: spec.model_id.clone(),
+        };
+        let handle: Arc<dyn GeneratorModel> = Arc::new(service);
+        Ok(Arc::new(handle) as LoadedModelHandle)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +479,12 @@ struct MistralRsOptions {
     gguf_files: Option<Vec<String>>,
     /// Model data type: "auto", "f16", "bf16", "f32"
     dtype: Option<String>,
+    /// Pipeline type: "text" (default), "vision", "diffusion", "speech"
+    pipeline: Option<String>,
+    /// Diffusion loader type: "flux", "flux_offloaded"
+    diffusion_loader_type: Option<String>,
+    /// Speech loader type: "dia"
+    speech_loader_type: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -458,20 +629,18 @@ struct MistralRsGeneratorService {
 impl GeneratorModel for MistralRsGeneratorService {
     async fn generate(
         &self,
-        messages: &[String],
+        messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult> {
         let mut request = RequestBuilder::new();
 
-        // Map messages to alternating User/Assistant roles.
-        // Even-indexed messages (0, 2, 4, ...) are User, odd-indexed are Assistant.
-        for (i, msg) in messages.iter().enumerate() {
-            let role = if i % 2 == 0 {
-                TextMessageRole::User
-            } else {
-                TextMessageRole::Assistant
+        for msg in messages {
+            let role = match msg.role {
+                MessageRole::System => TextMessageRole::System,
+                MessageRole::User => TextMessageRole::User,
+                MessageRole::Assistant => TextMessageRole::Assistant,
             };
-            request = request.add_message(role, msg);
+            request = request.add_message(role, msg.text());
         }
 
         // Apply sampling parameters
@@ -513,6 +682,230 @@ impl GeneratorModel for MistralRsGeneratorService {
         Ok(GenerationResult {
             text,
             usage: Some(usage),
+            images: vec![],
+            audio: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vision service
+// ---------------------------------------------------------------------------
+
+struct MistralRsVisionService {
+    model: Model,
+    #[allow(dead_code)]
+    model_id: String,
+}
+
+#[async_trait]
+impl GeneratorModel for MistralRsVisionService {
+    async fn generate(
+        &self,
+        messages: &[Message],
+        options: GenerationOptions,
+    ) -> Result<GenerationResult> {
+        let mut request = RequestBuilder::new();
+
+        for msg in messages {
+            let role = match msg.role {
+                MessageRole::System => TextMessageRole::System,
+                MessageRole::User => TextMessageRole::User,
+                MessageRole::Assistant => TextMessageRole::Assistant,
+            };
+
+            // Collect images from this message
+            let images: Vec<image::DynamicImage> = msg
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Image(img_input) => {
+                        let bytes = match img_input {
+                            crate::traits::ImageInput::Bytes { data, .. } => data.clone(),
+                            crate::traits::ImageInput::Url(_url) => {
+                                tracing::warn!(
+                                    "URL-based image input not yet supported in vision pipeline"
+                                );
+                                return None;
+                            }
+                        };
+                        match image::load_from_memory(&bytes) {
+                            Ok(img) => Some(img),
+                            Err(e) => {
+                                tracing::error!("Failed to decode image: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            let text = msg.text();
+
+            if images.is_empty() {
+                request = request.add_message(role, text);
+            } else {
+                request = request
+                    .add_image_message(role, text, images, &self.model)
+                    .map_err(|e| {
+                        RuntimeError::InferenceError(format!("Failed to add vision message: {}", e))
+                    })?;
+            }
+        }
+
+        // Apply sampling parameters
+        let has_sampling = options.temperature.is_some()
+            || options.top_p.is_some()
+            || options.max_tokens.is_some();
+
+        if has_sampling {
+            if let Some(temp) = options.temperature {
+                request = request.set_sampler_temperature(temp as f64);
+            }
+            if let Some(top_p) = options.top_p {
+                request = request.set_sampler_topp(top_p as f64);
+            }
+            if let Some(max_tokens) = options.max_tokens {
+                request = request.set_sampler_max_len(max_tokens);
+            }
+        } else {
+            request = request.set_deterministic_sampler();
+        }
+
+        let response =
+            self.model.send_chat_request(request).await.map_err(|e| {
+                RuntimeError::InferenceError(format!("Vision inference failed: {}", e))
+            })?;
+
+        let text = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.as_deref())
+            .unwrap_or("")
+            .to_string();
+
+        let usage = TokenUsage {
+            prompt_tokens: response.usage.prompt_tokens,
+            completion_tokens: response.usage.completion_tokens,
+            total_tokens: response.usage.total_tokens,
+        };
+
+        Ok(GenerationResult {
+            text,
+            usage: Some(usage),
+            images: vec![],
+            audio: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diffusion service
+// ---------------------------------------------------------------------------
+
+struct MistralRsDiffusionService {
+    model: Model,
+    #[allow(dead_code)]
+    model_id: String,
+}
+
+#[async_trait]
+impl GeneratorModel for MistralRsDiffusionService {
+    async fn generate(
+        &self,
+        messages: &[Message],
+        options: GenerationOptions,
+    ) -> Result<GenerationResult> {
+        use mistralrs::DiffusionGenerationParams;
+
+        // Extract the text prompt from messages
+        let prompt = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let height = options.height.unwrap_or(720) as usize;
+        let width = options.width.unwrap_or(1280) as usize;
+
+        let response = self
+            .model
+            .generate_image(
+                prompt,
+                mistralrs::ImageGenerationResponseFormat::B64Json,
+                DiffusionGenerationParams { height, width },
+            )
+            .await
+            .map_err(|e| {
+                RuntimeError::InferenceError(format!("Diffusion inference failed: {}", e))
+            })?;
+
+        // The response is a base64-encoded image
+        let b64 = response.data[0].b64_json.as_deref().ok_or_else(|| {
+            RuntimeError::InferenceError("Diffusion response missing b64_json data".to_string())
+        })?;
+        let image_data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+            .map_err(|e| {
+                RuntimeError::InferenceError(format!("Failed to decode diffusion output: {}", e))
+            })?;
+
+        Ok(GenerationResult {
+            text: String::new(),
+            usage: None,
+            images: vec![crate::traits::GeneratedImage {
+                data: image_data,
+                media_type: "image/png".to_string(),
+            }],
+            audio: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Speech service
+// ---------------------------------------------------------------------------
+
+struct MistralRsSpeechService {
+    model: Model,
+    #[allow(dead_code)]
+    model_id: String,
+}
+
+#[async_trait]
+impl GeneratorModel for MistralRsSpeechService {
+    async fn generate(
+        &self,
+        messages: &[Message],
+        _options: GenerationOptions,
+    ) -> Result<GenerationResult> {
+        // Extract the text prompt from messages
+        let prompt = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let (pcm_data, sample_rate, channels) =
+            self.model.generate_speech(prompt).await.map_err(|e| {
+                RuntimeError::InferenceError(format!("Speech inference failed: {}", e))
+            })?;
+
+        Ok(GenerationResult {
+            text: String::new(),
+            usage: None,
+            images: vec![],
+            audio: Some(crate::traits::AudioOutput {
+                pcm_data: (*pcm_data).clone(),
+                sample_rate,
+                channels,
+            }),
         })
     }
 }
