@@ -2344,7 +2344,10 @@ mod mistralrs_tests {
             .await
             .expect("Generation failed");
 
-        assert!(!result.text.is_empty(), "Generated text should not be empty");
+        assert!(
+            !result.text.is_empty(),
+            "Generated text should not be empty"
+        );
         assert!(result.usage.is_some(), "Usage stats should be present");
         assert!(
             result.images.is_empty(),
@@ -2568,9 +2571,7 @@ mod mistralrs_tests {
             .await
             .expect("Failed to resolve speech generator model");
 
-        let messages = vec![Message::user(
-            "Hello, this is a test of speech synthesis.",
-        )];
+        let messages = vec![Message::user("Hello, this is a test of speech synthesis.")];
         let options = GenerationOptions::default();
 
         let result = model
@@ -2683,7 +2684,10 @@ mod mistralrs_tests {
             .await
             .expect("Failed to read image bytes")
             .to_vec();
-        assert!(!image_bytes.is_empty(), "Downloaded image should not be empty");
+        assert!(
+            !image_bytes.is_empty(),
+            "Downloaded image should not be empty"
+        );
 
         let runtime = ModelRuntime::builder()
             .register_provider(LocalMistralRsProvider::new())
