@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-05
+
+### Added
+
+- **`remote/llamacpp` embedding provider** (`provider-llamacpp`, default-on) —
+  targets a llama.cpp `llama-server`. `llama-server` never truncates embedding
+  input and rejects prompts longer than its physical batch / context, so the
+  provider bounds every input deterministically before calling
+  `/v1/embeddings`: texts that provably fit (≤ `max_input_tokens - 2` chars)
+  go straight through as strings; longer texts are tokenized via the server's
+  native `/tokenize` (`add_special: true`) and, when over budget, truncated to
+  the first `max_input_tokens - 1` ids plus the trailing special token and sent
+  as a token array (no lossy detokenize round trip). Batches keep input order;
+  responses are strictly decoded (count, `index`, width). Required options:
+  `base_url`, `max_input_tokens`, `embedding_dimensions`; optional
+  `tokenizer_base_url`, `api_key_env` (no key by default), and
+  `request_timeout_secs`. Server input-size rejections map to a non-retryable
+  `InferenceError` that does not trip the circuit breaker. Ships with an
+  in-process mock `llama-server` test harness (`tests/common/mock_http.rs`) and
+  an `EXPENSIVE_TESTS` smoke test against a real server.
+
+### Changed
+
+- **Internal:** the OpenAI-format embeddings response decoder is shared via
+  `remote_common::parse_openai_embeddings_response`; `remote/openai` behaviour
+  is unchanged (lenient mode), `remote/llamacpp` uses strict mode.
+
 ## [0.17.0] - 2026-06-23
 
 ### Added

@@ -59,6 +59,7 @@ default = []
 provider-candle = ["uni-xervo/provider-candle"]
 provider-onnx = ["uni-xervo/provider-onnx"]
 provider-openai = ["uni-xervo/provider-openai"]
+provider-llamacpp = ["uni-xervo/provider-llamacpp"]
 provider-mistralrs = ["uni-xervo/provider-mistralrs"]
 gpu-cuda = ["uni-xervo/gpu-cuda"]
 
@@ -85,6 +86,9 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "provider-openai")]
     let builder = builder.register_provider(uni_xervo::provider::RemoteOpenAIProvider::new());
+
+    #[cfg(feature = "provider-llamacpp")]
+    let builder = builder.register_provider(uni_xervo::provider::RemoteLlamaCppProvider::new());
 
     #[cfg(feature = "provider-mistralrs")]
     let builder = builder.register_provider(uni_xervo::provider::mistralrs::LocalMistralRsProvider::new());
@@ -126,6 +130,7 @@ declare -a feature_sets=(
     "provider-candle"
     "provider-onnx"
     "provider-openai"
+    "provider-llamacpp"
     "provider-mistralrs"
 )
 

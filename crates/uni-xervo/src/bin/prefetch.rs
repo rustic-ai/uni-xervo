@@ -8,7 +8,7 @@
 //!
 //! Models with remote providers (`remote/openai`, `remote/gemini`, `remote/vertexai`,
 //! `remote/mistral`, `remote/anthropic`, `remote/voyageai`, `remote/cohere`,
-//! `remote/azure-openai`, etc.) are skipped
+//! `remote/azure-openai`, `remote/llamacpp`, etc.) are skipped
 //! because they have no local weights to cache.
 //!
 //! If a model is not pre-cached the runtime will still download it on first use —

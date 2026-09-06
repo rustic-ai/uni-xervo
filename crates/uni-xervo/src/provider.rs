@@ -23,6 +23,7 @@
 //! | `voyageai` | `provider-voyageai` | Voyage AI |
 //! | `cohere` | `provider-cohere` | Cohere |
 //! | `azure_openai` | `provider-azure-openai` | Azure OpenAI |
+//! | `llamacpp` | `provider-llamacpp` | llama.cpp `llama-server` (OpenAI-compatible embeddings + native `/tokenize`) |
 
 #[cfg(feature = "provider-candle")]
 pub mod candle;
@@ -36,6 +37,7 @@ pub mod candle;
     feature = "provider-voyageai",
     feature = "provider-cohere",
     feature = "provider-azure-openai",
+    feature = "provider-llamacpp",
 ))]
 pub(crate) mod remote_common;
 
@@ -71,6 +73,9 @@ pub mod cohere;
 
 #[cfg(feature = "provider-azure-openai")]
 pub mod azure_openai;
+
+#[cfg(feature = "provider-llamacpp")]
+pub mod llamacpp;
 
 #[cfg(feature = "provider-whisper-cpp")]
 pub mod local_whisper_cpp;
@@ -108,6 +113,9 @@ pub use cohere::RemoteCohereProvider;
 
 #[cfg(feature = "provider-azure-openai")]
 pub use azure_openai::RemoteAzureOpenAIProvider;
+
+#[cfg(feature = "provider-llamacpp")]
+pub use llamacpp::RemoteLlamaCppProvider;
 
 #[cfg(feature = "provider-whisper-cpp")]
 pub use local_whisper_cpp::LocalWhisperCppProvider;

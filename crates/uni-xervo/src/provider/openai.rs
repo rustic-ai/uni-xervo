@@ -1,6 +1,8 @@
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
-use crate::provider::remote_common::{RemoteProviderBase, check_http_status, resolve_api_key};
+use crate::provider::remote_common::{
+    RemoteProviderBase, check_http_status, parse_openai_embeddings_response, resolve_api_key,
+};
 use crate::traits::{
     EmbedResult, EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel,
     LoadedModelHandle, Message, MessageRole, ModelProvider, ProviderCapabilities, ProviderHealth,
@@ -165,32 +167,9 @@ impl EmbeddingModel for OpenAIEmbeddingModel {
                     .await
                     .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
 
-                let mut vectors = Vec::new();
-                if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
-                    for item in data {
-                        if let Some(embedding) = item.get("embedding").and_then(|e| e.as_array()) {
-                            let vec: Vec<f32> = embedding
-                                .iter()
-                                .filter_map(|v| v.as_f64().map(|f| f as f32))
-                                .collect();
-                            vectors.push(vec);
-                        }
-                    }
-                }
-
-                // OpenAI embeddings response carries a `usage` object with
-                // `prompt_tokens` and `total_tokens` (no completion tokens).
-                let usage = body.get("usage").map(|u| {
-                    let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as usize;
-                    let total = u["total_tokens"].as_u64().unwrap_or(prompt as u64) as usize;
-                    TokenUsage {
-                        prompt_tokens: prompt,
-                        completion_tokens: 0,
-                        total_tokens: total,
-                    }
-                });
-
-                Ok(EmbedResult { vectors, usage })
+                // Lenient decode (historical behaviour): see
+                // `remote_common::parse_openai_embeddings_response`.
+                parse_openai_embeddings_response("OpenAI", &body, None)
             })
             .await
     }

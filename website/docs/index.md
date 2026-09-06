@@ -38,6 +38,7 @@ Uni-Xervo is a unified Rust runtime for model serving across local and remote pr
 | `remote/voyageai` | remote | ✓ | ✓ | | | | | | | | | `VOYAGE_API_KEY` |
 | `remote/cohere` | remote | ✓ | ✓ | ✓ | | | ✓ | | | | | `CO_API_KEY` |
 | `remote/azure-openai` | remote | ✓ | | ✓ | | | | | | | | `AZURE_OPENAI_API_KEY` |
+| `remote/llamacpp` | remote | ✓ | | | | | | | | | | none (optional `api_key_env`) |
 
 **Reading the matrix**:
 

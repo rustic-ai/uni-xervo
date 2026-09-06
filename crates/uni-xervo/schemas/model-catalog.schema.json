@@ -141,6 +141,28 @@
         "if": {
           "properties": {
             "provider_id": {
+              "const": "remote/llamacpp"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "required": [
+            "options"
+          ],
+          "properties": {
+            "options": {
+              "$ref": "./provider-options/llamacpp.schema.json"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
               "const": "remote/gemini"
             }
           },

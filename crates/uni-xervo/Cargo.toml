@@ -26,6 +26,7 @@ default = [
     "provider-voyageai",
     "provider-cohere",
     "provider-azure-openai",
+    "provider-llamacpp",
 ]
 
 # ─── Local inference providers ──────────────────────────────────────────────
@@ -87,6 +88,9 @@ provider-anthropic = ["dep:reqwest"]
 provider-voyageai = ["dep:reqwest"]
 provider-cohere = ["dep:reqwest", "dep:base64"]
 provider-azure-openai = ["dep:reqwest"]
+# llama.cpp `llama-server`: OpenAI-compatible `/v1/embeddings` plus the native
+# `/tokenize` endpoint for deterministic, tokenizer-aware truncation.
+provider-llamacpp = ["dep:reqwest"]
 
 # ─── GPU acceleration ───────────────────────────────────────────────────────
 # Two opt-in capability features. CPU is always available; GPU is purely

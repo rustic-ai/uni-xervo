@@ -8,7 +8,7 @@ This page describes the full developer experience for `local/onnx`.
 
 ```toml
 [dependencies]
-uni-xervo = "0.16"
+uni-xervo = "0.18"
 tokio = { version = "1", features = ["full"] }
 ndarray = "0.17"
 ```
@@ -16,19 +16,19 @@ ndarray = "0.17"
 If you want a lean ONNX-only build (no candle, no mistralrs, no remote providers):
 
 ```toml
-uni-xervo = { version = "0.16", default-features = false, features = ["provider-onnx"] }
+uni-xervo = { version = "0.18", default-features = false, features = ["provider-onnx"] }
 ```
 
 For CUDA-enabled ORT builds (Linux / Windows + NVIDIA), add `gpu-cuda`:
 
 ```toml
-uni-xervo = { version = "0.16", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.18", features = ["gpu-cuda"] }
 ```
 
 For Apple GPU + Neural Engine via the CoreML EP, add `gpu-metal`:
 
 ```toml
-uni-xervo = { version = "0.16", features = ["gpu-metal"] }
+uni-xervo = { version = "0.18", features = ["gpu-metal"] }
 ```
 
 ## 2. Decide how the model is addressed

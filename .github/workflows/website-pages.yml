@@ -54,7 +54,7 @@ jobs:
         # local/onnx provider as of 0.8.0.
         run: >-
           cargo doc -p uni-xervo --no-deps --features
-          provider-candle,provider-onnx,provider-openai,provider-gemini,provider-vertexai,provider-mistral,provider-anthropic,provider-voyageai,provider-cohere,provider-azure-openai
+          provider-candle,provider-onnx,provider-openai,provider-gemini,provider-vertexai,provider-mistral,provider-anthropic,provider-voyageai,provider-cohere,provider-azure-openai,provider-llamacpp
 
       - name: Copy rustdoc into MkDocs source
         run: cp -r target/doc website/docs/api

@@ -58,6 +58,7 @@ Features split into three independent axes:
 | `provider-voyageai` | ✓ | Remote Voyage AI. |
 | `provider-cohere` | ✓ | Remote Cohere. |
 | `provider-azure-openai` | ✓ | Remote Azure OpenAI. |
+| `provider-llamacpp` | ✓ | Remote llama.cpp `llama-server` (embeddings with tokenizer-aware truncation). |
 
 **2. ORT linking** (only matters if you use ONNX)
 

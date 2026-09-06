@@ -13,6 +13,12 @@
 //! - VOYAGE_API_KEY: For Voyage AI tests
 //! - CO_API_KEY: For Cohere tests
 //! - AZURE_OPENAI_API_KEY: For Azure OpenAI tests
+//! - LLAMACPP_BASE_URL: OpenAI-compatible root of a running llama-server (e.g.
+//!   http://127.0.0.1:8080/v1) serving an embedding model; LLAMACPP_EMBED_MODEL
+//!   (default "bge-small-en-v1.5") must match the server's model / preset name.
+//!   Optional LLAMACPP_API_KEY_ENV names an env var holding a bearer token;
+//!   LLAMACPP_EMBED_DIMENSIONS (default 384) and LLAMACPP_MAX_INPUT_TOKENS
+//!   (default 512) let the test run against other embedding models.
 
 #![allow(unused_imports)]
 #![allow(unused_variables)]
@@ -2763,5 +2769,169 @@ mod mistralrs_tests {
 
         println!("✓ mistralrs gemma3n object detection test passed");
         println!("  Response: {}", result.text);
+    }
+}
+
+// =============================================================================
+// LLAMA.CPP REMOTE TESTS
+// =============================================================================
+
+/// Non-network: the provider is embed-only.
+#[tokio::test]
+async fn test_llamacpp_rerank_capability_mismatch() {
+    #[cfg(feature = "provider-llamacpp")]
+    {
+        use uni_xervo::provider::llamacpp::RemoteLlamaCppProvider;
+        use uni_xervo::traits::ModelProvider;
+
+        let provider = RemoteLlamaCppProvider::new();
+        let spec = ModelAliasSpec {
+            alias: "rerank/llamacpp".to_string(),
+            task: ModelTask::Rerank,
+            provider_id: "remote/llamacpp".to_string(),
+            model_id: "bge-small-en-v1.5".to_string(),
+            revision: None,
+            warmup: WarmupPolicy::Lazy,
+            required: false,
+            timeout: None,
+            load_timeout: None,
+            retry: None,
+            options: serde_json::json!({
+                "base_url": "http://127.0.0.1:8080/v1",
+                "max_input_tokens": 512,
+                "embedding_dimensions": 384
+            }),
+        };
+        let err = provider.load(&spec).await.err().expect("must fail");
+        assert!(
+            err.to_string().contains("does not support task"),
+            "unexpected error: {err}"
+        );
+    }
+    #[cfg(not(feature = "provider-llamacpp"))]
+    {
+        eprintln!("Skipping - provider-llamacpp feature not enabled");
+    }
+}
+
+/// Real request against a running llama-server with the BGE Small GGUF.
+///
+/// Exercises the full pipeline against the actual server: short texts go as
+/// strings, a ~3000-word text is tokenized, truncated to 512 ids, and sent as
+/// a token array in the same `input` batch (mixed string / int-array input),
+/// and the result must be 384-dimensional unit vectors in input order.
+///
+/// Start the server with, e.g.:
+/// `llama-server -m bge-small-en-v1.5-q8_0.gguf --embedding -c 512 -ub 512 --port 8080`
+/// then `EXPENSIVE_TESTS=1 LLAMACPP_BASE_URL=http://127.0.0.1:8080/v1 cargo test
+/// -p uni-xervo --test real_providers_test test_llamacpp -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn test_llamacpp_remote_embedding() {
+    require_expensive_tests!();
+    let Ok(base_url) = env::var("LLAMACPP_BASE_URL") else {
+        eprintln!("Skipping - LLAMACPP_BASE_URL not set");
+        return;
+    };
+
+    #[cfg(feature = "provider-llamacpp")]
+    {
+        use uni_xervo::provider::llamacpp::RemoteLlamaCppProvider;
+
+        let model_id =
+            env::var("LLAMACPP_EMBED_MODEL").unwrap_or_else(|_| "bge-small-en-v1.5".to_string());
+        let dims: usize = env::var("LLAMACPP_EMBED_DIMENSIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(384);
+        let max_input_tokens: u64 = env::var("LLAMACPP_MAX_INPUT_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512);
+        let mut options = serde_json::json!({
+            "base_url": base_url,
+            "max_input_tokens": max_input_tokens,
+            "embedding_dimensions": dims,
+            "request_timeout_secs": 120
+        });
+        if let Ok(key_env) = env::var("LLAMACPP_API_KEY_ENV") {
+            options["api_key_env"] = serde_json::json!(key_env);
+        }
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(RemoteLlamaCppProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "embed/llamacpp".to_string(),
+                task: ModelTask::Embed,
+                provider_id: "remote/llamacpp".to_string(),
+                model_id,
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options,
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .embedding("embed/llamacpp")
+            .await
+            .expect("Failed to resolve embedding model");
+
+        // ~3000 words, far beyond BGE's 512-token window.
+        let long_text: String = (0..3000)
+            .map(|i| format!("passage{} retrieval memory benchmark", i % 97))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let batch = model
+            .embed(&["Hello world", long_text.as_str(), "short"])
+            .await
+            .expect("Batch embedding failed");
+        assert_eq!(batch.vectors.len(), 3);
+        for (i, v) in batch.vectors.iter().enumerate() {
+            assert_eq!(v.len(), dims, "vector {i} has wrong width");
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-3, "vector {i} norm = {norm}");
+        }
+
+        // Order preservation: the long text embedded alone must match its
+        // slot in the batch.
+        let alone = model
+            .embed(&[long_text.as_str()])
+            .await
+            .expect("Single embedding failed");
+        let cosine: f32 = alone.vectors[0]
+            .iter()
+            .zip(&batch.vectors[1])
+            .map(|(a, b)| a * b)
+            .sum();
+        assert!(
+            cosine > 0.999,
+            "long text moved within the batch: cosine={cosine}"
+        );
+
+        // And it must differ from the short texts (sanity that truncation
+        // produced a real embedding rather than an empty/degenerate one).
+        let cos_short: f32 = batch.vectors[0]
+            .iter()
+            .zip(&batch.vectors[1])
+            .map(|(a, b)| a * b)
+            .sum();
+        assert!(
+            cos_short < 0.99,
+            "long and short embeddings identical: {cos_short}"
+        );
+
+        println!("✓ llama.cpp remote embedding test passed");
+    }
+    #[cfg(not(feature = "provider-llamacpp"))]
+    {
+        let _ = base_url;
+        eprintln!("Skipping - provider-llamacpp feature not enabled");
     }
 }

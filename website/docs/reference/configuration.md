@@ -49,6 +49,7 @@ Catalogs are JSON arrays of `ModelAliasSpec` entries.
 | `remote/voyageai` | `api_key_env`, `embedding_dimensions` | Override env var name for API key; override embedding dimensions |
 | `remote/cohere` | `api_key_env`, `input_type`, `embedding_dimensions` | `input_type` used for embedding mode; override embedding dimensions |
 | `remote/azure-openai` | `api_key_env`, `resource_name`, `api_version`, `embedding_dimensions` | `resource_name` required; `api_version` default `2024-10-21`; override embedding dimensions |
+| `remote/llamacpp` | `base_url`, `tokenizer_base_url`, `max_input_tokens`, `embedding_dimensions`, `api_key_env`, `request_timeout_secs` | `base_url`, `max_input_tokens` (budget including special tokens), and `embedding_dimensions` are required; `api_key_env` optional (llama-server usually runs without `--api-key`); embed-only. Inputs are bounded client-side via the server's `/tokenize` endpoint |
 
 Provider-specific model/config links:
 

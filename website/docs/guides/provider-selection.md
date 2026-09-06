@@ -14,6 +14,7 @@ Choose providers based on task coverage, latency profile, data governance, and o
 | `remote/vertexai` | Yes | No | Yes | No | GCP-native hosted models |
 | `remote/mistral` | Yes | No | Yes | No | Hosted Mistral models |
 | `remote/anthropic` | No | No | Yes | No | Hosted generation/chat only |
+| `remote/llamacpp` | Yes | No | No | No | Self-hosted llama.cpp `llama-server` embeddings (e.g. BGE GGUF) with deterministic client-side truncation |
 | `remote/voyageai` | Yes | Yes | No | No | Hosted embedding + reranking focus |
 | `remote/cohere` | Yes | Yes | Yes | No | Hosted unified embedding/rerank/generate |
 | `remote/azure-openai` | Yes | No | Yes | No | Azure-governed OpenAI deployments |

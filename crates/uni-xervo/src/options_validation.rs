@@ -75,6 +75,7 @@ pub fn validate_provider_options(
             | "remote/cohere"
             | "remote/azure-openai"
             | "remote/vertexai"
+            | "remote/llamacpp"
             | "local/candle"
             | "local/onnx"
             | "local/mistralrs"
@@ -131,6 +132,7 @@ pub fn validate_provider_options(
         ),
         "remote/azure-openai" => validate_azure_openai_options(provider_id, task, options),
         "remote/vertexai" => validate_vertexai_options(provider_id, task, options),
+        "remote/llamacpp" => validate_llamacpp_options(provider_id, task, options),
         "local/candle" => validate_string_keys_only(provider_id, options, &["cache_dir"]),
         "local/onnx" => validate_local_onnx_options(provider_id, task, options),
         "local/mistralrs" => validate_mistralrs_options(provider_id, task, options),
@@ -365,22 +367,93 @@ fn validate_openai_options(provider_id: &str, task: ModelTask, options: &Value) 
         &["api_key_env", "base_url", "embedding_dimensions"],
     )?;
     require_string_keys(provider_id, map, &["api_key_env", "base_url"])?;
-    if let Some(value) = map.get("base_url") {
-        let raw = value.as_str().unwrap_or("");
-        let trimmed = raw.trim();
+    require_absolute_http_url(provider_id, map, "base_url")?;
+    require_embedding_dimensions(provider_id, task, map)
+}
+
+/// If present, require `key` to be a non-empty absolute `http://` or
+/// `https://` URL. Callers must have already checked the key is a string.
+fn require_absolute_http_url(
+    provider_id: &str,
+    map: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<()> {
+    if let Some(value) = map.get(key) {
+        let trimmed = value.as_str().unwrap_or("").trim();
         if trimmed.is_empty() {
             return Err(RuntimeError::Config(format!(
-                "Option 'base_url' for provider '{}' must be a non-empty URL",
-                provider_id
+                "Option '{}' for provider '{}' must be a non-empty URL",
+                key, provider_id
             )));
         }
         if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
             return Err(RuntimeError::Config(format!(
-                "Option 'base_url' for provider '{}' must be an absolute http(s) URL",
-                provider_id
+                "Option '{}' for provider '{}' must be an absolute http(s) URL",
+                key, provider_id
             )));
         }
     }
+    Ok(())
+}
+
+/// Validate `remote/llamacpp` options. Unlike the other remote providers,
+/// `base_url`, `max_input_tokens`, and `embedding_dimensions` are **required**:
+/// llama.cpp has no hosted default endpoint and no model-id → dimensions
+/// table, and the token budget drives client-side truncation. The provider is
+/// embed-only, so other tasks are rejected here rather than at load time.
+fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
+    const REQUIRED: [&str; 3] = ["base_url", "max_input_tokens", "embedding_dimensions"];
+
+    if task != ModelTask::Embed {
+        return Err(RuntimeError::Config(format!(
+            "Provider '{}' only supports task 'embed' (got '{}')",
+            provider_id,
+            task_wire_name(task)
+        )));
+    }
+    let Some(map) = as_object(provider_id, options)? else {
+        return Err(RuntimeError::Config(format!(
+            "Provider '{}' requires options: {}",
+            provider_id,
+            REQUIRED.join(", ")
+        )));
+    };
+    reject_unknown_keys(
+        provider_id,
+        map,
+        &[
+            "base_url",
+            "tokenizer_base_url",
+            "max_input_tokens",
+            "embedding_dimensions",
+            "api_key_env",
+            "request_timeout_secs",
+        ],
+    )?;
+    for key in REQUIRED {
+        if !map.contains_key(key) {
+            return Err(RuntimeError::Config(format!(
+                "Option '{}' for provider '{}' is required",
+                key, provider_id
+            )));
+        }
+    }
+    require_string_keys(
+        provider_id,
+        map,
+        &["base_url", "tokenizer_base_url", "api_key_env"],
+    )?;
+    require_absolute_http_url(provider_id, map, "base_url")?;
+    require_absolute_http_url(provider_id, map, "tokenizer_base_url")?;
+    require_positive_u64(provider_id, map, "max_input_tokens")?;
+    if map["max_input_tokens"].as_u64().unwrap_or(0) < 3 {
+        return Err(RuntimeError::Config(format!(
+            "Option 'max_input_tokens' for provider '{}' must be at least 3 \
+             (two special tokens plus one content token)",
+            provider_id
+        )));
+    }
+    require_positive_u64(provider_id, map, "request_timeout_secs")?;
     require_embedding_dimensions(provider_id, task, map)
 }
 

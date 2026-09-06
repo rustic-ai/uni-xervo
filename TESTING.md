@@ -100,6 +100,7 @@ export VERTEX_AI_PROJECT="your-gcp-project-id"
 | **OpenAI** | `test_openai_remote_embedding` | text-embedding-3-small | `OPENAI_API_KEY` | `provider-openai` |
 | **Gemini** | `test_gemini_remote_embedding` | embedding-001 | `GEMINI_API_KEY` | `provider-gemini` |
 | **Vertex AI** | `test_vertexai_remote_embedding` | text-embedding-005 | `VERTEX_AI_TOKEN` + `VERTEX_AI_PROJECT` | `provider-vertexai` |
+| **llama.cpp** | `test_llamacpp_remote_embedding` | `LLAMACPP_EMBED_MODEL` (default bge-small-en-v1.5) | none; needs `LLAMACPP_BASE_URL` of a running `llama-server` (`LLAMACPP_EMBED_DIMENSIONS`, `LLAMACPP_MAX_INPUT_TOKENS` optional) | `provider-llamacpp` |
 
 ### Remote Generation Providers
 
@@ -169,6 +170,7 @@ Available features:
 - `provider-openai` - Remote OpenAI API
 - `provider-gemini` - Remote Gemini API
 - `provider-vertexai` - Remote Google Vertex AI API
+- `provider-llamacpp` - Remote llama.cpp `llama-server` embeddings (mock-server tests in `tests/llamacpp_provider_test.rs` run without a server)
 
 ---
 

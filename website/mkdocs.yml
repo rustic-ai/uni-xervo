@@ -55,6 +55,7 @@ nav:
           - remote/voyageai: reference/providers/voyageai.md
           - remote/cohere: reference/providers/cohere.md
           - remote/azure-openai: reference/providers/azure-openai.md
+          - remote/llamacpp: reference/providers/llamacpp.md
   - Internals:
       - Overview: internals/index.md
       - Architecture: internals/architecture.md

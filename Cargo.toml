@@ -8,7 +8,7 @@ members = ["crates/uni-xervo", "crates/uni-xervo-pdf"]
 resolver = "2"
 
 [workspace.package]
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Dragonscale Industries Inc. <dev@dragonscale.ai>"]
@@ -21,7 +21,7 @@ categories = ["api-bindings", "asynchronous"]
 
 [workspace.dependencies]
 # Internal crate (path + version so the companion can depend on it by workspace).
-uni-xervo = { path = "crates/uni-xervo", version = "0.17.0", default-features = false }
+uni-xervo = { path = "crates/uni-xervo", version = "0.18.0", default-features = false }
 # Dependencies shared across both crates.
 async-trait = "0.1"
 tracing = "0.1"

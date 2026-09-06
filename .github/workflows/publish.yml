@@ -37,9 +37,15 @@ jobs:
 
       - name: Validate tag matches crate version
         shell: bash
+        # Pass the tag/ref via env (not direct `${{ }}` interpolation) so a
+        # crafted dispatch input can't inject shell. The regex below still gates
+        # the value before it is used anywhere else.
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          ref="${INPUT_TAG:-$REF_NAME}"
 
           if [[ ! "${ref}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Tag '${ref}' does not match required format vMAJOR.MINOR.PATCH"
@@ -70,11 +76,22 @@ jobs:
 
       - name: Create and push tag
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        # Idempotent: a re-dispatch for an already-tagged version must not fail on
+        # `git tag` rejecting the existing tag. `TAG` is passed via env (not direct
+        # `${{ }}` interpolation) to avoid shell injection from the dispatch input.
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ github.event.inputs.tag }}" -m "Release ${{ github.event.inputs.tag }}"
-          git push origin "${{ github.event.inputs.tag }}"
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin — skipping creation."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+          fi
 
       - name: Verify packages
         run: cargo publish -p uni-xervo -p uni-xervo-pdf --locked --dry-run
@@ -86,6 +103,26 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        # Cargo publishes in dependency order (uni-xervo before uni-xervo-pdf)
-        # and waits for registry propagation between them.
-        run: cargo publish -p uni-xervo -p uni-xervo-pdf --locked
+        shell: bash
+        # Publish each workspace crate only if its exact version is not already on
+        # crates.io. A multi-crate `cargo publish` is not atomic: if a later crate
+        # fails (auth, propagation, a yanked dep), the already-published earlier
+        # crate makes a plain re-run abort with "crate version already uploaded".
+        # Guarding per crate keeps the release step safely re-runnable. Order
+        # matters: uni-xervo before its uni-xervo-pdf dependent.
+        run: |
+          set -euo pipefail
+          publish_if_needed() {
+            local crate="$1" version
+            version="$(cargo pkgid -p "${crate}" | sed -E 's|.*[#@]||')"
+            if curl -fsS \
+                 -H "User-Agent: uni-xervo-publish (github.com/rustic-ai/uni-xervo)" \
+                 "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
+              echo "==> ${crate} ${version} already on crates.io — skipping."
+            else
+              echo "==> Publishing ${crate} ${version}..."
+              cargo publish -p "${crate}" --locked
+            fi
+          }
+          publish_if_needed uni-xervo
+          publish_if_needed uni-xervo-pdf

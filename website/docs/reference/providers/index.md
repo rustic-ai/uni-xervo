@@ -31,3 +31,4 @@ Each provider page documents:
 - [remote/voyageai](voyageai.md)
 - [remote/cohere](cohere.md)
 - [remote/azure-openai](azure-openai.md)
+- [remote/llamacpp](llamacpp.md)
