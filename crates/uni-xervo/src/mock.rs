@@ -519,6 +519,96 @@ impl crate::traits::ModelInfo for MockMultiVectorEmbeddingModel {
     }
 }
 
+/// Mock [`HybridEmbeddingModel`] exposing a configurable subset of heads.
+///
+/// `available` drives both `available_heads()` and which fields `embed`
+/// populates, so a test can build a model that is missing a head (or that
+/// reports a head with no width) and check how the runtime's single-head
+/// accessors react.
+pub struct MockHybridEmbeddingModel {
+    available: crate::traits::HeadSet,
+    /// When `false`, `head_width` returns `None` even for available heads —
+    /// modelling an implementation that doesn't track widths.
+    report_widths: bool,
+    dense_dimensions: u32,
+    vocab_size: u32,
+    multi_vector_dimensions: u32,
+    model_id: String,
+}
+
+impl MockHybridEmbeddingModel {
+    /// All three heads, with widths reported.
+    pub fn new() -> Self {
+        Self::with_heads(crate::traits::HeadSet::ALL)
+    }
+
+    pub fn with_heads(available: crate::traits::HeadSet) -> Self {
+        Self {
+            available,
+            report_widths: true,
+            dense_dimensions: 1024,
+            vocab_size: 250002,
+            multi_vector_dimensions: 1024,
+            model_id: "mock/hybrid-embed".to_string(),
+        }
+    }
+
+    /// All heads available, but none reports a width.
+    pub fn without_widths() -> Self {
+        Self {
+            report_widths: false,
+            ..Self::new()
+        }
+    }
+}
+
+#[async_trait]
+impl crate::traits::HybridEmbeddingModel for MockHybridEmbeddingModel {
+    fn available_heads(&self) -> crate::traits::HeadSet {
+        self.available
+    }
+
+    fn head_width(&self, head: crate::traits::HeadSet) -> Option<u32> {
+        use crate::traits::HeadSet;
+        if !self.report_widths || !self.available.contains(head) {
+            return None;
+        }
+        match head {
+            HeadSet::DENSE => Some(self.dense_dimensions),
+            HeadSet::SPARSE => Some(self.vocab_size),
+            HeadSet::MULTI_VECTOR => Some(self.multi_vector_dimensions),
+            _ => None,
+        }
+    }
+
+    async fn embed(
+        &self,
+        texts: &[&str],
+        requested: crate::traits::HeadSet,
+    ) -> Result<crate::traits::HybridEmbedResult> {
+        use crate::traits::HeadSet;
+        let heads = requested.intersection(self.available);
+        Ok(crate::traits::HybridEmbedResult {
+            dense: heads
+                .contains(HeadSet::DENSE)
+                .then(|| vec![vec![0.5; self.dense_dimensions as usize]; texts.len()]),
+            sparse: heads
+                .contains(HeadSet::SPARSE)
+                .then(|| vec![vec![(7u32, 0.25f32)]; texts.len()]),
+            multi_vector: heads.contains(HeadSet::MULTI_VECTOR).then(|| {
+                vec![vec![vec![0.1; self.multi_vector_dimensions as usize]; 2]; texts.len()]
+            }),
+            usage: None,
+        })
+    }
+}
+
+impl crate::traits::ModelInfo for MockHybridEmbeddingModel {
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+}
+
 /// Mock [`NlpModel`] returning a single-token result per request.
 pub struct MockNlpModel {
     model_id: String,
@@ -706,6 +796,10 @@ pub struct MockProvider {
     model_fail_count: u32,
     fail_on_load: bool,
     model_warmup_tracker: Option<Arc<AtomicU32>>,
+    /// Heads the mock hybrid model advertises (`EmbedHybrid` loads only).
+    hybrid_heads: crate::traits::HeadSet,
+    /// Whether that hybrid model reports head widths.
+    hybrid_report_widths: bool,
 }
 
 impl MockProvider {
@@ -721,7 +815,21 @@ impl MockProvider {
             model_fail_count: 0,
             fail_on_load: false,
             model_warmup_tracker: None,
+            hybrid_heads: crate::traits::HeadSet::ALL,
+            hybrid_report_widths: true,
         }
+    }
+
+    /// Restrict which heads the mock hybrid model exposes.
+    pub fn with_hybrid_heads(mut self, heads: crate::traits::HeadSet) -> Self {
+        self.hybrid_heads = heads;
+        self
+    }
+
+    /// Make the mock hybrid model advertise heads but report no widths.
+    pub fn without_hybrid_widths(mut self) -> Self {
+        self.hybrid_report_widths = false;
+        self
     }
 
     pub fn with_model_fail_count(mut self, count: u32) -> Self {
@@ -892,13 +1000,12 @@ impl ModelProvider for MockProvider {
                     Arc::new(MockMultiVectorEmbeddingModel::new());
                 Ok(Arc::new(handle) as LoadedModelHandle)
             }
-            // The mock provider has no hybrid model; no constructor above
-            // advertises EmbedHybrid, so the capability guard rejects it first.
-            // This arm exists only to keep the in-crate match exhaustive.
-            ModelTask::EmbedHybrid => Err(RuntimeError::CapabilityMismatch(format!(
-                "Mock provider does not support task {:?}",
-                spec.task
-            ))),
+            ModelTask::EmbedHybrid => {
+                let mut model = MockHybridEmbeddingModel::with_heads(self.hybrid_heads);
+                model.report_widths = self.hybrid_report_widths;
+                let handle: Arc<dyn crate::traits::HybridEmbeddingModel> = Arc::new(model);
+                Ok(Arc::new(handle) as LoadedModelHandle)
+            }
             ModelTask::Nlp => {
                 let handle: Arc<dyn NlpModel> = Arc::new(MockNlpModel::new());
                 Ok(Arc::new(handle) as LoadedModelHandle)

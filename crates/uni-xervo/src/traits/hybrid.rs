@@ -93,6 +93,28 @@ pub trait HybridEmbeddingModel: ModelInfo {
     /// requesting a head outside this set yields `None` for it rather than an error.
     fn available_heads(&self) -> HeadSet;
 
+    /// The width of a single head, if this model knows it.
+    ///
+    /// What "width" means is per head, matching the accessor each head
+    /// corresponds to on the single-head traits:
+    ///
+    /// - [`HeadSet::DENSE`] — the dense vector dimensionality
+    ///   ([`EmbeddingModel::dimensions`](crate::traits::EmbeddingModel::dimensions))
+    /// - [`HeadSet::SPARSE`] — the term-space size
+    ///   ([`SparseEmbeddingModel::vocab_size`](crate::traits::SparseEmbeddingModel::vocab_size))
+    /// - [`HeadSet::MULTI_VECTOR`] — the per-token vector dimensionality
+    ///   ([`MultiVectorEmbeddingModel::dimensions`](crate::traits::MultiVectorEmbeddingModel::dimensions))
+    ///
+    /// Returns `None` for a head this model does not expose, for a `head`
+    /// naming more than one flag, and for implementations that simply don't
+    /// track it — the default. Without it, the runtime cannot serve this model
+    /// through the single-head accessors, since those traits must report a
+    /// width; see [`ModelRuntime::sparse_embedder`](crate::runtime::ModelRuntime::sparse_embedder).
+    fn head_width(&self, head: HeadSet) -> Option<u32> {
+        let _ = head;
+        None
+    }
+
     /// Optional warmup hook (e.g. load weights into memory on first access).
     /// The default is a no-op.
     ///

@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **An `embed_hybrid` alias can now serve the single-head accessors**
+  ([#49](https://github.com/milliondreams/uni-xervo/issues/49)). A hybrid model
+  exposes dense, sparse and multi-vector heads from one graph, but the runtime
+  stores it as `Arc<dyn HybridEmbeddingModel>`, so `sparse_embedder(..)` and
+  `multi_vector_embedder(..)` missed the downcast and returned
+  `ProviderCapabilityMissing` — a query-time failure, while ingest wrote the
+  columns normally via its own fallback. `embedding(..)` had the same gap for
+  the dense head, which the report did not cover. Each accessor now falls back
+  to a single-head view over the hybrid handle, requesting only its own head, so
+  one alias serves all three channels instead of needing three aliases for the
+  same weights. A hybrid model whose graph lacks the head, or which cannot
+  report the head's width, still fails — but says which of the two applies
+  instead of claiming the provider has no such capability.
+
+  `HybridEmbeddingModel` gains `head_width(HeadSet) -> Option<u32>` (defaulted
+  to `None`, so external implementations keep compiling) because the single-head
+  traits must answer `vocab_size()` / `dimensions()`, which the hybrid trait
+  previously had no way to express.
+
 - **`local/mistralrs` rejected the `style` option it documents.** `MistralRsOptions`
   is `#[serde(deny_unknown_fields)]` but had no `style` field, while the catalog
   validator accepted the key and `load_document_extractor` read it. Because the
