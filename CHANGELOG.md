@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`local/mistralrs` rejected the `style` option it documents.** `MistralRsOptions`
+  is `#[serde(deny_unknown_fields)]` but had no `style` field, while the catalog
+  validator accepted the key and `load_document_extractor` read it. Because the
+  options are deserialized once in `load()` before the task dispatch, *any* alias
+  carrying `style` failed with `Invalid mistralrs options: unknown field \`style\``
+  — for every task, not just `document_extract` — which made the documented
+  `granite-docling` / `mineru` / `olmocr` parser selection unreachable. The field
+  now exists and `load_document_extractor` reads it from the typed options rather
+  than re-reading the raw JSON, so the struct and the accepted schema can no
+  longer drift apart. Only the `EXPENSIVE_TESTS` suite exercised this path; a
+  unit test now covers it in ordinary CI.
+
 ## [0.18.0] - 2026-09-05
 
 ### Added
