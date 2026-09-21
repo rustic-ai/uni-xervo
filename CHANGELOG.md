@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-09-20
+
 ### Fixed
 
 - **An `embed_hybrid` alias can now serve the single-head accessors**
