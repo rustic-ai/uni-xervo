@@ -64,7 +64,7 @@ full option list (`dimensions`, `normalize`, `drop_special_tokens`,
 
 ## Running multi-vector embedding
 
-```rust,ignore
+```rust
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::provider::LocalOnnxProvider;
 use uni_xervo::score::max_sim;
@@ -98,7 +98,7 @@ document's tokens. With L2-normalized vectors (the default) it is cosine MaxSim.
 [`colbert_rerank`](../reference/index.md) scores a query against many documents
 at once:
 
-```rust,ignore
+```rust
 use uni_xervo::score::colbert_rerank;
 
 // Each doc is its own &[Vec<f32>] list of per-token vectors.
@@ -117,7 +117,7 @@ Registering BGE-M3 for all three per-task tasks loads **three** sessions and run
 **three** forward passes. To get all three heads from a **single** pass, use the
 hybrid task instead:
 
-```rust,ignore
+```rust
 use uni_xervo::traits::HeadSet;
 
 // `BGEM3Hybrid` declares all three heads of the one graph.

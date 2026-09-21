@@ -33,7 +33,7 @@ your app (`provider-onnx`, `provider-mistralrs`).
 
 ## Usage
 
-```rust,ignore
+```rust
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo_pdf::{PdfExt, PdfConfig, DocInput, DocExtractPolicy, Tier};
 

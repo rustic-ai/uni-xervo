@@ -56,7 +56,7 @@ two-stage detect → recognize.
 
 ## Running OCR
 
-```rust,ignore
+```rust
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::provider::LocalOnnxProvider;
 use uni_xervo::traits::ImageInput;
@@ -88,7 +88,7 @@ fetches and passes bytes).
 
 ## Interpreting results
 
-```rust,ignore
+```rust
 pub struct OcrResult {
     pub blocks: Vec<OcrBlock>,  // per detected region
     pub plain_text: String,     // concatenation, always populated
