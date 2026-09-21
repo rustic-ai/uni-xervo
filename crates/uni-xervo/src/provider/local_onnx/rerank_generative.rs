@@ -58,7 +58,7 @@ use crate::provider::local_onnx::decoder_inputs::{
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    build_execution_providers, parse_execution_providers_option, resolve_ep_list,
+    build_execution_providers, effective_ep_list, parse_execution_providers_option,
 };
 use crate::traits::{RerankerModel, ScoredDoc};
 
@@ -141,7 +141,7 @@ impl OnnxGenerativeReranker {
 
         let execution_providers =
             parse_execution_providers_option(spec.options.get("execution_providers"))?;
-        let requested_eps: Vec<String> = resolve_ep_list(execution_providers.as_deref())
+        let requested_eps: Vec<String> = effective_ep_list(execution_providers.as_deref())
             .into_iter()
             .map(|ep| ep.as_str().to_string())
             .collect();

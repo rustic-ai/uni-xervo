@@ -63,7 +63,7 @@ full option list (`sparse_method`, `output_name`, `output_index`, `max_seq_len`,
 
 ## Running sparse embedding
 
-```rust,ignore
+```rust
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::provider::LocalOnnxProvider;
 
@@ -89,7 +89,7 @@ cargo run --example embed_sparse --features provider-onnx
 To rank a query against documents in-process, score two sparse vectors with
 their dot product:
 
-```rust,ignore
+```rust
 use uni_xervo::score::sparse_dot;
 
 let score = sparse_dot(&query.vectors[0], &doc.vectors[0]);

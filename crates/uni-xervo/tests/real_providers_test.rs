@@ -55,12 +55,17 @@ fn has_api_key(env_var: &str) -> bool {
 
 /// CUDA-EP variant of the native `local/onnx` embedding path. Forces
 /// `execution_providers: ["cuda", "cpu"]` so the CUDA EP is exercised
-/// when the binary was built with `gpu-cuda`. Falls back to CPU on
-/// non-CUDA builds (the default EP list resolves to `["cpu"]`).
+/// when the binary was built with `gpu-cuda`.
+///
+/// On a build without `gpu-cuda`, `cuda` is dropped from that explicit list
+/// and the model runs on the `cpu` entry — the list is honored as written,
+/// minus what this binary cannot construct. (It does *not* go through the
+/// feature-aware default; an explicit list never consults it.)
 ///
 /// Asserts the same invariants as `test_local_onnx_bge_small_embedding`
 /// plus that `active_execution_providers()` includes `"cuda"` when
-/// CUDA is requested.
+/// CUDA is requested — which, post-filtering, is exactly when the build
+/// actually has `gpu-cuda`.
 #[tokio::test]
 #[ignore]
 async fn test_local_onnx_bge_small_embedding_cuda() {

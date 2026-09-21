@@ -1,5 +1,7 @@
 //! The core runtime that manages providers, catalogs, and loaded model instances.
 
+mod hybrid_adapter;
+
 use crate::api::{ModelAliasSpec, ModelRuntimeKey};
 use crate::error::{Result, RuntimeError};
 use crate::options_validation::validate_provider_options;
@@ -179,6 +181,38 @@ impl ModelRuntime {
                 .or_insert_with(|| {
                     let wrapper: Arc<dyn EmbeddingModel> = Arc::new(InstrumentedEmbeddingModel {
                         inner: model.clone(),
+                        alias: alias.to_string(),
+                        provider_id: spec.provider_id.clone(),
+                        timeout: spec.timeout.map(std::time::Duration::from_secs),
+                        retry: spec.retry.clone(),
+                    });
+                    wrapper
+                })
+                .clone();
+            return Ok(cached);
+        }
+
+        // As in `sparse_embedder`: an `embed_hybrid` alias can serve a dense
+        // query from its dense head.
+        if let Some(model) = handle.downcast_ref::<Arc<dyn HybridEmbeddingModel>>() {
+            let dimensions = hybrid_adapter::head_width_of(
+                model,
+                crate::traits::HeadSet::DENSE,
+                alias,
+                &spec.provider_id,
+                "EmbeddingModel",
+            )?;
+            let view: Arc<dyn EmbeddingModel> = Arc::new(hybrid_adapter::HybridAsDense {
+                inner: model.clone(),
+                dimensions,
+            });
+            let cached = self
+                .handle_cache
+                .embeddings
+                .entry(alias.to_string())
+                .or_insert_with(|| {
+                    let wrapper: Arc<dyn EmbeddingModel> = Arc::new(InstrumentedEmbeddingModel {
+                        inner: view,
                         alias: alias.to_string(),
                         provider_id: spec.provider_id.clone(),
                         timeout: spec.timeout.map(std::time::Duration::from_secs),
@@ -471,6 +505,42 @@ impl ModelRuntime {
                 .clone();
             return Ok(cached);
         }
+        // An `embed_hybrid` alias stores `Arc<dyn HybridEmbeddingModel>`, so the
+        // downcast above misses even though the graph has a sparse head. Serve
+        // it through a single-head view rather than making the caller register a
+        // second alias for the same weights.
+        if let Some(model) = handle.downcast_ref::<Arc<dyn HybridEmbeddingModel>>() {
+            let vocab_size = hybrid_adapter::head_width_of(
+                model,
+                crate::traits::HeadSet::SPARSE,
+                alias,
+                &spec.provider_id,
+                "SparseEmbeddingModel",
+            )?;
+            let view: Arc<dyn SparseEmbeddingModel> = Arc::new(hybrid_adapter::HybridAsSparse {
+                inner: model.clone(),
+                vocab_size,
+            });
+            let cached = self
+                .handle_cache
+                .sparse_embedders
+                .entry(alias.to_string())
+                .or_insert_with(|| {
+                    // Instrument outside the view so timeouts, retries and
+                    // metrics are attributed to this alias and task.
+                    let wrapper: Arc<dyn SparseEmbeddingModel> =
+                        Arc::new(InstrumentedSparseEmbeddingModel {
+                            inner: view,
+                            alias: alias.to_string(),
+                            provider_id: spec.provider_id.clone(),
+                            timeout: spec.timeout.map(std::time::Duration::from_secs),
+                            retry: spec.retry.clone(),
+                        });
+                    wrapper
+                })
+                .clone();
+            return Ok(cached);
+        }
         Err(RuntimeError::ProviderCapabilityMissing {
             alias: alias.to_string(),
             provider_id: spec.provider_id,
@@ -502,6 +572,38 @@ impl ModelRuntime {
                     let wrapper: Arc<dyn MultiVectorEmbeddingModel> =
                         Arc::new(InstrumentedMultiVectorEmbeddingModel {
                             inner: model.clone(),
+                            alias: alias.to_string(),
+                            provider_id: spec.provider_id.clone(),
+                            timeout: spec.timeout.map(std::time::Duration::from_secs),
+                            retry: spec.retry.clone(),
+                        });
+                    wrapper
+                })
+                .clone();
+            return Ok(cached);
+        }
+        // Same single-head view as `sparse_embedder`, for the ColBERT head.
+        if let Some(model) = handle.downcast_ref::<Arc<dyn HybridEmbeddingModel>>() {
+            let dimensions = hybrid_adapter::head_width_of(
+                model,
+                crate::traits::HeadSet::MULTI_VECTOR,
+                alias,
+                &spec.provider_id,
+                "MultiVectorEmbeddingModel",
+            )?;
+            let view: Arc<dyn MultiVectorEmbeddingModel> =
+                Arc::new(hybrid_adapter::HybridAsMultiVector {
+                    inner: model.clone(),
+                    dimensions,
+                });
+            let cached = self
+                .handle_cache
+                .multi_vector_embedders
+                .entry(alias.to_string())
+                .or_insert_with(|| {
+                    let wrapper: Arc<dyn MultiVectorEmbeddingModel> =
+                        Arc::new(InstrumentedMultiVectorEmbeddingModel {
+                            inner: view,
                             alias: alias.to_string(),
                             provider_id: spec.provider_id.clone(),
                             timeout: spec.timeout.map(std::time::Duration::from_secs),
@@ -1112,5 +1214,146 @@ mod tests {
             locks.is_empty(),
             "loader lock map should be empty after load timeout"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // An EmbedHybrid alias serves the single-head accessors (issue #49)
+    // -----------------------------------------------------------------------
+
+    use crate::traits::HeadSet;
+
+    /// Register one `EmbedHybrid` alias, the way a hybrid retrieval pipeline
+    /// does, and resolve it through each single-head accessor.
+    async fn hybrid_runtime(provider: MockProvider) -> Arc<ModelRuntime> {
+        let spec = make_spec(
+            "embed/hybrid",
+            ModelTask::EmbedHybrid,
+            "mock/hybrid",
+            "aapot/bge-m3-onnx",
+        );
+        ModelRuntime::builder()
+            .register_provider(provider)
+            .catalog(vec![spec])
+            .build()
+            .await
+            .unwrap()
+    }
+
+    fn hybrid_provider() -> MockProvider {
+        MockProvider::new("mock/hybrid", vec![ModelTask::EmbedHybrid])
+    }
+
+    /// The reported bug: both query channels failed with
+    /// `ProviderCapabilityMissing` while ingest wrote the columns fine.
+    #[tokio::test]
+    async fn hybrid_alias_serves_sparse_and_multi_vector() {
+        let runtime = hybrid_runtime(hybrid_provider()).await;
+
+        let sparse = runtime
+            .sparse_embedder("embed/hybrid")
+            .await
+            .expect("a hybrid alias must satisfy a sparse query");
+        assert_eq!(sparse.vocab_size(), 250002);
+        let out = sparse.embed(&["a", "b"]).await.unwrap();
+        assert_eq!(out.vectors.len(), 2);
+
+        let mv = runtime
+            .multi_vector_embedder("embed/hybrid")
+            .await
+            .expect("a hybrid alias must satisfy a multi-vector query");
+        assert_eq!(mv.dimensions(), 1024);
+        let out = mv.embed(&["a", "b"]).await.unwrap();
+        assert_eq!(out.vectors.len(), 2);
+    }
+
+    /// Not in the original report: the dense accessor has the same shape, so a
+    /// hybrid alias must serve a dense query too.
+    #[tokio::test]
+    async fn hybrid_alias_serves_dense() {
+        let runtime = hybrid_runtime(hybrid_provider()).await;
+
+        let dense = runtime
+            .embedding("embed/hybrid")
+            .await
+            .expect("a hybrid alias must satisfy a dense query");
+        assert_eq!(dense.dimensions(), 1024);
+        let out = dense.embed(&["a"]).await.unwrap();
+        assert_eq!(out.vectors.len(), 1);
+        assert_eq!(out.vectors[0].len(), 1024);
+    }
+
+    /// The hybrid handle itself must keep working unchanged.
+    #[tokio::test]
+    async fn hybrid_alias_still_serves_the_hybrid_accessor() {
+        let runtime = hybrid_runtime(hybrid_provider()).await;
+
+        let hybrid = runtime.hybrid_embedder("embed/hybrid").await.unwrap();
+        let out = hybrid.embed(&["a"], HeadSet::ALL).await.unwrap();
+        assert!(out.dense.is_some() && out.sparse.is_some() && out.multi_vector.is_some());
+    }
+
+    /// A head the graph does not expose must still fail — but say why, rather
+    /// than claiming the provider has no sparse capability at all.
+    #[tokio::test]
+    async fn hybrid_alias_without_the_head_fails_with_a_specific_message() {
+        let provider = hybrid_provider().with_hybrid_heads(HeadSet::DENSE);
+        let runtime = hybrid_runtime(provider).await;
+
+        let err = runtime
+            .sparse_embedder("embed/hybrid")
+            .await
+            .err()
+            .expect("a hybrid model with no sparse head cannot serve sparse");
+        let msg = err.to_string();
+        assert!(msg.contains("does not expose that head"), "{msg}");
+        assert!(msg.contains("embed/hybrid"), "{msg}");
+    }
+
+    /// A hybrid implementation that doesn't report widths cannot be adapted,
+    /// because the single-head traits must answer `vocab_size` / `dimensions`.
+    #[tokio::test]
+    async fn hybrid_alias_without_widths_is_rejected() {
+        let runtime = hybrid_runtime(hybrid_provider().without_hybrid_widths()).await;
+
+        let err = runtime
+            .sparse_embedder("embed/hybrid")
+            .await
+            .err()
+            .expect("no reported width means no faithful vocab_size");
+        assert!(err.to_string().contains("does not report its width"));
+    }
+
+    /// The per-alias handle cache must hold the adapted view, so the second
+    /// resolve is served from cache rather than rebuilt.
+    #[tokio::test]
+    async fn adapted_hybrid_handles_are_cached_per_alias() {
+        let runtime = hybrid_runtime(hybrid_provider()).await;
+
+        let first = runtime.sparse_embedder("embed/hybrid").await.unwrap();
+        let second = runtime.sparse_embedder("embed/hybrid").await.unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "expected the cached adapter, not a fresh one"
+        );
+    }
+
+    /// A non-hybrid alias that genuinely lacks the capability must keep its
+    /// original error — the fallback must not mask real mismatches.
+    #[tokio::test]
+    async fn non_hybrid_alias_still_reports_capability_missing() {
+        let spec = make_spec("embed/test", ModelTask::Embed, "mock/embed", "test-model");
+        let runtime = ModelRuntime::builder()
+            .register_provider(MockProvider::embed_only())
+            .catalog(vec![spec])
+            .build()
+            .await
+            .unwrap();
+
+        let err = runtime.sparse_embedder("embed/test").await.err().unwrap();
+        assert!(matches!(
+            err,
+            RuntimeError::ProviderCapabilityMissing { .. }
+        ));
+        assert!(err.to_string().contains("SparseEmbeddingModel"));
     }
 }

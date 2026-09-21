@@ -423,11 +423,10 @@ impl LocalMistralRsProvider {
         // Document extraction (olmOCR-2 and similar) always runs on the vision
         // pipeline, regardless of any `pipeline` option the caller set.
         let generator = self.build_vision_service(spec, opts).await?;
-        let style_str = spec
-            .options
-            .get("style")
-            .and_then(|v| v.as_str())
-            .unwrap_or("olmocr");
+        // Read from the typed options rather than re-reading `spec.options`:
+        // one source of truth, so the struct and the accepted schema cannot
+        // drift apart again.
+        let style_str = opts.style.as_deref().unwrap_or("olmocr");
         let style = crate::doc_parse::style_from_str(style_str).ok_or_else(|| {
             RuntimeError::Config(format!(
                 "Document extractor '{}' has unknown `style` value '{style_str}'; \
@@ -587,6 +586,15 @@ struct MistralRsOptions {
     /// Override max number of images per request (default 1).
     /// Vision pipeline only.
     max_num_images: Option<usize>,
+    /// Document-extraction output parser: "granite-docling", "mineru", or
+    /// "olmocr" (the default). Selects how the generated text is parsed back
+    /// into [`DocBlock`](crate::traits::DocBlock)s. Consumed by
+    /// `load_document_extractor`; ignored by every other task.
+    ///
+    /// This field exists because the struct is `deny_unknown_fields`: without
+    /// it, any catalog entry carrying `style` fails to deserialize at `load`
+    /// time, for *every* task, before the task dispatch is even reached.
+    style: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,6 +1229,45 @@ mod tests {
     fn parse_model_dtype_invalid() {
         let err = parse_model_dtype("int8").unwrap_err();
         assert!(err.to_string().contains("Unknown dtype"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Options deserialization
+    // -----------------------------------------------------------------------
+
+    /// `MistralRsOptions` is `deny_unknown_fields`, so every key the provider
+    /// accepts must exist as a field. `style` is read by
+    /// `load_document_extractor`, and the catalog validator permits it — but
+    /// it was missing here, which made any spec carrying it fail to load.
+    ///
+    /// This is the exact options JSON used by
+    /// `tests/mistralrs_doc_extract_expensive_test.rs`. That test is
+    /// `#[ignore]`d behind `EXPENSIVE_TESTS`, so the drift went unnoticed; a
+    /// builder-level test would not catch it either, because `WarmupPolicy::Lazy`
+    /// means `build()` runs option *validation* but never `load()`.
+    #[test]
+    fn options_accept_style_field() {
+        let opts: MistralRsOptions =
+            serde_json::from_value(serde_json::json!({"isq": "Q4K", "style": "olmocr"}))
+                .expect("options carrying `style` must deserialize");
+        assert_eq!(opts.style.as_deref(), Some("olmocr"));
+        assert_eq!(opts.isq.as_deref(), Some("Q4K"));
+    }
+
+    /// Absent `style` still means the olmOCR default, and genuinely unknown
+    /// keys must still be rejected — the fix adds a field, it does not weaken
+    /// `deny_unknown_fields`.
+    #[test]
+    fn options_style_defaults_and_unknown_keys_still_rejected() {
+        let opts: MistralRsOptions = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(opts.style, None);
+
+        let err = serde_json::from_value::<MistralRsOptions>(
+            serde_json::json!({"not_a_real_option": true}),
+        )
+        .err()
+        .expect("unknown keys must still be rejected");
+        assert!(err.to_string().contains("not_a_real_option"), "{err}");
     }
 
     // -----------------------------------------------------------------------

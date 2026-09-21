@@ -808,6 +808,11 @@ pub(super) struct SparseHead {
     pub output_index: usize,
     /// Post-processing recipe (`Mlm` vs `Lexical`).
     pub method: SparseMethod,
+    /// Size of the term space the emitted `term_id`s index into, matching the
+    /// equivalent per-task [`SparsePreset::vocab_size`]. Needed so a hybrid
+    /// handle can answer [`SparseEmbeddingModel::vocab_size`](crate::traits::SparseEmbeddingModel::vocab_size)
+    /// when it is resolved through the single-head accessor.
+    pub vocab_size: u32,
 }
 
 /// The multi-vector head of a hybrid graph: output selection plus per-token recipe.
@@ -885,6 +890,9 @@ const HYBRID_PRESETS: &[HybridPreset] = &[
             output_name: None,
             output_index: 1,
             method: SparseMethod::Lexical,
+            // Matches the per-task `BGEM3Sparse` preset: the XLM-RoBERTa
+            // tokenizer vocabulary the lexical head's term ids index into.
+            vocab_size: 250002,
         }),
         multi_vector: Some(MultiVectorHead {
             output_name: None,
@@ -1038,6 +1046,16 @@ mod tests {
             let sparse = p.sparse.as_ref().expect("sparse head");
             assert_eq!(sparse.output_index, 1);
             assert_eq!(sparse.method, SparseMethod::Lexical);
+            // Must match the per-task `BGEM3Sparse` preset: a hybrid alias
+            // resolved through `sparse_embedder` reports this as `vocab_size`,
+            // and downstream indexes size their term space from it.
+            assert_eq!(
+                sparse.vocab_size,
+                lookup_sparse("BGEM3Sparse")
+                    .expect("sparse preset")
+                    .vocab_size,
+                "hybrid and per-task sparse presets must agree on vocab size"
+            );
 
             let mv = p.multi_vector.as_ref().expect("multi-vector head");
             assert_eq!(mv.output_index, 2);

@@ -4,6 +4,67 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-09-20
+
+### Fixed
+
+- **An `embed_hybrid` alias can now serve the single-head accessors**
+  ([#49](https://github.com/milliondreams/uni-xervo/issues/49)). A hybrid model
+  exposes dense, sparse and multi-vector heads from one graph, but the runtime
+  stores it as `Arc<dyn HybridEmbeddingModel>`, so `sparse_embedder(..)` and
+  `multi_vector_embedder(..)` missed the downcast and returned
+  `ProviderCapabilityMissing` — a query-time failure, while ingest wrote the
+  columns normally via its own fallback. `embedding(..)` had the same gap for
+  the dense head, which the report did not cover. Each accessor now falls back
+  to a single-head view over the hybrid handle, requesting only its own head, so
+  one alias serves all three channels instead of needing three aliases for the
+  same weights. A hybrid model whose graph lacks the head, or which cannot
+  report the head's width, still fails — but says which of the two applies
+  instead of claiming the provider has no such capability.
+
+  `HybridEmbeddingModel` gains `head_width(HeadSet) -> Option<u32>` (defaulted
+  to `None`, so external implementations keep compiling) because the single-head
+  traits must answer `vocab_size()` / `dimensions()`, which the hybrid trait
+  previously had no way to express.
+
+- **`local/mistralrs` rejected the `style` option it documents.** `MistralRsOptions`
+  is `#[serde(deny_unknown_fields)]` but had no `style` field, while the catalog
+  validator accepted the key and `load_document_extractor` read it. Because the
+  options are deserialized once in `load()` before the task dispatch, *any* alias
+  carrying `style` failed with `Invalid mistralrs options: unknown field \`style\``
+  — for every task, not just `document_extract` — which made the documented
+  `granite-docling` / `mineru` / `olmocr` parser selection unreachable. The field
+  now exists and `load_document_extractor` reads it from the typed options rather
+  than re-reading the raw JSON, so the struct and the accepted schema can no
+  longer drift apart. Only the `EXPENSIVE_TESTS` suite exercised this path; a
+  unit test now covers it in ordinary CI.
+- **ONNX execution-provider lists now degrade instead of failing.** A list with an
+  explicit fallback — `{"execution_providers": ["cuda", "cpu"]}` — aborted the
+  whole load on a build without `gpu-cuda`, because the per-EP feature error
+  short-circuited before the viable `cpu` entry was reached. Unavailable entries
+  are now dropped with a `WARN` naming them, and the session is built from what
+  remains. The same applies to `coreml` without `gpu-metal` and to the vendor EPs
+  without `provider-onnx-dynamic`.
+
+  **Behaviour change.** A CPU-free list whose accelerators are all unavailable
+  (`["cuda"]`, `["rocm"]`) still fails with the same `RuntimeError::Config` as
+  before — requesting one specific accelerator and silently getting CPU would
+  defeat the point. If you relied on the old hard error as a build-misconfiguration
+  canary for a *mixed* list, request the accelerator on its own instead.
+
+  `active_execution_providers()` now reports the surviving list rather than the
+  raw request, so `["cuda", "cpu"]` reads back as `["cpu"]` on a build without
+  `gpu-cuda` — which is what the GPU setup guide already described it as being
+  good for. It remains a report of what the session was *built* with, not what
+  ORT finally attached at runtime.
+
+### Added
+
+- `tests/gpu_metal_inference_test.rs` — the Apple counterpart to
+  `gpu_cuda_inference_test.rs`, covering the CoreML execution path for the
+  `local/onnx` embed and rerank tasks. Gated on `gpu-metal` + `EXPENSIVE_TESTS`,
+  so it compiles out of a default build.
+
 ## [0.18.0] - 2026-09-05
 
 ### Added

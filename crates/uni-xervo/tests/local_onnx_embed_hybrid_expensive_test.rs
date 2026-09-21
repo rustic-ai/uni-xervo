@@ -258,3 +258,82 @@ async fn hybrid_respects_head_selection() {
     assert_eq!(empty.sparse.as_deref(), Some(&[][..]));
     assert_eq!(empty.multi_vector.as_deref(), Some(&[][..]));
 }
+
+/// A single `EmbedHybrid` alias must satisfy the single-head accessors
+/// (issue #49). Before the fix these returned `ProviderCapabilityMissing`, so
+/// a hybrid retrieval pipeline had to register three aliases for one graph —
+/// and any caller that didn't hit the failure only at *query* time.
+///
+/// Parity with the per-task handles is what proves the adapter reads the right
+/// head; shape checks alone would pass on a mis-wired one.
+#[tokio::test]
+#[ignore]
+async fn hybrid_alias_serves_single_head_accessors() {
+    require_expensive_tests!();
+
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalOnnxProvider::new())
+        .catalog(vec![
+            // One alias, as the issue's repro registers it.
+            spec("embed/hybrid", ModelTask::EmbedHybrid, "BGEM3Hybrid"),
+            // Per-task handles to compare against.
+            spec("dense/bgem3", ModelTask::Embed, "BGEM3Dense"),
+            spec("sparse/bgem3", ModelTask::EmbedSparse, "BGEM3Sparse"),
+            spec("colbert/bgem3", ModelTask::EmbedMultiVector, "BGEM3Colbert"),
+        ])
+        .build()
+        .await
+        .expect("runtime build failed");
+
+    let texts: Vec<&str> = TEXTS.to_vec();
+
+    // --- sparse, resolved from the hybrid alias ---------------------------
+    let sparse = runtime
+        .sparse_embedder("embed/hybrid")
+        .await
+        .expect("hybrid alias must serve a sparse query");
+    assert_eq!(
+        sparse.vocab_size(),
+        runtime
+            .sparse_embedder("sparse/bgem3")
+            .await
+            .unwrap()
+            .vocab_size(),
+        "vocab size must match the per-task sparse handle"
+    );
+    let via_hybrid = sparse.embed(&texts).await.unwrap();
+    let via_task = runtime
+        .sparse_embedder("sparse/bgem3")
+        .await
+        .unwrap()
+        .embed(&texts)
+        .await
+        .unwrap();
+    assert_eq!(via_hybrid.vectors.len(), texts.len());
+    for (a, b) in via_hybrid.vectors.iter().zip(via_task.vectors.iter()) {
+        assert_eq!(a.len(), b.len(), "sparse term count differs from per-task");
+    }
+
+    // --- multi-vector, resolved from the hybrid alias ---------------------
+    let mv = runtime
+        .multi_vector_embedder("embed/hybrid")
+        .await
+        .expect("hybrid alias must serve a multi-vector query");
+    let mv_out = mv.embed(&texts).await.unwrap();
+    assert_eq!(mv_out.vectors.len(), texts.len());
+    assert_eq!(mv.dimensions(), 1024);
+    for per_input in &mv_out.vectors {
+        assert!(!per_input.is_empty(), "expected per-token vectors");
+        assert!(per_input.iter().all(|v| v.len() == 1024));
+    }
+
+    // --- dense, resolved from the hybrid alias ----------------------------
+    let dense = runtime
+        .embedding("embed/hybrid")
+        .await
+        .expect("hybrid alias must serve a dense query");
+    assert_eq!(dense.dimensions(), 1024);
+    let dense_out = dense.embed(&texts).await.unwrap();
+    assert_eq!(dense_out.vectors.len(), texts.len());
+    assert!(dense_out.vectors.iter().all(|v| v.len() == 1024));
+}

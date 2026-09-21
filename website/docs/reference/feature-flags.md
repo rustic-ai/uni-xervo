@@ -103,7 +103,16 @@ When a catalog spec doesn't set `execution_providers`, the default list is featu
 User-supplied `execution_providers` strings are checked in two stages:
 
 - **Catalog options validation** (at runtime build/register time) accepts only `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Any other string — including `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"` — is rejected here with a `RuntimeError::Config`.
-- **Session build** (when the ORT session is created) additionally requires the right feature/runtime backing for the EP you asked for. The vendor EPs (`directml`, `rocm`, `openvino`, `qnn`, `tensorrt`, `webgpu`) require the `provider-onnx-dynamic` feature plus a vendor-supplied ONNX Runtime library via `ORT_DYLIB_PATH`; `cuda` requires `gpu-cuda` and `coreml` requires `gpu-metal`. Requesting one of these without its backing yields a clear `RuntimeError::Config`.
+- **Session build** (when the ORT session is created) additionally requires the right feature/runtime backing for the EP you asked for. The vendor EPs (`directml`, `rocm`, `openvino`, `qnn`, `tensorrt`, `webgpu`) require the `provider-onnx-dynamic` feature plus a vendor-supplied ONNX Runtime library via `ORT_DYLIB_PATH`; `cuda` requires `gpu-cuda` and `coreml` requires `gpu-metal`.
+
+    What happens when the backing is missing depends on whether the list you supplied leaves a way out:
+
+    | Requested list | Result |
+    | --- | --- |
+    | Has a viable entry — e.g. `["cuda", "cpu"]` without `gpu-cuda` | `cuda` is **dropped** with a `WARN` log and the session is built from what remains (`["cpu"]`). An explicit fallback entry is read as asking for exactly this. |
+    | Nothing viable — e.g. `["cuda"]` or `["rocm"]` | `RuntimeError::Config` naming the missing feature. Asking for one specific accelerator and silently getting CPU would defeat the point. |
+
+    Since `cpu` is always available, the error case is exactly "a list with no `cpu` entry whose every accelerator is unbacked". If you *want* a missing feature to be a hard failure — as a build-misconfiguration canary — request the accelerator on its own, without a `cpu` entry.
 
 ## Common build recipes
 

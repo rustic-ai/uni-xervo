@@ -157,6 +157,20 @@ impl HybridEmbeddingModel for OnnxHybridEmbedder {
         self.available
     }
 
+    fn head_width(&self, head: HeadSet) -> Option<u32> {
+        // Only a head this graph actually exposes has a width to report.
+        if !self.available.contains(head) {
+            return None;
+        }
+        match head {
+            HeadSet::DENSE => self.preset.dense.as_ref().map(|h| h.dimensions),
+            HeadSet::SPARSE => self.preset.sparse.as_ref().map(|h| h.vocab_size),
+            HeadSet::MULTI_VECTOR => self.preset.multi_vector.as_ref().map(|h| h.dimensions),
+            // A combination (or empty) names no single width.
+            _ => None,
+        }
+    }
+
     async fn embed(&self, texts: &[&str], requested: HeadSet) -> Result<HybridEmbedResult> {
         // Only heads that are both requested and exposed by the graph are computed.
         let heads = requested.intersection(self.available);

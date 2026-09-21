@@ -105,11 +105,17 @@ pub trait ModelInfo: Send + Sync {
     /// The underlying model identifier (e.g. a HuggingFace repo ID or API model name).
     fn model_id(&self) -> &str;
 
-    /// Names of the ONNX Runtime execution providers requested for the underlying
-    /// session, in priority order. Empty for remote and non-ONNX models.
+    /// Names of the ONNX Runtime execution providers this session was built
+    /// with, in priority order. Empty for remote and non-ONNX models.
     ///
-    /// "Requested" is not "attached": a provider may fall back if a backend is
-    /// unavailable at session-build time. This reports what was asked for.
+    /// This is the *requested* list minus any entry whose backing feature
+    /// isn't compiled into this binary — so a list that reads `["cpu"]`
+    /// despite `["cuda", "cpu"]` having been asked for tells you the build
+    /// lacks `gpu-cuda`.
+    ///
+    /// It is still not "attached": an EP listed here may yet fail to register
+    /// at session-build time (no device, no driver) and be skipped by ORT.
+    /// The ORT 2.0 Rust binding does not expose the finally-attached set.
     fn active_execution_providers(&self) -> Vec<String> {
         Vec::new()
     }
