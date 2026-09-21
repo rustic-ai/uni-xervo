@@ -13,8 +13,8 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, parse_execution_providers_option,
-    resolve_ep_list,
+    OnnxExecutionProvider, build_execution_providers, effective_ep_list,
+    parse_execution_providers_option,
 };
 use crate::traits::{DimSize, RawTensorModel, TensorBatch, TensorDtype, TensorSpec, TensorValue};
 use async_trait::async_trait;
@@ -101,7 +101,7 @@ pub(super) async fn load_raw(
     }
 
     let options = LocalOnnxOptions::from_value(&spec.options)?;
-    let requested_eps: Vec<String> = resolve_ep_list(options.execution_providers.as_deref())
+    let requested_eps: Vec<String> = effective_ep_list(options.execution_providers.as_deref())
         .into_iter()
         .map(|ep| ep.as_str().to_string())
         .collect();

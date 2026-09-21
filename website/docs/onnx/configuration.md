@@ -86,12 +86,28 @@ Examples:
 }
 ```
 
+The list is a priority order, and entries this binary cannot construct are
+dropped rather than fatal — so the example above runs on CUDA in a `gpu-cuda`
+build and on CPU otherwise, with a `WARN` logged when `cuda` is dropped.
+`active_execution_providers()` reports the list that survived, so it reads
+`["cpu"]` on a build without `gpu-cuda`.
+
+Dropping only applies while something remains. `{"execution_providers": ["cuda"]}`
+with no `cpu` entry is a `RuntimeError::Config` on a build lacking `gpu-cuda` —
+use that form when you want a missing GPU feature to fail loudly.
+
 Supported names:
 
 - `cpu`
 - `cuda`
 - `coreml`
 - `directml`
+
+These four are what **catalog validation** accepts, and it requires the array
+form. The EP layer beneath it also understands `rocm`, `openvino`, `qnn`,
+`tensorrt` and `webgpu`, but those are reachable only by calling
+`ModelProvider::load` directly, and each additionally needs the
+`provider-onnx-dynamic` feature plus a vendor ONNX Runtime via `ORT_DYLIB_PATH`.
 
 Defaults:
 

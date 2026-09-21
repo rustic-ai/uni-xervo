@@ -22,12 +22,30 @@
 //! - With `gpu-metal`: `[CoreMl, Cpu]` (CoreML preferred, CPU fallback).
 //! - Otherwise:        `[Cpu]`.
 //!
+//! # Availability filtering
+//!
+//! A requested EP whose backing feature isn't compiled into this binary is
+//! **dropped** from the list, with a warning, so long as something survives.
+//! `["cuda", "cpu"]` on a build without `gpu-cuda` therefore runs on CPU —
+//! the explicit `cpu` entry is the caller asking for exactly that.
+//!
+//! A list in which *nothing* survives is a hard `Config` error. Because CPU
+//! is always linked in, that is precisely the CPU-free list whose GPU/vendor
+//! EPs are all unavailable (`["cuda"]`, `["rocm"]`) — requesting a specific
+//! accelerator and silently getting CPU would defeat the point.
+//!
+//! This is a compile-time question only. Whether the hardware is present at
+//! *runtime* is ORT's business, handled by the strictness rules below.
+//!
 //! # Strict-vs-fallback semantics
 //!
-//! When the *configured* list contains GPU EPs but does **not** include
-//! `Cpu`, the last GPU EP is built with `error_on_failure()` so we don't
-//! silently fall back to CPU. Otherwise every EP is built with
+//! Applied to the list that survives filtering: when it came from the caller
+//! and contains no `Cpu`, its last EP is built with `error_on_failure()` so
+//! we don't silently fall back to CPU. Otherwise every EP is built with
 //! `fail_silently()` so ORT can chain through the list as written.
+//!
+//! Filtering first matters here: `["cuda", "rocm"]` without `gpu-cuda`
+//! narrows to `[rocm]`, which then becomes the strict last entry.
 
 use ort::execution_providers::ExecutionProviderDispatch;
 
@@ -120,6 +138,44 @@ impl OnnxExecutionProvider {
                 | Self::WebGpu
         )
     }
+
+    /// Whether this EP can be built at all in the current binary.
+    ///
+    /// Purely a compile-time question — it asks whether the backing feature
+    /// was enabled, not whether the hardware is present. Runtime availability
+    /// is ORT's business and is handled by `fail_silently()` one layer down.
+    ///
+    /// Uses the `cfg!()` *expression* macro rather than `#[cfg]` attributes so
+    /// this stays a single total match, which keeps it in lockstep with the
+    /// dispatch arms in [`execution_provider_dispatch`]. The two are pinned
+    /// together by `availability_predicate_matches_dispatch`.
+    fn is_available(&self) -> bool {
+        match self {
+            // CPU is always linked in — see the unconditional `CPU` import.
+            // This is load-bearing: it guarantees a list containing `cpu`
+            // can never filter down to empty.
+            Self::Cpu => true,
+            Self::Cuda => cfg!(feature = "gpu-cuda"),
+            Self::CoreMl => cfg!(feature = "gpu-metal"),
+            Self::Rocm
+            | Self::DirectMl
+            | Self::OpenVino
+            | Self::Qnn
+            | Self::TensorRt
+            | Self::WebGpu => cfg!(feature = "provider-onnx-dynamic"),
+        }
+    }
+}
+
+/// Split a requested EP list into the entries this build can construct and
+/// the entries it cannot.
+///
+/// Order is preserved in both halves, so the surviving list keeps the
+/// caller's priority ordering.
+fn partition_available(
+    requested: &[OnnxExecutionProvider],
+) -> (Vec<OnnxExecutionProvider>, Vec<OnnxExecutionProvider>) {
+    requested.iter().copied().partition(|ep| ep.is_available())
 }
 
 /// Resolve the EP list that will be used for a session: either the
@@ -130,6 +186,43 @@ pub(crate) fn resolve_ep_list(
     configured
         .map(<[OnnxExecutionProvider]>::to_vec)
         .unwrap_or_else(default_execution_providers)
+}
+
+/// The EP list a session will *actually* be built with: [`resolve_ep_list`]
+/// minus any entry whose backing feature is not compiled in.
+///
+/// This is what [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
+/// reports, so a caller can tell that a list resolved to `["cpu"]` only
+/// because the build lacks `gpu-cuda` / `gpu-metal`.
+///
+/// Deliberately infallible. Reporting happens *before* the fail-fast
+/// validation probe at each load site, and making this fallible would move
+/// the origin of EP errors and blur the "validate before any I/O" ordering
+/// that `onnx_ep_resolution_test.rs` pins. An empty return is unreachable in
+/// practice: the probe rejects an all-unavailable list moments later.
+pub(crate) fn effective_ep_list(
+    configured: Option<&[OnnxExecutionProvider]>,
+) -> Vec<OnnxExecutionProvider> {
+    let (kept, _dropped) = partition_available(&resolve_ep_list(configured));
+    kept
+}
+
+/// Index of the EP that should be built with `error_on_failure()`, if any.
+///
+/// Takes the **already-filtered** list: which entry is "last" changes once
+/// unavailable EPs are dropped, and getting that wrong would silently turn a
+/// CPU-free request into a quiet CPU fallback at ORT registration time.
+///
+/// Strict ⟺ the list came from the user (not the feature-aware default),
+/// contains no `Cpu`, and this is its final entry. Kept as a pure, `ort`-free
+/// function because `ExecutionProviderDispatch`'s `error_on_failure` field is
+/// private and absent from its `Debug` impl — this is the only way to test
+/// the behaviour.
+fn strict_index(kept: &[OnnxExecutionProvider], configured: bool) -> Option<usize> {
+    if !configured || kept.is_empty() || kept.contains(&OnnxExecutionProvider::Cpu) {
+        return None;
+    }
+    Some(kept.len() - 1)
 }
 
 /// Default EP list when the spec doesn't specify one.
@@ -154,31 +247,104 @@ pub(crate) fn default_execution_providers() -> Vec<OnnxExecutionProvider> {
 /// `configured` is the user-supplied list (or `None` to use defaults).
 /// `provider_label` is the provider id string used only in error
 /// messages (e.g. `"local/onnx"`) so failures point at the right alias.
+///
+/// Entries whose backing feature isn't compiled in are **dropped** rather
+/// than fatal, provided at least one entry survives — so `["cuda", "cpu"]`
+/// runs on CPU in a build without `gpu-cuda`, which is what an explicit
+/// fallback entry asks for. Only an all-unavailable list is an error.
+///
+/// Note this runs twice per load (once as the fail-fast probe before any
+/// I/O, once for real at session build; more for OCR, which builds several
+/// sessions), so a dropped-EP warning is emitted more than once per alias.
+/// The message is identical and idempotent; deduplicating it would mean
+/// touching all eight load sites for no behavioural gain.
 pub(crate) fn build_execution_providers(
     configured: Option<&[OnnxExecutionProvider]>,
     alias: &str,
     provider_label: &str,
 ) -> Result<Vec<ExecutionProviderDispatch>> {
-    let providers = configured
-        .map(|value| value.to_vec())
-        .unwrap_or_else(default_execution_providers);
-    let cpu_present = providers.contains(&OnnxExecutionProvider::Cpu);
-    let last_index = providers.len().saturating_sub(1);
+    let requested = resolve_ep_list(configured);
+    let (kept, dropped) = partition_available(&requested);
 
-    providers
-        .into_iter()
+    // The feature-aware default is cfg-generated, so it can only ever name
+    // EPs this build can construct.
+    debug_assert!(
+        configured.is_some() || dropped.is_empty(),
+        "default EP list must never contain an unavailable provider"
+    );
+
+    if kept.is_empty() {
+        // Nothing survived, so the list was CPU-free and none of it is
+        // available. Name the highest-priority entry: for the single-EP
+        // lists this is the common case for, the message is unchanged.
+        return Err(all_unavailable(&requested, alias, provider_label));
+    }
+
+    if !dropped.is_empty() {
+        tracing::warn!(
+            alias = %alias,
+            provider = %provider_label,
+            dropped = %join_eps(&dropped),
+            using = %join_eps(&kept),
+            "Requested execution providers are not available in this build; continuing without them"
+        );
+    }
+
+    let strict_at = strict_index(&kept, configured.is_some());
+
+    kept.into_iter()
         .enumerate()
         .map(|(index, provider)| {
-            let strict = configured.is_some() && !cpu_present && index == last_index;
+            let strict = strict_at == Some(index);
             execution_provider_dispatch(provider, strict, alias, provider_label)
         })
         .collect()
+}
+
+/// Comma-separated EP ids, for log fields and error messages.
+fn join_eps(providers: &[OnnxExecutionProvider]) -> String {
+    providers
+        .iter()
+        .map(|ep| ep.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Error for a requested list in which nothing is available.
+///
+/// Built on top of [`feature_not_enabled`] for the highest-priority entry so
+/// single-EP lists keep their exact existing message, with a trailing hint
+/// appended only when the list had more than one entry.
+fn all_unavailable(
+    requested: &[OnnxExecutionProvider],
+    alias: &str,
+    provider_label: &str,
+) -> RuntimeError {
+    let first = requested
+        .first()
+        .copied()
+        .expect("an empty EP list resolves to the non-empty default");
+    let base = feature_not_enabled(first, alias, provider_label);
+    if requested.len() < 2 {
+        return base;
+    }
+    RuntimeError::Config(format!(
+        "{base} (none of the requested execution providers [{}] is available in \
+         this build; add a \"cpu\" entry to allow fallback)",
+        join_eps(requested)
+    ))
 }
 
 /// Build a vendor-EP dispatch when `provider-onnx-dynamic` is active, or
 /// return a Config error pointing the user at the right feature otherwise.
 /// Implemented as a macro so the early-return flows through the caller's
 /// `match` arm.
+///
+/// Since [`build_execution_providers`] now filters on
+/// [`OnnxExecutionProvider::is_available`] before dispatching, the error
+/// branch is unreachable in practice. It is kept as a fail-loud backstop: if
+/// the availability predicate and these cfg arms ever drift apart, this
+/// errors rather than silently mis-building a session.
 macro_rules! vendor_dispatch {
     ($provider:ident, $alias:ident, $provider_label:ident, $ep:ident) => {{
         #[cfg(feature = "provider-onnx-dynamic")]
@@ -589,5 +755,197 @@ mod tests {
             );
             assert!(result.is_ok(), "expected dispatch to build for {ep:?}");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Availability filtering: unavailable EPs are dropped when a viable
+    // fallback remains, and only a wholly-unavailable list is fatal.
+    // -----------------------------------------------------------------------
+
+    /// Regression test: `["cuda", "cpu"]` on a build without `gpu-cuda` used
+    /// to fail the entire load, because the per-EP error short-circuited
+    /// `collect()` before the `cpu` entry was ever reached.
+    #[cfg(not(feature = "gpu-cuda"))]
+    #[test]
+    fn cuda_with_cpu_fallback_drops_cuda() {
+        let result = build_execution_providers(
+            Some(&[OnnxExecutionProvider::Cuda, OnnxExecutionProvider::Cpu]),
+            "test/alias",
+            "local/test",
+        )
+        .expect("an explicit cpu fallback must survive a missing gpu-cuda");
+        assert_eq!(result.len(), 1, "only cpu should remain");
+    }
+
+    /// CoreML is the exact structural mirror of CUDA, gated on `gpu-metal`.
+    #[cfg(not(feature = "gpu-metal"))]
+    #[test]
+    fn coreml_with_cpu_fallback_drops_coreml() {
+        let result = build_execution_providers(
+            Some(&[OnnxExecutionProvider::CoreMl, OnnxExecutionProvider::Cpu]),
+            "test/alias",
+            "local/test",
+        )
+        .expect("an explicit cpu fallback must survive a missing gpu-metal");
+        assert_eq!(result.len(), 1, "only cpu should remain");
+    }
+
+    /// Mirror image of `vendor_eps_fail_under_bundled_provider`: the same
+    /// EPs that are fatal alone are merely dropped when cpu backs them up.
+    #[cfg(not(feature = "provider-onnx-dynamic"))]
+    #[test]
+    fn vendor_eps_with_cpu_fallback_are_dropped() {
+        for ep in [
+            OnnxExecutionProvider::Rocm,
+            OnnxExecutionProvider::DirectMl,
+            OnnxExecutionProvider::OpenVino,
+            OnnxExecutionProvider::Qnn,
+            OnnxExecutionProvider::TensorRt,
+            OnnxExecutionProvider::WebGpu,
+        ] {
+            let result = build_execution_providers(
+                Some(&[ep, OnnxExecutionProvider::Cpu]),
+                "test/alias",
+                "local/test",
+            )
+            .unwrap_or_else(|e| panic!("expected {ep:?} to be dropped, not fatal: {e}"));
+            assert_eq!(result.len(), 1, "only cpu should remain for {ep:?}");
+        }
+    }
+
+    /// A CPU-free list in which nothing is available stays fatal — that is
+    /// the contract the strict path exists to protect. The message still
+    /// names the highest-priority entry, and gains a hint about `cpu`.
+    #[cfg(all(not(feature = "gpu-cuda"), not(feature = "provider-onnx-dynamic")))]
+    #[test]
+    fn all_unavailable_cpu_free_list_errors() {
+        let err = build_execution_providers(
+            Some(&[OnnxExecutionProvider::Cuda, OnnxExecutionProvider::Rocm]),
+            "test/alias",
+            "local/test",
+        )
+        .err()
+        .expect("a list with no viable entry must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("CUDA"), "{msg}");
+        assert!(msg.contains("gpu-cuda"), "{msg}");
+        assert!(msg.contains("cpu"), "should hint at a cpu fallback: {msg}");
+    }
+
+    #[test]
+    fn cpu_only_list_is_untouched() {
+        let result = build_execution_providers(
+            Some(&[OnnxExecutionProvider::Cpu]),
+            "test/alias",
+            "local/test",
+        )
+        .expect("cpu is always available");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// The default list is cfg-generated, so filtering it must be a no-op on
+    /// every build — this is what lets `strict_index`'s `configured` flag stay
+    /// meaningful.
+    #[test]
+    fn default_list_is_never_filtered() {
+        let defaults = default_execution_providers();
+        let (kept, dropped) = partition_available(&defaults);
+        assert!(dropped.is_empty(), "default named an unavailable EP");
+        assert_eq!(kept, defaults);
+    }
+
+    // -----------------------------------------------------------------------
+    // strict_index — pure, so it is testable under every feature set
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn strict_index_marks_last_of_cpu_free_configured_list() {
+        assert_eq!(
+            strict_index(&[OnnxExecutionProvider::Cuda], true),
+            Some(0),
+            "a lone configured GPU EP must be strict"
+        );
+        // The post-filter survivor of ["cuda", "rocm"]: rocm is now last, so
+        // strictness shifts onto it.
+        assert_eq!(strict_index(&[OnnxExecutionProvider::Rocm], true), Some(0));
+    }
+
+    #[test]
+    fn strict_index_is_none_when_cpu_can_absorb() {
+        assert_eq!(
+            strict_index(
+                &[OnnxExecutionProvider::Cuda, OnnxExecutionProvider::Cpu],
+                true
+            ),
+            None
+        );
+        assert_eq!(strict_index(&[OnnxExecutionProvider::Cpu], true), None);
+    }
+
+    #[test]
+    fn strict_index_never_applies_to_defaults() {
+        // `configured == false` means the feature-aware default, which must
+        // always be free to chain down to CPU.
+        assert_eq!(
+            strict_index(
+                &[OnnxExecutionProvider::Cuda, OnnxExecutionProvider::Cpu],
+                false
+            ),
+            None
+        );
+        assert_eq!(strict_index(&[OnnxExecutionProvider::Cuda], false), None);
+        assert_eq!(strict_index(&[], true), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Consistency between the availability predicate and the dispatch arms
+    // -----------------------------------------------------------------------
+
+    /// `is_available` and the `#[cfg]` arms of `execution_provider_dispatch`
+    /// encode the same feature rules in two places. Drift where the predicate
+    /// is *too permissive* still hard-errors (the backstop); drift where it is
+    /// *too strict* would silently drop a usable EP. Pin both directions.
+    #[test]
+    fn availability_predicate_matches_dispatch() {
+        for ep in [
+            OnnxExecutionProvider::Cpu,
+            OnnxExecutionProvider::Cuda,
+            OnnxExecutionProvider::CoreMl,
+            OnnxExecutionProvider::Rocm,
+            OnnxExecutionProvider::DirectMl,
+            OnnxExecutionProvider::OpenVino,
+            OnnxExecutionProvider::Qnn,
+            OnnxExecutionProvider::TensorRt,
+            OnnxExecutionProvider::WebGpu,
+        ] {
+            let built = build_execution_providers(Some(&[ep]), "test/alias", "local/test").is_ok();
+            assert_eq!(
+                ep.is_available(),
+                built,
+                "is_available() disagrees with dispatch for {ep:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // effective_ep_list — what active_execution_providers() reports
+    // -----------------------------------------------------------------------
+
+    #[cfg(not(feature = "gpu-cuda"))]
+    #[test]
+    fn effective_ep_list_drops_unavailable() {
+        assert_eq!(
+            effective_ep_list(Some(&[
+                OnnxExecutionProvider::Cuda,
+                OnnxExecutionProvider::Cpu
+            ])),
+            vec![OnnxExecutionProvider::Cpu],
+            "reporting must not claim an EP that was never compiled in"
+        );
+    }
+
+    #[test]
+    fn effective_ep_list_without_config_is_the_default() {
+        assert_eq!(effective_ep_list(None), default_execution_providers());
     }
 }

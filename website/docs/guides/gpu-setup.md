@@ -111,20 +111,24 @@ intrusiveness:
 
 `active_execution_providers()` lives on the `ModelInfo` supertrait, so
 every typed handle (`RerankerModel`, `RawTensorModel`, `EmbeddingModel`, …)
-exposes it. It returns the EPs *requested* for the underlying ONNX session,
-in priority order (empty for remote / non-ONNX models):
+exposes it. It returns the EPs the ONNX session was *built with*, in priority
+order (empty for remote / non-ONNX models):
 
 ```rust
 let model = runtime.reranker("rerank/bge").await?;
 println!("active EPs: {:?}", model.active_execution_providers());
-// e.g. ["cuda", "cpu"] — the requested priority list, not what ORT attached
+// ["cuda", "cpu"] on a gpu-cuda build; ["cpu"] without it, because an
+// unbacked `cuda` entry is dropped at build time rather than rejected.
 ```
 
-This reports what was **requested**, not what actually registered: a CUDA
-init that fails silently still shows `["cuda", "cpu"]` here. So it catches
-*misconfiguration* (e.g. CUDA was never requested, or the list resolved to
-`["cpu"]` only because the build lacks `gpu-cuda`), but it does **not**
-prove the GPU EP loaded at runtime — use checks 2 and 3 for that.
+This is the requested list minus anything this binary cannot construct, so it
+does catch build *misconfiguration*: if you asked for `["cuda", "cpu"]` and
+see `["cpu"]`, the binary lacks `gpu-cuda`.
+
+It still is not what ORT finally **attached**. An EP listed here can fail to
+register at runtime — no device, no driver — and be skipped silently, so a
+CUDA init that fails on a `gpu-cuda` build still shows `["cuda", "cpu"]`.
+Use checks 2 and 3 to prove the GPU EP actually loaded.
 
 Source: `src/traits.rs` (the `ModelInfo` supertrait); the `local/onnx`
 override is in `src/provider/local_onnx/rerank.rs:202`.

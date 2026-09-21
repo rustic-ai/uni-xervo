@@ -17,6 +17,32 @@ All notable changes to this project are documented in this file.
   than re-reading the raw JSON, so the struct and the accepted schema can no
   longer drift apart. Only the `EXPENSIVE_TESTS` suite exercised this path; a
   unit test now covers it in ordinary CI.
+- **ONNX execution-provider lists now degrade instead of failing.** A list with an
+  explicit fallback — `{"execution_providers": ["cuda", "cpu"]}` — aborted the
+  whole load on a build without `gpu-cuda`, because the per-EP feature error
+  short-circuited before the viable `cpu` entry was reached. Unavailable entries
+  are now dropped with a `WARN` naming them, and the session is built from what
+  remains. The same applies to `coreml` without `gpu-metal` and to the vendor EPs
+  without `provider-onnx-dynamic`.
+
+  **Behaviour change.** A CPU-free list whose accelerators are all unavailable
+  (`["cuda"]`, `["rocm"]`) still fails with the same `RuntimeError::Config` as
+  before — requesting one specific accelerator and silently getting CPU would
+  defeat the point. If you relied on the old hard error as a build-misconfiguration
+  canary for a *mixed* list, request the accelerator on its own instead.
+
+  `active_execution_providers()` now reports the surviving list rather than the
+  raw request, so `["cuda", "cpu"]` reads back as `["cpu"]` on a build without
+  `gpu-cuda` — which is what the GPU setup guide already described it as being
+  good for. It remains a report of what the session was *built* with, not what
+  ORT finally attached at runtime.
+
+### Added
+
+- `tests/gpu_metal_inference_test.rs` — the Apple counterpart to
+  `gpu_cuda_inference_test.rs`, covering the CoreML execution path for the
+  `local/onnx` embed and rerank tasks. Gated on `gpu-metal` + `EXPENSIVE_TESTS`,
+  so it compiles out of a default build.
 
 ## [0.18.0] - 2026-09-05
 

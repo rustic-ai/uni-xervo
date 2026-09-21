@@ -121,3 +121,34 @@ async fn execution_providers_accepts_string_form() {
         "expected RuntimeError::Config, got {err:?}"
     );
 }
+
+/// The complement of `cuda_only_eps_fail_when_cuda_feature_disabled`: adding
+/// an explicit `cpu` fallback makes the same list resolve instead of erroring.
+///
+/// Only assertable without network under `provider-onnx-dynamic`, where
+/// `preflight_ort_dylib` fails immediately *after* EP validation and so still
+/// stops short of any HF download. The point is which error we get: a dylib
+/// complaint, never `gpu-cuda`.
+#[cfg(all(feature = "provider-onnx-dynamic", not(feature = "gpu-cuda")))]
+#[tokio::test]
+async fn cuda_with_cpu_fallback_passes_ep_validation() {
+    // With a real runtime configured, preflight succeeds and the load would
+    // proceed to download a model — skip rather than reach for the network.
+    if std::env::var("ORT_DYLIB_PATH").is_ok() {
+        eprintln!("Skipping - ORT_DYLIB_PATH is set, load would reach the network");
+        return;
+    }
+
+    let provider = LocalOnnxProvider::new();
+    let spec = rerank_spec_with_eps(serde_json::json!(["cuda", "cpu"]));
+
+    let err = provider
+        .load(&spec)
+        .await
+        .expect_err("no ORT dylib is configured, so preflight must still fail");
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("gpu-cuda"),
+        "cuda should have been dropped in favour of the cpu entry, not rejected: {msg}"
+    );
+}
