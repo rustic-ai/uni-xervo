@@ -57,7 +57,7 @@ vision pipeline).
 | `provider-voyageai` | `remote/voyageai` | embed, rerank |
 | `provider-cohere` | `remote/cohere` | embed, rerank, generate, **embed_multimodal** |
 | `provider-azure-openai` | `remote/azure-openai` | embed, generate |
-| `provider-llamacpp` | `remote/llamacpp` | embed (llama.cpp `llama-server`, tokenizer-aware truncation) |
+| `provider-llamacpp` | `remote/llamacpp` | embed (llama.cpp `llama-server`, tokenizer-aware truncation), generate (text and vision) |
 
 All remote providers share a single `reqwest` dependency, so enabling all of them costs roughly the same as enabling one. `provider-cohere` and `provider-gemini` additionally pull `base64` for encoding raw image / audio bytes into the multimodal embed request payload.
 

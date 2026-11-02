@@ -63,7 +63,7 @@ helpers (`max_sim`, `colbert_rerank`, `sparse_dot`) in one `use`.
 | `remote/voyageai` | `embed`, `rerank` | `provider-voyageai` |
 | `remote/cohere` | `embed`, `rerank`, `generate`, `embed_multimodal` | `provider-cohere` |
 | `remote/azure-openai` | `embed`, `generate` | `provider-azure-openai` |
-| `remote/llamacpp` | `embed` (llama.cpp `llama-server`, tokenizer-aware truncation) | `provider-llamacpp` |
+| `remote/llamacpp` | `embed` (llama.cpp `llama-server`, tokenizer-aware truncation), `generate` (text and vision) | `provider-llamacpp` |
 
 ## Installation
 
@@ -247,7 +247,7 @@ Default remote credential env vars:
 | `remote/voyageai` | `VOYAGE_API_KEY` | None |
 | `remote/cohere` | `CO_API_KEY` | None |
 | `remote/azure-openai` | `AZURE_OPENAI_API_KEY` | `resource_name` option |
-| `remote/llamacpp` | none (optional `api_key_env`) | `base_url`, `max_input_tokens`, `embedding_dimensions` options |
+| `remote/llamacpp` | none (optional `api_key_env`) | `base_url` option; `max_input_tokens` and `embedding_dimensions` for `embed` |
 
 ## CLI Prefetch Utility
 

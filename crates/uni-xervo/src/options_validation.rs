@@ -443,41 +443,77 @@ fn require_absolute_http_url(
     Ok(())
 }
 
-/// Validate `remote/llamacpp` options. Unlike the other remote providers,
-/// `base_url`, `max_input_tokens`, and `embedding_dimensions` are **required**:
-/// llama.cpp has no hosted default endpoint and no model-id → dimensions
-/// table, and the token budget drives client-side truncation. The provider is
-/// embed-only, so other tasks are rejected here rather than at load time.
+/// Validate `remote/llamacpp` options.
+///
+/// `base_url` is required for every task: llama.cpp has no hosted default
+/// endpoint, so there is nothing to fall back to. The rest is task-keyed.
+///
+/// `embed` additionally requires `max_input_tokens` and
+/// `embedding_dimensions` — there is no model-id → dimensions table, and the
+/// token budget drives the client-side truncation pre-pass. Those three keys
+/// are embed-only and rejected elsewhere, rather than silently ignored.
+///
+/// `generate` takes no keys of its own. In particular there is no option for
+/// vision: whether images are accepted depends on whether `llama-server` was
+/// started with `--mmproj`, which is a property of the server process and not
+/// something the catalog can know.
 fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
-    const REQUIRED: [&str; 3] = ["base_url", "max_input_tokens", "embedding_dimensions"];
+    /// Keys every task reads.
+    const COMMON: [&str; 3] = ["base_url", "api_key_env", "request_timeout_secs"];
+    /// Keys only `embed` reads.
+    const EMBED_ONLY: [&str; 3] = [
+        "tokenizer_base_url",
+        "max_input_tokens",
+        "embedding_dimensions",
+    ];
 
-    if task != ModelTask::Embed {
-        return Err(RuntimeError::Config(format!(
-            "Provider '{}' only supports task 'embed' (got '{}')",
-            provider_id,
-            task_wire_name(task)
-        )));
+    let is_embed = match task {
+        ModelTask::Embed => true,
+        ModelTask::Generate => false,
+        other => {
+            return Err(RuntimeError::Config(format!(
+                "Provider '{}' supports tasks 'embed' and 'generate' (got '{}')",
+                provider_id,
+                task_wire_name(other)
+            )));
+        }
+    };
+
+    let mut required: Vec<&str> = vec!["base_url"];
+    if is_embed {
+        required.extend(["max_input_tokens", "embedding_dimensions"]);
     }
+
     let Some(map) = as_object(provider_id, options)? else {
         return Err(RuntimeError::Config(format!(
             "Provider '{}' requires options: {}",
             provider_id,
-            REQUIRED.join(", ")
+            required.join(", ")
         )));
     };
-    reject_unknown_keys(
-        provider_id,
-        map,
-        &[
-            "base_url",
-            "tokenizer_base_url",
-            "max_input_tokens",
-            "embedding_dimensions",
-            "api_key_env",
-            "request_timeout_secs",
-        ],
-    )?;
-    for key in REQUIRED {
+
+    // Name the embed-only keys explicitly before the unknown-key sweep, so a
+    // misplaced one says *why* it does not belong rather than "unknown".
+    if !is_embed {
+        for key in EMBED_ONLY {
+            if map.contains_key(key) {
+                return Err(RuntimeError::Config(format!(
+                    "Option '{}' for provider '{}' applies only to task 'embed' (got '{}')",
+                    key,
+                    provider_id,
+                    task_wire_name(task)
+                )));
+            }
+        }
+    }
+
+    let mut allowed: Vec<&str> = COMMON.to_vec();
+    if is_embed {
+        allowed.extend(EMBED_ONLY);
+    }
+    reject_unknown_keys(provider_id, map, &allowed)?;
+
+    for key in required {
         if !map.contains_key(key) {
             return Err(RuntimeError::Config(format!(
                 "Option '{}' for provider '{}' is required",
@@ -485,6 +521,7 @@ fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value
             )));
         }
     }
+
     require_string_keys(
         provider_id,
         map,
@@ -492,15 +529,18 @@ fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value
     )?;
     require_absolute_http_url(provider_id, map, "base_url")?;
     require_absolute_http_url(provider_id, map, "tokenizer_base_url")?;
-    require_positive_u64(provider_id, map, "max_input_tokens")?;
-    if map["max_input_tokens"].as_u64().unwrap_or(0) < 3 {
-        return Err(RuntimeError::Config(format!(
-            "Option 'max_input_tokens' for provider '{}' must be at least 3 \
-             (two special tokens plus one content token)",
-            provider_id
-        )));
-    }
     require_positive_u64(provider_id, map, "request_timeout_secs")?;
+
+    if is_embed {
+        require_positive_u64(provider_id, map, "max_input_tokens")?;
+        if map["max_input_tokens"].as_u64().unwrap_or(0) < 3 {
+            return Err(RuntimeError::Config(format!(
+                "Option 'max_input_tokens' for provider '{}' must be at least 3 \
+                 (two special tokens plus one content token)",
+                provider_id
+            )));
+        }
+    }
     require_embedding_dimensions(provider_id, task, map)
 }
 

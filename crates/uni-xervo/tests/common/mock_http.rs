@@ -1,7 +1,8 @@
 //! Minimal in-process HTTP/1.1 server that impersonates a llama.cpp
 //! `llama-server` for the `remote/llamacpp` provider tests.
 //!
-//! Routes `POST /tokenize` and `POST /v1/embeddings` to configurable handlers,
+//! Routes `POST /tokenize`, `POST /v1/embeddings` and
+//! `POST /v1/chat/completions` to configurable handlers,
 //! records every request (method, path, headers, JSON body) for assertions,
 //! and can hang a connection forever to exercise client timeouts. Only what
 //! reqwest actually sends is parsed: a request line, headers, and a
@@ -53,6 +54,7 @@ impl RecordedRequest {
 struct State {
     tokenize: Handler,
     embeddings: Handler,
+    chat: Handler,
     log: Vec<RecordedRequest>,
 }
 
@@ -71,6 +73,7 @@ impl MockLlamaServer {
         let state = Arc::new(Mutex::new(State {
             tokenize: tokenize_by_chars(),
             embeddings: embeddings_echo(4),
+            chat: chat_echo(),
             log: Vec::new(),
         }));
         let (shutdown, mut shutdown_rx) = watch::channel(false);
@@ -115,6 +118,10 @@ impl MockLlamaServer {
 
     pub fn on_embeddings(&self, f: impl FnMut(&Value) -> RouteResponse + Send + 'static) {
         self.state.lock().unwrap().embeddings = Box::new(f);
+    }
+
+    pub fn on_chat(&self, f: impl FnMut(&Value) -> RouteResponse + Send + 'static) {
+        self.state.lock().unwrap().chat = Box::new(f);
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
@@ -203,6 +210,7 @@ async fn handle_connection(
         match (method.as_str(), path.as_str()) {
             ("POST", "/tokenize") => (st.tokenize)(&json_body),
             ("POST", "/v1/embeddings") => (st.embeddings)(&json_body),
+            ("POST", "/v1/chat/completions") => (st.chat)(&json_body),
             _ => RouteResponse::Json {
                 status: 404,
                 body: json!({ "error": { "code": 404, "message": format!("no route for {method} {path}"), "type": "not_found_error" } }),
@@ -300,6 +308,55 @@ pub fn embeddings_echo(dims: usize) -> Handler {
                 "usage": { "prompt_tokens": n * 3, "total_tokens": n * 3 }
             }),
         }
+    })
+}
+
+/// `/v1/chat/completions` handler that echoes the request back as prose, so a
+/// test can tell from the *response* what the provider actually sent: the
+/// concatenated text of the last message, then one `<image>` marker per image
+/// part it carried. `usage` is populated the way llama.cpp does.
+pub fn chat_echo() -> Handler {
+    Box::new(|req: &Value| {
+        let last = req["messages"]
+            .as_array()
+            .and_then(|m| m.last())
+            .cloned()
+            .unwrap_or(Value::Null);
+        let text = match &last["content"] {
+            Value::String(s) => s.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .map(|p| match p["type"].as_str() {
+                    Some("text") => p["text"].as_str().unwrap_or("").to_string(),
+                    Some("image_url") => "<image>".to_string(),
+                    other => format!("<{}>", other.unwrap_or("?")),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => String::new(),
+        };
+        RouteResponse::Json {
+            status: 200,
+            body: chat_completion(&text, 7, 3),
+        }
+    })
+}
+
+/// A well-formed `/v1/chat/completions` body carrying `content` and usage.
+pub fn chat_completion(content: &str, prompt_tokens: u64, completion_tokens: u64) -> Value {
+    json!({
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": content },
+            "finish_reason": "stop",
+        }],
+        "model": "mock",
+        "object": "chat.completion",
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
     })
 }
 

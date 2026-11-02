@@ -2940,3 +2940,164 @@ async fn test_llamacpp_remote_embedding() {
         eprintln!("Skipping - provider-llamacpp feature not enabled");
     }
 }
+
+/// Real text and vision generation against a running llama-server.
+///
+/// Both halves hit the same alias: whether images are accepted depends on the
+/// server having been started with `--mmproj`, not on any option, so one
+/// catalog entry covers text-only and vision servers alike. The vision half is
+/// skipped (not failed) when the server has no projector loaded, which it
+/// reports as an error naming multimodal support.
+///
+/// Start the server with, e.g.:
+/// `llama-server -m gemma-4-E2B_q4_0-it.gguf --mmproj gemma-4-E2B-it-mmproj.gguf -c 4096 --port 8099`
+/// then `EXPENSIVE_TESTS=1 LLAMACPP_CHAT_BASE_URL=http://127.0.0.1:8099/v1 cargo test
+/// -p uni-xervo --test real_providers_test test_llamacpp_generation -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn test_llamacpp_generation() {
+    require_expensive_tests!();
+    let Ok(base_url) = env::var("LLAMACPP_CHAT_BASE_URL") else {
+        eprintln!("Skipping - LLAMACPP_CHAT_BASE_URL not set");
+        return;
+    };
+
+    #[cfg(feature = "provider-llamacpp")]
+    {
+        use uni_xervo::provider::llamacpp::RemoteLlamaCppProvider;
+        use uni_xervo::traits::{ContentBlock, ImageInput, MessageRole};
+
+        let model_id = env::var("LLAMACPP_CHAT_MODEL").unwrap_or_else(|_| "local".to_string());
+        let mut options = serde_json::json!({
+            "base_url": base_url,
+            "request_timeout_secs": 180
+        });
+        if let Ok(key_env) = env::var("LLAMACPP_API_KEY_ENV") {
+            options["api_key_env"] = serde_json::json!(key_env);
+        }
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(RemoteLlamaCppProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "generate/llamacpp".to_string(),
+                task: ModelTask::Generate,
+                provider_id: "remote/llamacpp".to_string(),
+                model_id,
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options,
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .generator("generate/llamacpp")
+            .await
+            .expect("Failed to resolve generator model");
+
+        // --- text ---------------------------------------------------------
+        let text = model
+            .generate(
+                &[
+                    Message::system("Answer in one short sentence."),
+                    Message::user("What colour is a clear midday sky on Earth?"),
+                ],
+                GenerationOptions {
+                    max_tokens: Some(512),
+                    temperature: Some(0.0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("Text generation failed");
+
+        // A generous budget on purpose: on a reasoning model the thinking phase
+        // consumes `max_tokens` before `content` is reached, and a short
+        // budget yields a legitimately empty answer rather than a failure.
+        assert!(
+            !text.text.trim().is_empty(),
+            "no text generated (on a reasoning model, raise max_tokens)"
+        );
+        assert!(
+            text.text.to_lowercase().contains("blue"),
+            "unexpected answer: {:?}",
+            text.text
+        );
+        let usage = text.usage.expect("llama-server always reports usage");
+        assert!(usage.prompt_tokens > 0, "prompt_tokens = 0");
+        assert!(usage.completion_tokens > 0, "completion_tokens = 0");
+        assert_eq!(
+            usage.total_tokens,
+            usage.prompt_tokens + usage.completion_tokens
+        );
+        // Text-only generation never populates the diffusion / speech fields.
+        assert!(text.images.is_empty());
+        assert!(text.audio.is_none());
+
+        // --- vision -------------------------------------------------------
+        let fixture = format!(
+            "{}/tests/fixtures/vision/earthrise.jpg",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let image = std::fs::read(&fixture).expect("read vision fixture");
+
+        let vision = model
+            .generate(
+                &[Message {
+                    role: MessageRole::User,
+                    content: vec![
+                        ContentBlock::Text(
+                            "What large round object is in this photograph? Answer in one word."
+                                .to_string(),
+                        ),
+                        ContentBlock::Image(ImageInput::Bytes {
+                            data: image,
+                            media_type: "image/jpeg".to_string(),
+                        }),
+                    ],
+                }],
+                GenerationOptions {
+                    max_tokens: Some(512),
+                    temperature: Some(0.0),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        match vision {
+            Ok(result) => {
+                assert!(!result.text.trim().is_empty(), "no vision text generated");
+                let lower = result.text.to_lowercase();
+                assert!(
+                    lower.contains("earth") || lower.contains("planet") || lower.contains("moon"),
+                    "vision model did not describe the image: {:?}",
+                    result.text
+                );
+                assert!(
+                    result
+                        .usage
+                        .as_ref()
+                        .is_some_and(|u| u.prompt_tokens > usage.prompt_tokens),
+                    "image tokens should widen the prompt beyond the text-only call"
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                assert!(
+                    msg.contains("multimodal") || msg.contains("image"),
+                    "vision failed for a reason other than a missing projector: {e}"
+                );
+                eprintln!("Skipping vision half - server has no --mmproj loaded: {e}");
+            }
+        }
+    }
+    #[cfg(not(feature = "provider-llamacpp"))]
+    {
+        eprintln!("Skipping - provider-llamacpp feature not enabled");
+    }
+}

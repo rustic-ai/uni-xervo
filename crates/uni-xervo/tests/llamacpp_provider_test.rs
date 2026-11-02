@@ -1,4 +1,4 @@
-//! Mock-server tests for the `remote/llamacpp` embedding provider.
+//! Mock-server tests for the `remote/llamacpp` provider.
 //!
 //! Every test spins up an in-process fake `llama-server` (see
 //! `common::mock_http`) and drives the provider through a real `ModelRuntime`,
@@ -12,7 +12,7 @@ mod common;
 
 use common::mock_http::{
     CLS, EXCEED_CONTEXT_MESSAGE, MockLlamaServer, RouteResponse, SEP, TOO_LARGE_MESSAGE,
-    char_token, embeddings_echo, llama_error, tokenize_by_chars,
+    char_token, chat_completion, chat_echo, embeddings_echo, llama_error, tokenize_by_chars,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -21,7 +21,10 @@ use uni_xervo::api::{ModelAliasSpec, ModelTask, WarmupPolicy};
 use uni_xervo::error::RuntimeError;
 use uni_xervo::provider::RemoteLlamaCppProvider;
 use uni_xervo::runtime::ModelRuntime;
-use uni_xervo::traits::{EmbedResult, EmbeddingModel};
+use uni_xervo::traits::{
+    ContentBlock, EmbedResult, EmbeddingModel, GenerationOptions, GeneratorModel, ImageInput,
+    Message, MessageRole,
+};
 
 const MAX_TOKENS: u64 = 10;
 const DIMS: u64 = 4;
@@ -626,7 +629,329 @@ async fn non_embed_task_is_rejected_at_catalog_validation() {
         Err(e) => e,
     };
     assert!(
-        err.to_string().contains("only supports task 'embed'"),
+        err.to_string()
+            .contains("supports tasks 'embed' and 'generate'"),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Generation — /v1/chat/completions
+// ---------------------------------------------------------------------------
+
+const GEN_ALIAS: &str = "gen/llamacpp";
+const GEN_MODEL_ID: &str = "SmolVLM-500M-Instruct";
+
+/// A generation alias. Note the absence of `max_input_tokens` and
+/// `embedding_dimensions`: they are embed-only, and the validator rejects them
+/// here (see `generate_alias_rejects_embed_only_options`).
+fn gen_spec(server: &MockLlamaServer) -> ModelAliasSpec {
+    ModelAliasSpec {
+        alias: GEN_ALIAS.to_string(),
+        task: ModelTask::Generate,
+        provider_id: "remote/llamacpp".to_string(),
+        model_id: GEN_MODEL_ID.to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options: json!({ "base_url": server.base_url() }),
+    }
+}
+
+async fn generator(server: &MockLlamaServer) -> Arc<dyn GeneratorModel> {
+    let runtime = ModelRuntime::builder()
+        .register_provider(RemoteLlamaCppProvider::new())
+        .catalog(vec![gen_spec(server)])
+        .build()
+        .await
+        .expect("runtime builds");
+    runtime.generator(GEN_ALIAS).await.expect("generator loads")
+}
+
+#[tokio::test]
+async fn generation_posts_to_chat_completions_and_maps_text_and_usage() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(|_| RouteResponse::Json {
+        status: 200,
+        body: chat_completion("the whole earth", 41, 4),
+    });
+
+    let model = generator(&server).await;
+    let result = model
+        .generate(
+            &[Message::user("describe it")],
+            GenerationOptions::default(),
+        )
+        .await
+        .expect("generates");
+
+    assert_eq!(result.text, "the whole earth");
+    assert!(result.images.is_empty());
+    assert!(result.audio.is_none());
+    let usage = result.usage.expect("usage reported");
+    assert_eq!(
+        (
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens
+        ),
+        (41, 4, 45)
+    );
+
+    let requests = server.requests_to("/v1/chat/completions");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body["model"], json!(GEN_MODEL_ID));
+    assert_eq!(requests[0].body["stream"], json!(false));
+}
+
+#[tokio::test]
+async fn generation_sends_only_the_sampling_options_that_are_set() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(chat_echo());
+    let model = generator(&server).await;
+
+    model
+        .generate(&[Message::user("hi")], GenerationOptions::default())
+        .await
+        .expect("generates");
+    let body = &server.requests_to("/v1/chat/completions")[0].body;
+    for key in ["max_tokens", "temperature", "top_p"] {
+        assert!(body.get(key).is_none(), "{key} should be absent: {body}");
+    }
+
+    model
+        .generate(
+            &[Message::user("hi")],
+            GenerationOptions {
+                max_tokens: Some(32),
+                temperature: Some(0.5),
+                top_p: Some(0.75),
+                width: Some(512),
+                height: Some(512),
+            },
+        )
+        .await
+        .expect("generates");
+    let body = &server.requests_to("/v1/chat/completions")[1].body;
+    assert_eq!(body["max_tokens"], json!(32));
+    assert_eq!(body["temperature"], json!(0.5));
+    assert_eq!(body["top_p"], json!(0.75));
+    // Diffusion-only knobs must not reach a chat server.
+    assert!(body.get("width").is_none(), "{body}");
+    assert!(body.get("height").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn text_only_messages_reach_the_server_as_plain_strings() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(chat_echo());
+    let model = generator(&server).await;
+
+    model
+        .generate(
+            &[Message::system("be terse"), Message::user("hi")],
+            GenerationOptions::default(),
+        )
+        .await
+        .expect("generates");
+
+    let messages = server.requests_to("/v1/chat/completions")[0].body["messages"].clone();
+    assert_eq!(
+        messages,
+        json!([
+            { "role": "system", "content": "be terse" },
+            { "role": "user", "content": "hi" },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn an_image_block_reaches_the_server_as_a_data_uri_content_part() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(chat_echo());
+    let model = generator(&server).await;
+
+    // The echo handler reports what it received, so a dropped image — the bug
+    // this provider was built around — would come back as "describe" alone.
+    let result = model
+        .generate(
+            &[Message {
+                role: MessageRole::User,
+                content: vec![
+                    ContentBlock::Text("describe".into()),
+                    ContentBlock::Image(ImageInput::Bytes {
+                        data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                        media_type: "image/jpeg".into(),
+                    }),
+                ],
+            }],
+            GenerationOptions::default(),
+        )
+        .await
+        .expect("generates");
+    assert_eq!(result.text, "describe <image>");
+
+    let parts = server.requests_to("/v1/chat/completions")[0].body["messages"][0]["content"]
+        .as_array()
+        .expect("content is a parts array")
+        .clone();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0], json!({ "type": "text", "text": "describe" }));
+    assert_eq!(
+        parts[1],
+        json!({
+            "type": "image_url",
+            "image_url": { "url": "data:image/jpeg;base64,3q2+7w==" },
+        })
+    );
+}
+
+#[tokio::test]
+async fn an_image_url_is_passed_through_verbatim() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(chat_echo());
+    let model = generator(&server).await;
+
+    model
+        .generate(
+            &[Message {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Image(ImageInput::Url(
+                    "https://example.invalid/earthrise.jpg".into(),
+                ))],
+            }],
+            GenerationOptions::default(),
+        )
+        .await
+        .expect("generates");
+
+    let parts =
+        server.requests_to("/v1/chat/completions")[0].body["messages"][0]["content"].clone();
+    assert_eq!(
+        parts[0]["image_url"]["url"],
+        json!("https://example.invalid/earthrise.jpg")
+    );
+}
+
+#[tokio::test]
+async fn generation_sends_the_bearer_token_when_configured() {
+    let _lock = ENV_LOCK.lock().await;
+    let server = MockLlamaServer::start().await;
+    server.on_chat(chat_echo());
+
+    // SAFETY: protected by ENV_LOCK
+    unsafe { std::env::set_var("UNI_XERVO_LLAMACPP_CHAT_KEY", "sekrit") };
+    let mut spec = gen_spec(&server);
+    spec.options["api_key_env"] = json!("UNI_XERVO_LLAMACPP_CHAT_KEY");
+    let runtime = ModelRuntime::builder()
+        .register_provider(RemoteLlamaCppProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await
+        .expect("runtime builds");
+    let model = runtime.generator(GEN_ALIAS).await.expect("loads");
+    model
+        .generate(&[Message::user("hi")], GenerationOptions::default())
+        .await
+        .expect("generates");
+    // SAFETY: protected by ENV_LOCK
+    unsafe { std::env::remove_var("UNI_XERVO_LLAMACPP_CHAT_KEY") };
+
+    assert_eq!(
+        server.requests_to("/v1/chat/completions")[0].header("authorization"),
+        Some("Bearer sekrit")
+    );
+}
+
+#[tokio::test]
+async fn a_context_overflow_during_generation_is_not_retryable() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(|_| RouteResponse::Json {
+        status: 400,
+        body: llama_error(400, EXCEED_CONTEXT_MESSAGE, "exceed_context_size"),
+    });
+    let model = generator(&server).await;
+
+    let err = model
+        .generate(&[Message::user("hi")], GenerationOptions::default())
+        .await
+        .expect_err("must fail");
+    assert!(matches!(err, RuntimeError::InferenceError(_)), "{err:?}");
+    assert!(!err.is_retryable(), "{err:?}");
+    // Generation has no `max_input_tokens`, so the advice names server flags.
+    let msg = err.to_string();
+    assert!(!msg.contains("max_input_tokens"), "{msg}");
+    assert!(msg.contains("--ctx-size"), "{msg}");
+}
+
+#[tokio::test]
+async fn a_generation_response_without_choices_is_an_api_error() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(|_| RouteResponse::Json {
+        status: 200,
+        body: json!({ "object": "chat.completion" }),
+    });
+    let model = generator(&server).await;
+
+    let err = model
+        .generate(&[Message::user("hi")], GenerationOptions::default())
+        .await
+        .expect_err("must fail");
+    assert!(
+        matches!(err, RuntimeError::ApiError(ref m) if m.contains("choices")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_hung_chat_request_times_out_at_the_configured_timeout() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(|_| RouteResponse::Hang);
+
+    let mut spec = gen_spec(&server);
+    spec.options["request_timeout_secs"] = json!(1);
+    let runtime = ModelRuntime::builder()
+        .register_provider(RemoteLlamaCppProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await
+        .expect("runtime builds");
+    let model = runtime.generator(GEN_ALIAS).await.expect("loads");
+
+    let started = Instant::now();
+    let err = model
+        .generate(&[Message::user("hi")], GenerationOptions::default())
+        .await
+        .expect_err("must time out");
+    assert!(matches!(err, RuntimeError::Timeout), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(10), "took too long");
+}
+
+#[tokio::test]
+async fn generate_alias_rejects_embed_only_options() {
+    let server = MockLlamaServer::start().await;
+    for key in [
+        "max_input_tokens",
+        "embedding_dimensions",
+        "tokenizer_base_url",
+    ] {
+        let mut spec = gen_spec(&server);
+        spec.options[key] = json!(512);
+        let result = ModelRuntime::builder()
+            .register_provider(RemoteLlamaCppProvider::new())
+            .catalog(vec![spec])
+            .build()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("{key} must be rejected for generate"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("applies only to task 'embed'"),
+            "{key}: {err}"
+        );
+    }
 }

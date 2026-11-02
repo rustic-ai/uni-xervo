@@ -8,6 +8,7 @@
 //! | task | module | endpoint |
 //! |------|--------|----------|
 //! | [`ModelTask::Embed`] | [`embed`] | `POST /v1/embeddings` + native `/tokenize` |
+//! | [`ModelTask::Generate`] | [`chat`] | `POST /v1/chat/completions` |
 //!
 //! # Shared options
 //!
@@ -29,15 +30,18 @@
 //! rejections are also kept off the circuit breaker — see
 //! [`embed::LlamaCppEmbeddingModel::embed`].
 
+mod chat;
 mod embed;
 
+pub use chat::LlamaCppGeneratorModel;
 pub use embed::LlamaCppEmbeddingModel;
 
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
 use crate::provider::remote_common::RemoteProviderBase;
 use crate::traits::{
-    EmbeddingModel, LoadedModelHandle, ModelProvider, ProviderCapabilities, ProviderHealth,
+    EmbeddingModel, GeneratorModel, LoadedModelHandle, ModelProvider, ProviderCapabilities,
+    ProviderHealth,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -97,7 +101,7 @@ impl ModelProvider for RemoteLlamaCppProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            supported_tasks: vec![ModelTask::Embed],
+            supported_tasks: vec![ModelTask::Embed, ModelTask::Generate],
         }
     }
 
@@ -111,6 +115,16 @@ impl ModelProvider for RemoteLlamaCppProvider {
                     embed::EmbedConfig::from_options(&spec.options)?,
                 );
                 let handle: Arc<dyn EmbeddingModel> = Arc::new(model);
+                Ok(Arc::new(handle) as LoadedModelHandle)
+            }
+            ModelTask::Generate => {
+                let model = chat::LlamaCppGeneratorModel::new(
+                    self.base.client.clone(),
+                    self.base.circuit_breaker_for(spec),
+                    spec.model_id.clone(),
+                    chat::ChatConfig::from_options(&spec.options)?,
+                );
+                let handle: Arc<dyn GeneratorModel> = Arc::new(model);
                 Ok(Arc::new(handle) as LoadedModelHandle)
             }
             other => Err(RuntimeError::CapabilityMismatch(format!(
@@ -381,14 +395,17 @@ mod tests {
     async fn provider_id_and_capabilities() {
         let p = RemoteLlamaCppProvider::new();
         assert_eq!(p.provider_id(), "remote/llamacpp");
-        assert_eq!(p.capabilities().supported_tasks, vec![ModelTask::Embed]);
+        assert_eq!(
+            p.capabilities().supported_tasks,
+            vec![ModelTask::Embed, ModelTask::Generate]
+        );
         assert!(matches!(p.health().await, ProviderHealth::Healthy));
     }
 
     #[tokio::test]
     async fn load_rejects_unsupported_tasks() {
         let p = RemoteLlamaCppProvider::new();
-        for task in [ModelTask::Rerank, ModelTask::Generate, ModelTask::Raw] {
+        for task in [ModelTask::Rerank, ModelTask::Raw] {
             let err = p
                 .load(&spec("x/y", task, "bge", options()))
                 .await
@@ -410,6 +427,23 @@ mod tests {
         let model = handle.downcast_ref::<Arc<dyn EmbeddingModel>>().unwrap();
         assert_eq!(model.dimensions(), 384);
         assert_eq!(model.model_id(), "bge-small");
+    }
+
+    #[tokio::test]
+    async fn load_generate_yields_a_generator_handle() {
+        let p = RemoteLlamaCppProvider::new();
+        // Generation needs no embed-only options.
+        let handle = p
+            .load(&spec(
+                "gen/a",
+                ModelTask::Generate,
+                "smolvlm",
+                json!({ "base_url": "http://127.0.0.1:8080/v1" }),
+            ))
+            .await
+            .unwrap();
+        let model = handle.downcast_ref::<Arc<dyn GeneratorModel>>().unwrap();
+        assert_eq!(model.model_id(), "smolvlm");
     }
 
     #[tokio::test]

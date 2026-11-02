@@ -169,10 +169,89 @@ async fn rejects_non_string_api_key_env() {
 }
 
 #[tokio::test]
-async fn rejects_non_embed_tasks() {
-    for task in [ModelTask::Rerank, ModelTask::Generate, ModelTask::Raw] {
-        assert_rejects(build(task, valid()).await, "only supports task 'embed'");
+async fn rejects_unsupported_tasks() {
+    for task in [ModelTask::Rerank, ModelTask::Raw] {
+        assert_rejects(
+            build(task, valid()).await,
+            "supports tasks 'embed' and 'generate'",
+        );
     }
+}
+
+// --- generate -------------------------------------------------------------
+
+/// Generation needs nothing but the endpoint — in particular no option for
+/// vision, which depends on the server having been started with `--mmproj`.
+#[tokio::test]
+async fn generate_accepts_base_url_alone() {
+    assert!(
+        build(
+            ModelTask::Generate,
+            json!({ "base_url": "http://127.0.0.1:8080/v1" })
+        )
+        .await
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn generate_accepts_the_shared_options() {
+    assert!(
+        build(
+            ModelTask::Generate,
+            json!({
+                "base_url": "http://127.0.0.1:8080/v1",
+                "api_key_env": "LLAMACPP_KEY",
+                "request_timeout_secs": 120
+            })
+        )
+        .await
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn generate_still_requires_base_url() {
+    for options in [
+        json!({}),
+        Value::Null,
+        json!({ "request_timeout_secs": 30 }),
+    ] {
+        assert_rejects(build(ModelTask::Generate, options).await, "base_url");
+    }
+}
+
+#[tokio::test]
+async fn generate_rejects_each_embed_only_option() {
+    for (key, value) in [
+        ("max_input_tokens", json!(512)),
+        ("embedding_dimensions", json!(384)),
+        ("tokenizer_base_url", json!("http://127.0.0.1:8080")),
+    ] {
+        let mut options = json!({ "base_url": "http://127.0.0.1:8080/v1" });
+        options[key] = value;
+        assert_rejects(
+            build(ModelTask::Generate, options).await,
+            "applies only to task 'embed'",
+        );
+    }
+}
+
+#[tokio::test]
+async fn generate_rejects_unknown_keys_and_bad_shared_values() {
+    let base = json!({ "base_url": "http://127.0.0.1:8080/v1" });
+
+    let mut options = base.clone();
+    options["pipeline"] = json!("vision");
+    assert_rejects(build(ModelTask::Generate, options).await, "Unknown option");
+
+    let mut options = base.clone();
+    options["request_timeout_secs"] = json!(0);
+    assert_rejects(build(ModelTask::Generate, options).await, "greater than 0");
+
+    let mut options = base;
+    options["base_url"] = json!("127.0.0.1:8080/v1");
+    assert_rejects(build(ModelTask::Generate, options).await, "base_url");
 }
 
 #[tokio::test]

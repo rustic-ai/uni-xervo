@@ -92,7 +92,7 @@ provider-cohere = ["dep:reqwest", "dep:base64"]
 provider-azure-openai = ["dep:reqwest", "dep:base64"]
 # llama.cpp `llama-server`: OpenAI-compatible `/v1/embeddings` plus the native
 # `/tokenize` endpoint for deterministic, tokenizer-aware truncation.
-provider-llamacpp = ["dep:reqwest"]
+provider-llamacpp = ["dep:reqwest", "dep:base64"]
 
 # ─── GPU acceleration ───────────────────────────────────────────────────────
 # Two opt-in capability features. CPU is always available; GPU is purely
