@@ -7,7 +7,13 @@ use crate::error::{Result, RuntimeError};
 use crate::reliability::{CircuitBreakerConfig, CircuitBreakerWrapper};
 use crate::traits::{EmbedResult, TokenUsage};
 use reqwest::Client;
-#[cfg(any(feature = "provider-gemini", feature = "provider-vertexai"))]
+#[cfg(any(
+    feature = "provider-gemini",
+    feature = "provider-vertexai",
+    feature = "provider-openai",
+    feature = "provider-azure-openai",
+    feature = "provider-llamacpp",
+))]
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -271,6 +277,77 @@ impl RemoteProviderBase {
     }
 }
 
+/// Build an OpenAI-style `messages` array, preserving image blocks.
+///
+/// A message whose blocks are all [`ContentBlock::Text`] serializes to the
+/// plain-string `content` form, which is what every OpenAI-compatible server
+/// has always accepted. A message carrying an image serializes to the content
+/// *parts* array instead, in block order, so the image survives the trip:
+///
+/// ```text
+/// [{"type": "text", "text": "..."},
+///  {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]
+/// ```
+///
+/// Byte images become `data:` URIs; [`ImageInput::Url`] is passed through
+/// verbatim, since the OpenAI schema and `llama-server` both accept a remote
+/// URL there.
+///
+/// Flattening with [`Message::text`](crate::traits::Message::text) instead would
+/// silently drop every image block, which is the bug this helper exists to fix.
+#[cfg(any(
+    feature = "provider-openai",
+    feature = "provider-azure-openai",
+    feature = "provider-llamacpp",
+))]
+pub(crate) fn build_openai_chat_messages(
+    messages: &[crate::traits::Message],
+) -> Vec<serde_json::Value> {
+    use crate::traits::{ContentBlock, ImageInput, MessageRole};
+    use base64::Engine;
+
+    messages
+        .iter()
+        .map(|message| {
+            let role = match message.role {
+                MessageRole::System => "system",
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+            };
+
+            let has_image = message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Image(_)));
+
+            if !has_image {
+                return json!({ "role": role, "content": message.text() });
+            }
+
+            let parts: Vec<serde_json::Value> = message
+                .content
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text(text) => json!({ "type": "text", "text": text }),
+                    ContentBlock::Image(ImageInput::Url(url)) => json!({
+                        "type": "image_url",
+                        "image_url": { "url": url },
+                    }),
+                    ContentBlock::Image(ImageInput::Bytes { data, media_type }) => {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+                        json!({
+                            "type": "image_url",
+                            "image_url": { "url": format!("data:{media_type};base64,{encoded}") },
+                        })
+                    }
+                })
+                .collect();
+
+            json!({ "role": role, "content": parts })
+        })
+        .collect()
+}
+
 /// Build a Google-style generateContent payload used by Gemini and Vertex AI.
 #[cfg(any(feature = "provider-gemini", feature = "provider-vertexai"))]
 pub(crate) fn build_google_generate_payload(
@@ -443,5 +520,143 @@ mod embeddings_decoder_tests {
             parse_openai_embeddings_response("T", &oob, Some(2)),
             "index 5 out of range",
         );
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "provider-openai",
+        feature = "provider-azure-openai",
+        feature = "provider-llamacpp",
+    )
+))]
+mod openai_chat_message_tests {
+    use super::build_openai_chat_messages;
+    use crate::traits::{ContentBlock, ImageInput, Message, MessageRole};
+
+    fn png(bytes: &[u8]) -> ContentBlock {
+        ContentBlock::Image(ImageInput::Bytes {
+            data: bytes.to_vec(),
+            media_type: "image/png".to_string(),
+        })
+    }
+
+    #[test]
+    fn text_only_messages_use_the_plain_string_form() {
+        let built = build_openai_chat_messages(&[
+            Message::system("be brief"),
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ]);
+
+        assert_eq!(built.len(), 3);
+        assert_eq!(built[0]["role"], "system");
+        assert_eq!(built[0]["content"], "be brief");
+        assert_eq!(built[1]["role"], "user");
+        assert_eq!(built[1]["content"], "hello");
+        assert_eq!(built[2]["role"], "assistant");
+        assert_eq!(built[2]["content"], "hi");
+    }
+
+    #[test]
+    fn multiple_text_blocks_still_collapse_to_one_string() {
+        let message = Message {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text("first".to_string()),
+                ContentBlock::Text("second".to_string()),
+            ],
+        };
+
+        let built = build_openai_chat_messages(&[message]);
+        assert_eq!(built[0]["content"], "first second");
+    }
+
+    #[test]
+    fn byte_images_become_data_uris_in_block_order() {
+        // 0x01 0x02 0x03 is "AQID" in standard base64.
+        let message = Message {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text("describe this".to_string()),
+                png(&[1, 2, 3]),
+            ],
+        };
+
+        let built = build_openai_chat_messages(&[message]);
+        let parts = built[0]["content"].as_array().expect("parts array");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "describe this");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AQID");
+    }
+
+    #[test]
+    fn image_before_text_keeps_that_order() {
+        let message = Message {
+            role: MessageRole::User,
+            content: vec![
+                png(&[1, 2, 3]),
+                ContentBlock::Text("what is it".to_string()),
+            ],
+        };
+
+        let built = build_openai_chat_messages(&[message]);
+        let parts = built[0]["content"].as_array().expect("parts array");
+
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[1]["type"], "text");
+    }
+
+    #[test]
+    fn url_images_pass_through_verbatim() {
+        let message = Message {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Image(ImageInput::Url(
+                "https://example.test/page.png".to_string(),
+            ))],
+        };
+
+        let built = build_openai_chat_messages(&[message]);
+        let parts = built[0]["content"].as_array().expect("parts array");
+
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0]["image_url"]["url"],
+            "https://example.test/page.png"
+        );
+    }
+
+    #[test]
+    fn an_image_in_one_message_does_not_change_the_others() {
+        let with_image = Message {
+            role: MessageRole::User,
+            content: vec![png(&[1, 2, 3])],
+        };
+
+        let built = build_openai_chat_messages(&[Message::system("be brief"), with_image]);
+
+        assert!(built[0]["content"].is_string());
+        assert!(built[1]["content"].is_array());
+    }
+
+    #[test]
+    fn images_are_never_silently_dropped() {
+        // The regression this helper exists for: `Message::text()` filters out
+        // image blocks, so flattening a vision request produced a text-only
+        // payload and the server never saw the picture.
+        let message = Message {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text("describe".to_string()), png(&[9])],
+        };
+
+        assert_eq!(message.text(), "describe");
+
+        let built = build_openai_chat_messages(&[message]);
+        let rendered = built[0]["content"].to_string();
+        assert!(rendered.contains("image_url"), "image lost: {rendered}");
     }
 }

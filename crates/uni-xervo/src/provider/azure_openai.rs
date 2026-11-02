@@ -1,10 +1,11 @@
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
-use crate::provider::remote_common::{RemoteProviderBase, check_http_status, resolve_api_key};
+use crate::provider::remote_common::{
+    RemoteProviderBase, build_openai_chat_messages, check_http_status, resolve_api_key,
+};
 use crate::traits::{
     EmbedResult, EmbeddingModel, GenerationOptions, GenerationResult, GeneratorModel,
-    LoadedModelHandle, Message, MessageRole, ModelProvider, ProviderCapabilities, ProviderHealth,
-    TokenUsage,
+    LoadedModelHandle, Message, ModelProvider, ProviderCapabilities, ProviderHealth, TokenUsage,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -258,17 +259,7 @@ impl GeneratorModel for AzureOpenAIGeneratorModel {
         messages: &[Message],
         options: GenerationOptions,
     ) -> Result<GenerationResult> {
-        let messages: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    MessageRole::System => "system",
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                };
-                json!({ "role": role, "content": msg.text() })
-            })
-            .collect();
+        let messages = build_openai_chat_messages(messages);
 
         self.cb
             .call(move || async move {
