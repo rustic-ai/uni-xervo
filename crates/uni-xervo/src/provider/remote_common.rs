@@ -12,7 +12,6 @@ use reqwest::Client;
     feature = "provider-vertexai",
     feature = "provider-openai",
     feature = "provider-azure-openai",
-    feature = "provider-llamacpp",
 ))]
 use serde_json::json;
 use std::collections::HashMap;
@@ -295,11 +294,7 @@ impl RemoteProviderBase {
 ///
 /// Flattening with [`Message::text`](crate::traits::Message::text) instead would
 /// silently drop every image block, which is the bug this helper exists to fix.
-#[cfg(any(
-    feature = "provider-openai",
-    feature = "provider-azure-openai",
-    feature = "provider-llamacpp",
-))]
+#[cfg(any(feature = "provider-openai", feature = "provider-azure-openai",))]
 pub(crate) fn build_openai_chat_messages(
     messages: &[crate::traits::Message],
 ) -> Vec<serde_json::Value> {
@@ -525,11 +520,7 @@ mod embeddings_decoder_tests {
 
 #[cfg(all(
     test,
-    any(
-        feature = "provider-openai",
-        feature = "provider-azure-openai",
-        feature = "provider-llamacpp",
-    )
+    any(feature = "provider-openai", feature = "provider-azure-openai",)
 ))]
 mod openai_chat_message_tests {
     use super::build_openai_chat_messages;
