@@ -84,7 +84,7 @@ impl Rasterizer for HayroRasterizer {
         use hayro::hayro_interpret::InterpreterSettings;
         use hayro::hayro_interpret::hayro_syntax::Pdf;
         use hayro::vello_cpu::color::palette::css::WHITE;
-        use hayro::{RenderCache, RenderSettings, render};
+        use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
         use std::collections::HashSet;
         use uni_xervo::error::RuntimeError;
 
@@ -94,6 +94,16 @@ impl Rasterizer for HayroRasterizer {
         // A render cache shared across pages of one document (per hayro's design).
         let cache = RenderCache::new();
         let interpreter = InterpreterSettings::default();
+        // hayro 0.8 split the output-buffer settings (scale, background) out of
+        // `RenderSettings` into `PixmapSettings`. An opaque white background is
+        // what `encode_png` below relies on to treat premultiplied RGBA as
+        // straight RGBA.
+        let render_settings = RenderSettings::default();
+        let pixmap_settings = PixmapSettings {
+            x_scale: self.scale,
+            y_scale: self.scale,
+            bg_color: WHITE,
+        };
 
         let wanted: HashSet<u32> = page_numbers.iter().copied().collect();
         let mut out = Vec::with_capacity(page_numbers.len());
@@ -102,14 +112,13 @@ impl Rasterizer for HayroRasterizer {
             if !wanted.contains(&page_number) {
                 continue;
             }
-            let settings = RenderSettings {
-                x_scale: self.scale,
-                y_scale: self.scale,
-                width: None,
-                height: None,
-                bg_color: WHITE,
-            };
-            let pixmap = render(page, &cache, &interpreter, &settings);
+            let pixmap = render(
+                page,
+                &cache,
+                &interpreter,
+                &render_settings,
+                &pixmap_settings,
+            );
             out.push(RasterPage {
                 page_number,
                 image: ImageInput::Bytes {

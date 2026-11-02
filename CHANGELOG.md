@@ -59,6 +59,46 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Dependencies refreshed to their latest compatible releases.** Every
+  semver-compatible update was taken (`cargo update`: tokio 1.54.1, serde
+  1.0.229, serde_json 1.0.154, thiserror 2.0.21, anyhow 1.0.104, async-trait
+  0.1.92, tracing 0.1.44, bitflags 2.13.2, futures 0.3.34, indexmap 2.14.2,
+  ndarray 0.17.2, dashmap 6.2.1, image 0.25.10, reqwest 0.13.5, mistralrs
+  0.8.1, tokenizers 0.23.2, criterion 0.8.2, metrics 0.24.6, metrics-util
+  0.20.4, tempfile 3.27.0 and their transitive closure), plus three manifest
+  bumps past the declared range: `base64` 0.22 → 0.23, `lopdf` 0.36 → 0.46 and
+  `hayro` 0.7 → 0.8.
+
+  `hayro` 0.8 moved the output-buffer settings (scale, background colour) out
+  of `RenderSettings` into a new `PixmapSettings`, and dropped the unused
+  `width` / `height` overrides, so `uni-xervo-pdf`'s rasterizer was adapted
+  and the settings hoisted out of the per-page loop. Nothing else needed a
+  source change.
+
+  Because `tokenizers` moved, the kniv v7 golden conformance suite was re-run
+  against both released encoders: subword alignment, and every tag, head,
+  span, entity and fact downstream of it, still match the reference.
+
+  Four dependencies are deliberately held back:
+
+  - **`ort` stays pinned at `=2.0.0-rc.12`** (rc.15 available). rc.15 requires
+    an explicit `&Environment` for every `Session::builder` and moved
+    `ort::execution_providers`, which is a session-lifecycle change across all
+    eight ONNX call sites rather than a version bump. It needs its own change,
+    with every ONNX task re-verified.
+  - **`hf-hub` stays at 0.5** (1.0.0 available). 1.0 is a rewrite —
+    `HFClient` / `HFClientBuilder` / `HFRepository` replace `Api` / `ApiBuilder`
+    / `Repo`, and the `tokio` feature is gone — touching all 11 model-download
+    sites, with cache layout, revision handling and offline behaviour to
+    re-verify against real downloads.
+  - **`candle` stays at 0.10** (0.11.1 available). `mistralrs` 0.8.1 requires
+    `candle-core ^0.10.2`, so bumping ours compiles two copies of a heavy crate
+    in the default feature set, for no capability we use — and leaves a latent
+    type-identity split between the two providers.
+  - **`regex` resolves to 1.12.4 and `generic-array` to 0.14.7**, both capped
+    through `mistralrs` (`serde-saphyr` requires `regex >=1.0, <1.13`;
+    `crypto-common` requires `generic-array ~0.14.7`). Not ours to move.
+
 - **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
   struct literals no longer compile. Build one with `NlpRequest::new(text,
   tasks)` or `NlpRequest::from_turns(turns, tasks)` and chain `with_schema` /

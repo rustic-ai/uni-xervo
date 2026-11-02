@@ -31,10 +31,10 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 
 # Pure-Rust PDF parsing for the native text tier. Optional, behind `pdf-input`.
-lopdf = { version = "0.36", optional = true }
+lopdf = { version = "0.46", optional = true }
 
 # Pure-Rust PDF rasterizer (behind `hayro`); `image` encodes the rendered page.
-hayro = { version = "0.7", optional = true }
+hayro = { version = "0.8", optional = true }
 image = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -50,4 +50,4 @@ image = { workspace = true }
 serde_json = "1"
 # Generate a minimal text PDF inline (mirrors the in-crate `testutil` helper,
 # which is `#[cfg(test)] pub(crate)` and so unreachable from integration tests).
-lopdf = "0.36"
+lopdf = "0.46"
