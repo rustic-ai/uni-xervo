@@ -1,0 +1,373 @@
+{
+ "case": "lovelace-prose",
+ "input": {
+  "text": "Ada Lovelace was born in London in 1815. She later worked with Charles Babbage on the Analytical Engine."
+ },
+ "run": "ultrabert-380m-v7b8ev",
+ "schema": "memory",
+ "variant": "int8",
+ "windows": [
+  {
+   "analysed_words": 20,
+   "coref": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      9,
+      9
+     ]
+    ]
+   ],
+   "entities": [
+    {
+     "mentions": [
+      "Ada Lovelace"
+     ],
+     "spans": [
+      [
+       0,
+       2
+      ]
+     ],
+     "text": "Ada Lovelace",
+     "type": "person"
+    },
+    {
+     "mentions": [
+      "London"
+     ],
+     "spans": [
+      [
+       5,
+       6
+      ]
+     ],
+     "text": "London",
+     "type": "location"
+    },
+    {
+     "mentions": [
+      "1815"
+     ],
+     "spans": [
+      [
+       7,
+       8
+      ]
+     ],
+     "text": "1815",
+     "type": "time"
+    },
+    {
+     "mentions": [
+      "Charles Babbage"
+     ],
+     "spans": [
+      [
+       13,
+       15
+      ]
+     ],
+     "text": "Charles Babbage",
+     "type": "person"
+    },
+    {
+     "mentions": [
+      "Analytical Engine"
+     ],
+     "spans": [
+      [
+       17,
+       19
+      ]
+     ],
+     "text": "Analytical Engine",
+     "type": "product"
+    }
+   ],
+   "facts": [
+    {
+     "head": 4,
+     "holder": 0,
+     "margin": 7.049,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "created by",
+     "tail": 3,
+     "time": null
+    }
+   ],
+   "ner": [
+    [
+     "PERSON",
+     0,
+     2
+    ],
+    [
+     "GPE",
+     5,
+     6
+    ],
+    [
+     "DATE",
+     7,
+     8
+    ],
+    [
+     "PERSON",
+     13,
+     15
+    ],
+    [
+     "WORK_OF_ART",
+     16,
+     19
+    ]
+   ],
+   "sentence_layers": [
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    }
+   ],
+   "sentences": [
+    {
+     "end": 9,
+     "start": 0
+    },
+    {
+     "end": 20,
+     "start": 9
+    }
+   ],
+   "srl": [
+    {
+     "args": [],
+     "predicate": 2
+    },
+    {
+     "args": [
+      [
+       "ARG1",
+       0,
+       2
+      ],
+      [
+       "ARGM-LOC",
+       4,
+       6
+      ],
+      [
+       "ARGM-TMP",
+       6,
+       8
+      ]
+     ],
+     "predicate": 3
+    },
+    {
+     "args": [
+      [
+       "ARG0",
+       9,
+       10
+      ],
+      [
+       "ARGM-TMP",
+       10,
+       11
+      ],
+      [
+       "ARG2",
+       12,
+       15
+      ],
+      [
+       "ARG1",
+       15,
+       19
+      ]
+     ],
+     "predicate": 11
+    }
+   ],
+   "tokens": [
+    "Ada",
+    "Lovelace",
+    "was",
+    "born",
+    "in",
+    "London",
+    "in",
+    "1815",
+    ".",
+    "She",
+    "later",
+    "worked",
+    "with",
+    "Charles",
+    "Babbage",
+    "on",
+    "the",
+    "Analytical",
+    "Engine",
+    "."
+   ],
+   "words": [
+    {
+     "deprel": "nsubj:pass",
+     "head": 4,
+     "lemma": "Ada",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "flat",
+     "head": 1,
+     "lemma": "Lovelace",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "aux:pass",
+     "head": 4,
+     "lemma": "be",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "bear",
+     "morph": "Tense=Past|VerbForm=Part|Voice=Pass",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "case",
+     "head": 6,
+     "lemma": "in",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 4,
+     "lemma": "London",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "case",
+     "head": 8,
+     "lemma": "in",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 4,
+     "lemma": "1815",
+     "morph": "NumForm=Digit|NumType=Card",
+     "pos": "NUM"
+    },
+    {
+     "deprel": "punct",
+     "head": 4,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "nsubj",
+     "head": 12,
+     "lemma": "she",
+     "morph": "Case=Nom|Gender=Fem|Number=Sing|Person=3|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "advmod",
+     "head": 12,
+     "lemma": "late",
+     "morph": "Degree=Cmp",
+     "pos": "ADV"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "work",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "case",
+     "head": 14,
+     "lemma": "with",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 12,
+     "lemma": "Charles",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "flat",
+     "head": 14,
+     "lemma": "Babbage",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "case",
+     "head": 19,
+     "lemma": "on",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "det",
+     "head": 19,
+     "lemma": "the",
+     "morph": "Definite=Def|PronType=Art",
+     "pos": "DET"
+    },
+    {
+     "deprel": "amod",
+     "head": 19,
+     "lemma": "Analytical",
+     "morph": "Degree=Pos",
+     "pos": "ADJ"
+    },
+    {
+     "deprel": "obl",
+     "head": 12,
+     "lemma": "engine",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "punct",
+     "head": 12,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    }
+   ]
+  }
+ ]
+}

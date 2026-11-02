@@ -65,6 +65,7 @@ provider-onnx = [
     "dep:hf-hub",
     "dep:tokenizers",
     "dep:image",
+    "dep:regex",
     "ort/download-binaries",
     "ort/copy-dylibs",
     "ort/api-24",
@@ -75,6 +76,7 @@ provider-onnx-dynamic = [
     "dep:tokenizers",
     "dep:image",
     "dep:libloading",
+    "dep:regex",
     "ort/load-dynamic",
     "ort/api-24",
 ]
@@ -158,6 +160,9 @@ hf-hub = { version = "0.5", features = ["tokio"], optional = true }
 reqwest = { version = "0.13", features = ["json", "rustls"], optional = true }
 mistralrs = { version = "0.8", default-features = true, optional = true }
 image = { workspace = true, optional = true }
+# Used by the kniv v7 NLP word tokenizer, which must reproduce the reference
+# runtime's Python `re` patterns exactly.
+regex = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 dashmap = "6.2"
 # ort linking mode (download-binaries vs load-dynamic) is selected by
@@ -182,6 +187,7 @@ whisper-rs = { version = "0.16", optional = true, default-features = false }
 anyhow = "1.0"
 criterion = { version = "0.8", features = ["async_tokio"] }
 metrics-util = "0.20"
+tempfile = "3"
 reqwest = { version = "0.13", features = ["rustls"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 

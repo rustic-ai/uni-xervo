@@ -631,10 +631,7 @@ async fn kniv_deberta_nlp_cascade_end_to_end() {
     // One sentence with at least one verb, a named entity, and a clear
     // dependency structure. Each head should populate at least one item.
     let text = "Alice bought a book in Paris.";
-    let req = NlpRequest {
-        text,
-        tasks: NlpTasks::ALL,
-    };
+    let req = NlpRequest::new(text, NlpTasks::CASCADE);
     let results = model.analyze(vec![req]).await.expect("analyze");
     assert_eq!(results.len(), 1);
     let r = &results[0];
@@ -794,10 +791,7 @@ async fn kniv_deberta_nlp_subset_tasks() {
 
     // Only POS + NER requested.
     let text = "Marie Curie discovered radium in Paris.";
-    let req = NlpRequest {
-        text,
-        tasks: NlpTasks::POS | NlpTasks::NER,
-    };
+    let req = NlpRequest::new(text, NlpTasks::POS | NlpTasks::NER);
     let r = &model.analyze(vec![req]).await.expect("analyze")[0];
 
     assert!(!r.tokens.is_empty());

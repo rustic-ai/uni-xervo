@@ -1,0 +1,294 @@
+{
+ "case": "two-paragraphs",
+ "input": {
+  "text": "Acme Robotics is based in Porto.\n\nThe company hired 200 engineers in 2024."
+ },
+ "run": "deberta-v3-large-v7b8ev",
+ "schema": "memory",
+ "variant": "int8",
+ "windows": [
+  {
+   "analysed_words": 15,
+   "coref": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      7,
+      8
+     ]
+    ]
+   ],
+   "entities": [
+    {
+     "mentions": [
+      "Acme Robotics"
+     ],
+     "spans": [
+      [
+       0,
+       2
+      ]
+     ],
+     "text": "Acme Robotics",
+     "type": "organization"
+    },
+    {
+     "mentions": [
+      "Porto"
+     ],
+     "spans": [
+      [
+       5,
+       6
+      ]
+     ],
+     "text": "Porto",
+     "type": "location"
+    },
+    {
+     "mentions": [
+      "200"
+     ],
+     "spans": [
+      [
+       10,
+       11
+      ]
+     ],
+     "text": "200",
+     "type": "number"
+    },
+    {
+     "mentions": [
+      "2024"
+     ],
+     "spans": [
+      [
+       13,
+       14
+      ]
+     ],
+     "text": "2024",
+     "type": "time"
+    }
+   ],
+   "facts": [],
+   "ner": [
+    [
+     "ORG",
+     0,
+     2
+    ],
+    [
+     "GPE",
+     5,
+     6
+    ],
+    [
+     "CARDINAL",
+     10,
+     11
+    ],
+    [
+     "DATE",
+     13,
+     14
+    ]
+   ],
+   "sentence_layers": [
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    }
+   ],
+   "sentences": [
+    {
+     "end": 7,
+     "start": 0
+    },
+    {
+     "end": 15,
+     "start": 7
+    }
+   ],
+   "srl": [
+    {
+     "args": [],
+     "predicate": 2
+    },
+    {
+     "args": [
+      [
+       "ARG1",
+       0,
+       2
+      ],
+      [
+       "ARGM-LOC",
+       4,
+       6
+      ]
+     ],
+     "predicate": 3
+    },
+    {
+     "args": [
+      [
+       "ARG0",
+       7,
+       9
+      ],
+      [
+       "ARG1",
+       10,
+       12
+      ],
+      [
+       "ARGM-TMP",
+       12,
+       14
+      ]
+     ],
+     "predicate": 9
+    }
+   ],
+   "tokens": [
+    "Acme",
+    "Robotics",
+    "is",
+    "based",
+    "in",
+    "Porto",
+    ".",
+    "The",
+    "company",
+    "hired",
+    "200",
+    "engineers",
+    "in",
+    "2024",
+    "."
+   ],
+   "words": [
+    {
+     "deprel": "compound",
+     "head": 2,
+     "lemma": "Acme",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "nsubj:pass",
+     "head": 4,
+     "lemma": "Robotics",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "aux:pass",
+     "head": 4,
+     "lemma": "be",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Pres|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "base",
+     "morph": "Tense=Past|VerbForm=Part|Voice=Pass",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "case",
+     "head": 6,
+     "lemma": "in",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 4,
+     "lemma": "Porto",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "punct",
+     "head": 4,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "det",
+     "head": 9,
+     "lemma": "the",
+     "morph": "Definite=Def|PronType=Art",
+     "pos": "DET"
+    },
+    {
+     "deprel": "nsubj",
+     "head": 10,
+     "lemma": "company",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "hire",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "nummod",
+     "head": 12,
+     "lemma": "200",
+     "morph": "NumForm=Digit|NumType=Card",
+     "pos": "NUM"
+    },
+    {
+     "deprel": "obj",
+     "head": 10,
+     "lemma": "engineer",
+     "morph": "Number=Plur",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "case",
+     "head": 14,
+     "lemma": "in",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 10,
+     "lemma": "2024",
+     "morph": "NumForm=Digit|NumType=Card",
+     "pos": "NUM"
+    },
+    {
+     "deprel": "punct",
+     "head": 10,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    }
+   ]
+  }
+ ]
+}

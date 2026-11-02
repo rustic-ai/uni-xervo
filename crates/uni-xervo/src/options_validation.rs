@@ -194,6 +194,53 @@ fn reject_unknown_keys(
     Ok(())
 }
 
+/// Validate the kniv generation and reject options meant for the other one.
+///
+/// The two generations of the kniv NLP family take different options
+/// entirely: v1 names one graph and a 128-token cap, v7 reads its graph set
+/// and window size from `onnx/onnx_meta.json` and takes a precision variant
+/// instead. Mixing them is always a mistake, and catching it here means the
+/// error arrives before a multi-gigabyte download rather than after.
+fn validate_nlp_generation(provider_id: &str, map: &serde_json::Map<String, Value>) -> Result<()> {
+    const V1_ONLY: [&str; 3] = ["onnx_path", "label_maps_path", "max_seq_len"];
+    const V7_ONLY: [&str; 3] = ["variant", "calibration_path", "label_bank_path"];
+
+    let generation = map.get("generation").and_then(Value::as_str);
+    if let Some(g) = generation
+        && !matches!(g, "v1" | "v7")
+    {
+        return Err(RuntimeError::Config(format!(
+            "Option 'generation' for provider '{provider_id}' must be one of: v1, v7"
+        )));
+    }
+
+    let declared_v7 = generation == Some("v7");
+    let declared_v1 = generation == Some("v1");
+    let has_v7_key = V7_ONLY.iter().find(|k| map.contains_key(**k));
+    let has_v1_key = V1_ONLY.iter().find(|k| map.contains_key(**k));
+
+    if let (Some(v7), Some(v1)) = (has_v7_key, has_v1_key) {
+        return Err(RuntimeError::Config(format!(
+            "Options '{v7}' (kniv v7) and '{v1}' (kniv v1 cascade) cannot both be set \
+             for provider '{provider_id}'"
+        )));
+    }
+    if declared_v7 && let Some(v1) = has_v1_key {
+        return Err(RuntimeError::Config(format!(
+            "Option '{v1}' does not apply to a kniv v7 model for provider \
+             '{provider_id}'; v7 reads its graph set and window size from \
+             onnx/onnx_meta.json"
+        )));
+    }
+    if declared_v1 && let Some(v7) = has_v7_key {
+        return Err(RuntimeError::Config(format!(
+            "Option '{v7}' does not apply to the kniv v1 cascade for provider \
+             '{provider_id}'"
+        )));
+    }
+    Ok(())
+}
+
 /// Require that all specified keys, if present, are strings.
 fn require_string_keys(
     provider_id: &str,
@@ -841,10 +888,17 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         ModelTask::Nlp => {
             let mut keys = common_keys.to_vec();
             keys.extend_from_slice(&[
-                "onnx_path",
+                // Shared.
                 "tokenizer_path",
+                "generation",
+                // v1 cascade only.
+                "onnx_path",
                 "label_maps_path",
                 "max_seq_len",
+                // kniv v7 only.
+                "variant",
+                "calibration_path",
+                "label_bank_path",
             ]);
             keys
         }
@@ -937,9 +991,18 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         require_string_keys(
             provider_id,
             map,
-            &["onnx_path", "tokenizer_path", "label_maps_path"],
+            &[
+                "onnx_path",
+                "tokenizer_path",
+                "label_maps_path",
+                "variant",
+                "calibration_path",
+                "label_bank_path",
+                "generation",
+            ],
         )?;
         require_positive_u64(provider_id, map, "max_seq_len")?;
+        validate_nlp_generation(provider_id, map)?;
     }
 
     if matches!(task, ModelTask::DocumentExtract) {

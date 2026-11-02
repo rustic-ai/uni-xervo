@@ -1,0 +1,274 @@
+{
+ "case": "no-schema-prose",
+ "input": {
+  "text": "Marie Curie discovered radium in Paris. She won two Nobel Prizes."
+ },
+ "run": "deberta-v3-large-v7b8ev",
+ "schema": null,
+ "variant": "int8",
+ "windows": [
+  {
+   "analysed_words": 13,
+   "coref": [
+    [
+     [
+      0,
+      1
+     ],
+     [
+      7,
+      7
+     ]
+    ]
+   ],
+   "entities": [
+    {
+     "mentions": [
+      "Marie Curie"
+     ],
+     "spans": [
+      [
+       0,
+       2
+      ]
+     ],
+     "text": "Marie Curie",
+     "type": "PER"
+    },
+    {
+     "mentions": [
+      "Paris"
+     ],
+     "spans": [
+      [
+       5,
+       6
+      ]
+     ],
+     "text": "Paris",
+     "type": "LOC"
+    },
+    {
+     "mentions": [
+      "two"
+     ],
+     "spans": [
+      [
+       9,
+       10
+      ]
+     ],
+     "text": "two",
+     "type": "NUM"
+    },
+    {
+     "mentions": [
+      "Nobel Prizes"
+     ],
+     "spans": [
+      [
+       10,
+       12
+      ]
+     ],
+     "text": "Nobel Prizes",
+     "type": "MISC"
+    }
+   ],
+   "facts": [],
+   "ner": [
+    [
+     "PERSON",
+     0,
+     2
+    ],
+    [
+     "GPE",
+     5,
+     6
+    ],
+    [
+     "CARDINAL",
+     9,
+     10
+    ],
+    [
+     "WORK_OF_ART",
+     10,
+     12
+    ]
+   ],
+   "sentence_layers": [
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    }
+   ],
+   "sentences": [
+    {
+     "end": 7,
+     "start": 0
+    },
+    {
+     "end": 13,
+     "start": 7
+    }
+   ],
+   "srl": [
+    {
+     "args": [
+      [
+       "ARG0",
+       0,
+       2
+      ],
+      [
+       "ARG1",
+       3,
+       4
+      ],
+      [
+       "ARGM-LOC",
+       4,
+       6
+      ]
+     ],
+     "predicate": 2
+    },
+    {
+     "args": [
+      [
+       "ARG0",
+       7,
+       8
+      ],
+      [
+       "ARG1",
+       9,
+       12
+      ]
+     ],
+     "predicate": 8
+    }
+   ],
+   "tokens": [
+    "Marie",
+    "Curie",
+    "discovered",
+    "radium",
+    "in",
+    "Paris",
+    ".",
+    "She",
+    "won",
+    "two",
+    "Nobel",
+    "Prizes",
+    "."
+   ],
+   "words": [
+    {
+     "deprel": "nsubj",
+     "head": 3,
+     "lemma": "Marie",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "flat",
+     "head": 1,
+     "lemma": "Curie",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "discover",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "obj",
+     "head": 3,
+     "lemma": "radium",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "case",
+     "head": 6,
+     "lemma": "in",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 3,
+     "lemma": "Paris",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "punct",
+     "head": 3,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "nsubj",
+     "head": 9,
+     "lemma": "she",
+     "morph": "Case=Nom|Gender=Fem|Number=Sing|Person=3|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "win",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "nummod",
+     "head": 12,
+     "lemma": "two",
+     "morph": "NumForm=Word|NumType=Card",
+     "pos": "NUM"
+    },
+    {
+     "deprel": "compound",
+     "head": 12,
+     "lemma": "Nobel",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "obj",
+     "head": 9,
+     "lemma": "Prize",
+     "morph": "Number=Plur",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "punct",
+     "head": 9,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    }
+   ]
+  }
+ ]
+}

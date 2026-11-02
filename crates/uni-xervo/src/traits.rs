@@ -32,8 +32,10 @@ pub use multimodal::{
 };
 pub use multivector::{MultiVectorEmbedResult, MultiVectorEmbeddingModel};
 pub use nlp::{
-    DepLink, NerEntity, NlpLabelMaps, NlpModel, NlpRequest, NlpResult, NlpSentence, NlpTasks,
-    NlpToken, SpeechAct, SrlFrame, SrlRole,
+    DepLink, ExtractionSchema, FactModality, FactPolarity, LabelSpec, NerEntity, NlpCalibration,
+    NlpCalibrationOverrides, NlpEntity, NlpFact, NlpLabelMaps, NlpModel, NlpRequest, NlpResult,
+    NlpSentence, NlpTasks, NlpToken, NlpWindow, SpeechAct, SrlFrame, SrlRole, Turn, WindowFrame,
+    WindowSentence, WordAnalysis, WordSpan,
 };
 pub use sparse::{SparseEmbedResult, SparseEmbeddingModel, SparseVector};
 

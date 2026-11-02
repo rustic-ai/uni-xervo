@@ -15,11 +15,15 @@ A single ONNX-Runtime-backed provider that dispatches by `task`:
 - **`embed`** — dense text embeddings via `EmbeddingModel` (replaces the retired `local/fastembed` provider as of 0.8.0; the same alias strings still resolve).
 - **`embed_image`** — ViT-style image embedders (SigLIP-2, CLIP, OpenCLIP)
   via `ImageEmbeddingModel`. New in 0.13.0.
-- **`nlp`** — multi-head NLP cascades via `NlpModel`. Reference target:
-  `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` (POS / NER / DEP / SRL
-  / dialog-act CLS in one forward pass). New in 0.13.0; result surface
-  extended in 0.14.0 (merged entities, full dialog-act distribution,
-  word alignment, exposed label vocabularies). See the
+- **`nlp`** — structured NLP via `NlpModel`, serving two generations of the
+  kniv family. `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` is the v1
+  cascade (POS / NER / DEP / SRL / dialog-act CLS in one forward pass);
+  `dragonscale-ai/kniv-v7-xlarge-u-en` and `-d-en` are kniv v7 (eight graphs
+  over word-level windows, adding morphology, lemmas, sentiment,
+  coreference, caller-supplied entity types and relations with polarity,
+  modality, holder and time). New in 0.13.0; result surface extended in
+  0.14.0 (merged entities, full dialog-act distribution, word alignment,
+  exposed label vocabularies) and in 0.19.0 (kniv v7). See the
   [Structured NLP guide](../../guides/nlp.md).
 - **`ocr`** — text recognition (CRNN + CTC) via `OcrModel`, with an
   **optional DBNet detection stage** for full-page OCR. Recognition is new
@@ -130,9 +134,17 @@ exposed (see `model.available_heads()`). Models without a hybrid preset return a
 
 ### NLP-only keys (`task = nlp`)
 
+Shared by both kniv generations:
+
+- `tokenizer_path` (string, default `"tokenizer.json"`).
+- `generation` (string, `"v1"` or `"v7"`) — pins the generation instead of
+  inferring it. Inference: a repo carrying `onnx/onnx_meta.json` is v7, a repo
+  carrying `onnx/cascade.onnx` is v1.
+
+kniv v1 cascade only:
+
 - `onnx_path` (string, default `"onnx/cascade.onnx"`) — path within the HF
   repo to the cascade ONNX file.
-- `tokenizer_path` (string, default `"tokenizer.json"`).
 - `label_maps_path` (string, default `"label_maps.json"`) — JSON file
   containing the model's per-head id-to-label arrays (`pos`, `ner`,
   `srl`, `cls`, `deprel`). Each entry's position is the model's class
@@ -142,10 +154,36 @@ exposed (see `model.available_heads()`). Models without a hybrid preset return a
   offsets in `NlpToken::{start, end}` stay correct because tokenization
   runs once over the full text.
 
-Canonical default model: `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall`
-(DeBERTa-v3-xsmall, 5 heads, ~75 MB INT8 ONNX). SRL multi-pass
-orchestration (one forward per detected verb via `predicate_idx`) is
-handled provider-side and invisible to callers.
+kniv v7 only:
+
+- `variant` (string, default `""` = fp32) — the precision **fallback chain**
+  for the three encoder graphs. `"int8,fp16"` loads, per graph, the first
+  suffix published for it, else the fp32 file; that resolves to `plain-int8`,
+  `marker-int8` and `label-fp16`, because the label graph publishes no INT8
+  file (it runs once per schema and is cached). Only the files the chain needs
+  are downloaded.
+- `calibration_path` (string, default `"calibration.json"`) — the release's
+  dev-tuned decoding thresholds, readable via `NlpModel::calibration()` and
+  overridable per request.
+- `label_bank_path` (string, default `"label_bank.json"`) — marks the
+  relations whose thresholds were tuned individually; the rest fall back to
+  `unseen_offset`.
+
+The two sets do not overlap, and mixing them is rejected at catalog
+registration — before any download. v7 takes no `max_seq_len`: its window is
+512 words and its subword budget comes from `onnx_meta.json` (1,024 for
+UltraBERT, 512 for DeBERTa).
+
+`graph_optimization_level`, `intra_op_num_threads` and `inter_op_num_threads`
+are honoured on the v7 path. Set `intra_op_num_threads` when the model runs
+alongside an embedder, or ONNX Runtime takes every core.
+
+On GPUs use `"variant": "fp16"`: the INT8 graphs use dynamic per-channel
+quantisation, which CUDA serves through its own CPU fallback.
+
+SRL multi-pass orchestration on the v1 path (one forward per detected verb via
+`predicate_idx`) is handled provider-side and invisible to callers; v7 scores
+every predicate in one batched call.
 
 ### Image-embed-only keys (`task = embed_image`)
 
@@ -281,9 +319,13 @@ By task:
 - **`nlp`** → `runtime.nlp_model(alias)` returns `Arc<dyn NlpModel>`.
   Method: `analyze(requests)` → `Vec<NlpResult>` with populated `tokens`,
   `sentences`, `frames`, `speech_acts`, and merged `entities` per the requested
-  `NlpTasks` bitflag. `NlpModel::label_maps()` exposes the model's per-head
-  label vocabularies. See the [Structured NLP guide](../../guides/nlp.md) for
-  the full result-type reference and a worked example.
+  `NlpTasks` bitflag. A v7 model also fills `windows` with the per-window
+  analysis — typed entities, coreference clusters and facts — and accepts
+  conversation `turns` and an `ExtractionSchema` on the request.
+  `NlpModel::label_maps()` exposes the model's per-head label vocabularies and
+  `NlpModel::calibration()` its decoding thresholds. See the
+  [Structured NLP guide](../../guides/nlp.md) for the full result-type
+  reference and a worked example.
 - **`ocr`** → `runtime.ocr_model(alias)` returns `Arc<dyn OcrModel>`.
   Method: `recognize(images)` → `Vec<OcrResult>`. With `det_onnx_path`
   set, each result holds one block per detected region (pixel bboxes, reading
@@ -350,11 +392,28 @@ By task:
 }
 ```
 
-### NLP (kniv-deberta canonical default)
+### NLP (kniv v7)
 
 ```json
 {
   "alias": "nlp/default",
+  "task": "nlp",
+  "provider_id": "local/onnx",
+  "model_id": "dragonscale-ai/kniv-v7-xlarge-u-en",
+  "warmup": "background",
+  "options": {
+    "variant": "int8,fp16",
+    "execution_providers": ["cpu"],
+    "intra_op_num_threads": 8
+  }
+}
+```
+
+### NLP (kniv v1 cascade)
+
+```json
+{
+  "alias": "nlp/cascade",
   "task": "nlp",
   "provider_id": "local/onnx",
   "model_id": "dragonscale-ai/kniv-deberta-nlp-base-en-xsmall",

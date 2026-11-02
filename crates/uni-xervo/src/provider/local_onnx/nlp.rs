@@ -146,6 +146,7 @@ fn label_maps_from_value(value: &Value, source: &str) -> Result<NlpLabelMaps> {
         deprel: take("deprel")?,
         srl: take("srl")?,
         cls: take("cls")?,
+        ..Default::default()
     })
 }
 
@@ -428,6 +429,7 @@ impl OnnxNlpModel {
             frames: all_frames,
             speech_acts,
             entities,
+            ..Default::default()
         })
     }
 
@@ -539,7 +541,10 @@ impl NlpModel for OnnxNlpModel {
     }
 
     fn supported_tasks(&self) -> NlpTasks {
-        NlpTasks::ALL
+        // The v1 cascade has five heads; the v7 additions (morphology,
+        // lemmas, sentiment, coreference, entities, facts) need the v7
+        // provider path in `nlp_v7`.
+        NlpTasks::CASCADE
     }
 
     fn label_maps(&self) -> Option<&NlpLabelMaps> {

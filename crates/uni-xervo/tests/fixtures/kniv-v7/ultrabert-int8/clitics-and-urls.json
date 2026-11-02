@@ -1,0 +1,287 @@
+{
+ "case": "clitics-and-urls",
+ "input": {
+  "text": "She didn't visit www.example.com. It's 3.14 and 50% of the 2nd batch... really?"
+ },
+ "run": "ultrabert-380m-v7b8ev",
+ "schema": null,
+ "variant": "int8",
+ "windows": [
+  {
+   "analysed_words": 17,
+   "coref": [],
+   "entities": [
+    {
+     "mentions": [
+      "visit"
+     ],
+     "spans": [
+      [
+       3,
+       4
+      ]
+     ],
+     "text": "visit",
+     "type": "LOC"
+    },
+    {
+     "mentions": [
+      "3.14"
+     ],
+     "spans": [
+      [
+       7,
+       8
+      ]
+     ],
+     "text": "3.14",
+     "type": "NUM"
+    },
+    {
+     "mentions": [
+      "50%"
+     ],
+     "spans": [
+      [
+       9,
+       10
+      ]
+     ],
+     "text": "50%",
+     "type": "NUM"
+    }
+   ],
+   "facts": [],
+   "ner": [
+    [
+     "CARDINAL",
+     7,
+     8
+    ],
+    [
+     "CARDINAL",
+     9,
+     10
+    ],
+    [
+     "ORDINAL",
+     12,
+     13
+    ]
+   ],
+   "sentence_layers": [
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Question",
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    }
+   ],
+   "sentences": [
+    {
+     "end": 5,
+     "start": 0
+    },
+    {
+     "end": 17,
+     "start": 5
+    }
+   ],
+   "srl": [
+    {
+     "args": [],
+     "predicate": 1
+    },
+    {
+     "args": [
+      [
+       "ARG0",
+       0,
+       1
+      ],
+      [
+       "ARGM-NEG",
+       2,
+       3
+      ],
+      [
+       "ARG1",
+       4,
+       5
+      ]
+     ],
+     "predicate": 3
+    },
+    {
+     "args": [
+      [
+       "ARG1",
+       5,
+       6
+      ],
+      [
+       "ARG2",
+       7,
+       14
+      ],
+      [
+       "ARGM-ADV",
+       15,
+       16
+      ]
+     ],
+     "predicate": 6
+    }
+   ],
+   "tokens": [
+    "She",
+    "did",
+    "n't",
+    "visit",
+    "www.example.com.",
+    "It",
+    "'s",
+    "3.14",
+    "and",
+    "50%",
+    "of",
+    "the",
+    "2nd",
+    "batch",
+    "...",
+    "really",
+    "?"
+   ],
+   "words": [
+    {
+     "deprel": "nsubj",
+     "head": 4,
+     "lemma": "she",
+     "morph": "Case=Nom|Gender=Fem|Number=Sing|Person=3|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "aux",
+     "head": 4,
+     "lemma": "do",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "advmod",
+     "head": 4,
+     "lemma": "not",
+     "morph": "_",
+     "pos": "PART"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "visit",
+     "morph": "VerbForm=Inf",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "obj",
+     "head": 4,
+     "lemma": "www.example.com.",
+     "morph": "_",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "nsubj",
+     "head": 8,
+     "lemma": "it",
+     "morph": "Case=Nom|Gender=Neut|Number=Sing|Person=3|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "cop",
+     "head": 8,
+     "lemma": "be",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Pres|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "3.14",
+     "morph": "NumForm=Digit|NumType=Frac",
+     "pos": "NUM"
+    },
+    {
+     "deprel": "cc",
+     "head": 10,
+     "lemma": "and",
+     "morph": "_",
+     "pos": "CCONJ"
+    },
+    {
+     "deprel": "conj",
+     "head": 8,
+     "lemma": "50%",
+     "morph": "NumForm=Digit|NumType=Card",
+     "pos": "NUM"
+    },
+    {
+     "deprel": "case",
+     "head": 14,
+     "lemma": "of",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "det",
+     "head": 14,
+     "lemma": "the",
+     "morph": "Definite=Def|PronType=Art",
+     "pos": "DET"
+    },
+    {
+     "deprel": "amod",
+     "head": 14,
+     "lemma": "2nd",
+     "morph": "Degree=Pos|NumForm=Combi|NumType=Ord",
+     "pos": "ADJ"
+    },
+    {
+     "deprel": "nmod",
+     "head": 10,
+     "lemma": "batch",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "punct",
+     "head": 16,
+     "lemma": "...",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "parataxis",
+     "head": 8,
+     "lemma": "really",
+     "morph": "_",
+     "pos": "ADV"
+    },
+    {
+     "deprel": "punct",
+     "head": 8,
+     "lemma": "?",
+     "morph": "_",
+     "pos": "PUNCT"
+    }
+   ]
+  }
+ ]
+}

@@ -4,6 +4,70 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **kniv v7 structured NLP on `local/onnx`.** The `nlp` task now serves
+  `dragonscale-ai/kniv-v7-xlarge-u-en` (UltraBERT-380M) and
+  `kniv-v7-xlarge-d-en` (DeBERTa-v3-large) alongside the v1 cascade. v7 is a
+  different model rather than a bigger one: eight graphs instead of one,
+  windows of up to 512 whole-sentence words instead of 128 subwords, and —
+  beyond POS / NER / DEP / SRL / dialogue acts — morphology, lemmas,
+  sentiment, coreference clusters, typed entities and entity-to-entity facts
+  carrying polarity, modality, holder and time. Entity types and relations are
+  supplied **per request** by name and description and scored across the
+  window, so a schema the model has never seen needs no fine-tuning.
+
+  The generation is inferred from the model repo (`onnx/onnx_meta.json` means
+  v7) and can be pinned with `"generation"`. The v1 code path is untouched and
+  still selected for v1 repos.
+
+  Most of a v7 model's behaviour is host code, not graph weights: BIO Viterbi
+  under proper transition constraints, one Chu-Liu-Edmonds tree per sentence
+  with a forced single root, predicate-aware SRL that pins `V` to its
+  predicate, greedy flat span decoding, union-find coreference clusters with
+  learned boundaries, and calibrated per-relation margins. All of it is a port
+  of the model's Python reference runtime, and
+  `local_onnx_nlp_v7_golden_expensive_test` replays the reference's own output
+  on committed fixtures for both encoders: every tag, head, span, entity, fact
+  and attribute matches exactly, with margins inside 2e-3 (the reference
+  rounds them to three decimals, and the INT8 graphs reduce in whatever order
+  each runtime's thread partitioning picks).
+  `scripts/gen-kniv-v7-goldens.py` regenerates those fixtures.
+
+  New option keys: `variant` — a precision *fallback chain*, so `"int8,fp16"`
+  resolves per graph to `plain-int8`, `marker-int8` and `label-fp16`, the label
+  graph publishing no INT8 file because it runs once per schema and is cached
+  — plus `calibration_path`, `label_bank_path` and `generation`. Only the files
+  a variant needs are downloaded. The v1-only keys (`onnx_path`,
+  `label_maps_path`, `max_seq_len`) are rejected for a v7 model at catalog
+  registration, before a multi-gigabyte download rather than after; v7 reads
+  its graph set and window size from `onnx_meta.json`.
+
+  `NlpRequest` gains `turns` (a conversation, where each speaker becomes an
+  entity in its own right, so a first-person statement can be stored about the
+  speaker), `schema` and `calibration`. `NlpResult` gains `windows`, and the
+  v1-shaped fields are filled as a flattened projection of them so existing
+  callers keep working. `NlpTasks` gains `MORPH`, `LEMMA`, `SENTIMENT`,
+  `COREF`, `ENTITIES` and `FACTS`, with `CASCADE` and `LINGUISTIC` as
+  convenience sets; requesting a narrow set skips the graph calls behind the
+  heads nothing asked for. `NlpModel::calibration()` exposes the release's
+  dev-tuned decoding thresholds, which `NlpRequest::calibration` overrides per
+  request.
+
+  Unlike the v1 path, the v7 path honours the `graph_optimization_level`,
+  `intra_op_num_threads` and `inter_op_num_threads` options it validates.
+
+### Changed
+
+- **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
+  struct literals no longer compile. Build one with `NlpRequest::new(text,
+  tasks)` or `NlpRequest::from_turns(turns, tasks)` and chain `with_schema` /
+  `with_turns` / `with_calibration`. This is the last change of its kind:
+  further request inputs can now be added without breaking callers.
+- **`NlpTasks::ALL` now includes the v7 heads.** Code that means exactly the
+  five cascade heads should say `NlpTasks::CASCADE`, which is also what a v1
+  model now reports from `supported_tasks()` instead of claiming `ALL`.
+
 ## [0.18.1] - 2026-09-20
 
 ### Fixed

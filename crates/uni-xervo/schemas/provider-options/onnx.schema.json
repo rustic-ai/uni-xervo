@@ -46,6 +46,26 @@
       "type": "integer",
       "minimum": 1,
       "description": "Intra-op thread count passed to ONNX Runtime."
+    },
+    "generation": {
+      "type": "string",
+      "enum": [
+        "v1",
+        "v7"
+      ],
+      "description": "Which kniv NLP generation the model repo holds. Inferred from the repo (onnx/onnx_meta.json means v7) when omitted."
+    },
+    "variant": {
+      "type": "string",
+      "description": "kniv v7 precision fallback chain, e.g. \"\" (fp32), \"fp16\", or \"int8,fp16\": for each graph the first suffix that exists is used, else the fp32 file."
+    },
+    "calibration_path": {
+      "type": "string",
+      "description": "Relative path to a kniv v7 calibration.json inside the repo. Default: calibration.json."
+    },
+    "label_bank_path": {
+      "type": "string",
+      "description": "Relative path to a kniv v7 label_bank.json inside the repo, which marks the relations whose thresholds were tuned. Default: label_bank.json."
     }
   }
 }

@@ -1,0 +1,414 @@
+{
+ "case": "negation-and-plans",
+ "input": {
+  "turns": [
+   [
+    "user",
+    "I don't work at Acme anymore. Next month I'm joining Northstar."
+   ],
+   [
+    "assistant",
+    "That's a big change."
+   ]
+  ]
+ },
+ "run": "ultrabert-380m-v7b8ev",
+ "schema": "memory",
+ "variant": "int8",
+ "windows": [
+  {
+   "analysed_words": 21,
+   "coref": [
+    [
+     [
+      0,
+      0
+     ],
+     [
+      10,
+      10
+     ]
+    ]
+   ],
+   "entities": [
+    {
+     "speaker": true,
+     "text": "user",
+     "type": "speaker"
+    },
+    {
+     "speaker": true,
+     "text": "assistant",
+     "type": "speaker"
+    },
+    {
+     "mentions": [
+      "Acme"
+     ],
+     "spans": [
+      [
+       5,
+       6
+      ]
+     ],
+     "text": "Acme",
+     "type": "organization"
+    },
+    {
+     "mentions": [
+      "Next month"
+     ],
+     "spans": [
+      [
+       8,
+       10
+      ]
+     ],
+     "text": "Next month",
+     "type": "time"
+    },
+    {
+     "mentions": [
+      "Northstar"
+     ],
+     "spans": [
+      [
+       13,
+       14
+      ]
+     ],
+     "text": "Northstar",
+     "type": "organization"
+    },
+    {
+     "mentions": [
+      "a big change"
+     ],
+     "spans": [
+      [
+       17,
+       20
+      ]
+     ],
+     "text": "a big change",
+     "type": "event"
+    }
+   ],
+   "facts": [
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 0.05,
+     "modality": "asserted",
+     "polarity": "negative",
+     "relation": "member of",
+     "tail": 2,
+     "time": null
+    }
+   ],
+   "ner": [
+    [
+     "ORG",
+     5,
+     6
+    ],
+    [
+     "DATE",
+     8,
+     10
+    ],
+    [
+     "ORG",
+     13,
+     14
+    ]
+   ],
+   "sentence_layers": [
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    }
+   ],
+   "sentences": [
+    {
+     "end": 8,
+     "speaker": "user",
+     "start": 0
+    },
+    {
+     "end": 15,
+     "speaker": "user",
+     "start": 8
+    },
+    {
+     "end": 21,
+     "speaker": "assistant",
+     "start": 15
+    }
+   ],
+   "srl": [
+    {
+     "args": [],
+     "predicate": 1
+    },
+    {
+     "args": [
+      [
+       "ARG0",
+       0,
+       1
+      ],
+      [
+       "ARGM-NEG",
+       2,
+       3
+      ],
+      [
+       "ARG2",
+       4,
+       6
+      ],
+      [
+       "ARGM-TMP",
+       6,
+       7
+      ]
+     ],
+     "predicate": 3
+    },
+    {
+     "args": [],
+     "predicate": 11
+    },
+    {
+     "args": [
+      [
+       "ARGM-TMP",
+       8,
+       10
+      ],
+      [
+       "ARG0",
+       10,
+       11
+      ],
+      [
+       "ARG2",
+       13,
+       14
+      ]
+     ],
+     "predicate": 12
+    },
+    {
+     "args": [
+      [
+       "ARG1",
+       15,
+       16
+      ],
+      [
+       "ARG2",
+       17,
+       20
+      ]
+     ],
+     "predicate": 16
+    },
+    {
+     "args": [],
+     "predicate": 19
+    }
+   ],
+   "tokens": [
+    "I",
+    "do",
+    "n't",
+    "work",
+    "at",
+    "Acme",
+    "anymore",
+    ".",
+    "Next",
+    "month",
+    "I",
+    "'m",
+    "joining",
+    "Northstar",
+    ".",
+    "That",
+    "'s",
+    "a",
+    "big",
+    "change",
+    "."
+   ],
+   "words": [
+    {
+     "deprel": "nsubj",
+     "head": 4,
+     "lemma": "I",
+     "morph": "Case=Nom|Number=Sing|Person=1|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "aux",
+     "head": 4,
+     "lemma": "do",
+     "morph": "Mood=Ind|Number=Sing|Person=1|Tense=Pres|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "advmod",
+     "head": 4,
+     "lemma": "not",
+     "morph": "_",
+     "pos": "PART"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "work",
+     "morph": "VerbForm=Inf",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "case",
+     "head": 6,
+     "lemma": "at",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 4,
+     "lemma": "Acme",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "advmod",
+     "head": 4,
+     "lemma": "anymore",
+     "morph": "_",
+     "pos": "ADV"
+    },
+    {
+     "deprel": "punct",
+     "head": 4,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "amod",
+     "head": 10,
+     "lemma": "next",
+     "morph": "Degree=Pos",
+     "pos": "ADJ"
+    },
+    {
+     "deprel": "obl:tmod",
+     "head": 13,
+     "lemma": "month",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "nsubj",
+     "head": 13,
+     "lemma": "I",
+     "morph": "Case=Nom|Number=Sing|Person=1|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "aux",
+     "head": 13,
+     "lemma": "be",
+     "morph": "Mood=Ind|Number=Sing|Person=1|Tense=Pres|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "join",
+     "morph": "Tense=Pres|VerbForm=Part",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "obj",
+     "head": 13,
+     "lemma": "Northstar",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "punct",
+     "head": 13,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "nsubj",
+     "head": 20,
+     "lemma": "that",
+     "morph": "Number=Sing|PronType=Dem",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "cop",
+     "head": 20,
+     "lemma": "be",
+     "morph": "Mood=Ind|Number=Sing|Person=3|Tense=Pres|VerbForm=Fin",
+     "pos": "AUX"
+    },
+    {
+     "deprel": "det",
+     "head": 20,
+     "lemma": "a",
+     "morph": "Definite=Ind|PronType=Art",
+     "pos": "DET"
+    },
+    {
+     "deprel": "amod",
+     "head": 20,
+     "lemma": "big",
+     "morph": "Degree=Pos",
+     "pos": "ADJ"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "change",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "punct",
+     "head": 20,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    }
+   ]
+  }
+ ]
+}
