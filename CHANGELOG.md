@@ -245,7 +245,9 @@ All notable changes to this project are documented in this file.
 - **Documentation version snippets and backend counts updated for 0.19.**
   `uni-xervo = "0.18"` would not resolve a 0.19 release, and the default build
   no longer has "three local backends" now that `local/mistralrs` is gone — it
-  has two, plus nine remote providers.
+  has two, plus nine remote providers. `docs/USER_GUIDE.md` was further behind
+  than the rest: its install snippets still said `"0.9"`, unchanged since the
+  0.9.0 feature-surface rework.
 
 - **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
   struct literals no longer compile. Build one with `NlpRequest::new(text,
