@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-02
+
 ### Added
 
 - **`remote/llamacpp` now serves `generate`, `rerank` and `document_extract`
@@ -228,6 +230,22 @@ All notable changes to this project are documented in this file.
   are always loaded from a path a provider downloaded itself — and was quietly
   pulling a second, older major of `hf-hub` into the graph beside the one in
   use.
+
+- **The declared MSRV is now 1.95, up from 1.88.** The old figure was not a
+  policy this release abandoned — it was already wrong. `hayro` has required
+  1.92 since 0.7, which 0.18.1 shipped with, so the published `rust-version`
+  has understated the real floor for a release already. CI builds on `stable`
+  and so never noticed.
+
+  1.95 is the true floor for the default feature set, set by `sysinfo` 0.39.6
+  by way of `hf-hub` 1.0 → `hf-xet` → `xet-runtime`. `ort` and the `hayro`
+  family account for the 1.92 step below it. The figure in `Cargo.toml`,
+  `CONTRIBUTING.md`, `DEVELOPMENT.md` and the getting-started page now agree
+  with what cargo will actually enforce.
+- **Documentation version snippets and backend counts updated for 0.19.**
+  `uni-xervo = "0.18"` would not resolve a 0.19 release, and the default build
+  no longer has "three local backends" now that `local/mistralrs` is gone — it
+  has two, plus nine remote providers.
 
 - **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
   struct literals no longer compile. Build one with `NlpRequest::new(text,

@@ -8,7 +8,7 @@ Uni-Xervo's feature surface is small and orthogonal. Three independent axes:
 
 ## Defaults
 
-`uni-xervo = "0.18"` enables all three local backends and all nine remote providers on CPU:
+`uni-xervo = "0.19"` enables both local backends and all nine remote providers on CPU:
 
 ```text
 provider-candle, provider-onnx,
@@ -117,38 +117,38 @@ User-supplied `execution_providers` strings are checked in two stages:
 
 ```toml
 # Default — everything except GPU.
-uni-xervo = "0.18"
+uni-xervo = "0.19"
 
 # Add NVIDIA GPU (Linux / Windows).
-uni-xervo = { version = "0.18", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.19", features = ["gpu-cuda"] }
 
 # Add Apple GPU + Neural Engine (macOS / iOS).
-uni-xervo = { version = "0.18", features = ["gpu-metal"] }
+uni-xervo = { version = "0.19", features = ["gpu-metal"] }
 
 # Lean — only candle.
-uni-xervo = { version = "0.18", default-features = false, features = ["provider-candle"] }
+uni-xervo = { version = "0.19", default-features = false, features = ["provider-candle"] }
 
 # Remote-only — no native deps at all.
-uni-xervo = { version = "0.18", default-features = false, features = [
+uni-xervo = { version = "0.19", default-features = false, features = [
   "provider-openai",
   "provider-anthropic",
 ] }
 
 # Local stack with ONNX Runtime.
-uni-xervo = { version = "0.18", default-features = false, features = [
+uni-xervo = { version = "0.19", default-features = false, features = [
   "provider-candle",
   "provider-onnx",
 ] }
 
 # BYO ONNX Runtime (ROCm, OpenVINO, custom builds, sandboxed CI).
-uni-xervo = { version = "0.18", default-features = false, features = [
+uni-xervo = { version = "0.19", default-features = false, features = [
   "provider-candle",
   "provider-onnx-dynamic",
 ] }
 # Then at runtime: ORT_DYLIB_PATH=/path/to/libonnxruntime.so ./your-binary
 
 # Add local speech-to-text via whisper.cpp (opt-in).
-uni-xervo = { version = "0.18", features = ["provider-whisper-cpp"] }
+uni-xervo = { version = "0.19", features = ["provider-whisper-cpp"] }
 # Build host needs cmake + a C/C++ toolchain.
 ```
 

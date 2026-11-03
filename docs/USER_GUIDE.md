@@ -25,7 +25,7 @@ Welcome to Uni-Xervo! This guide is designed to help you integrate `uni-xervo` i
 
 ## Installation
 
-The default build gives you all three local backends and all eight remote API providers on CPU. Most users just need:
+The default build gives you both local backends and all nine remote API providers on CPU. Most users just need:
 
 ```toml
 [dependencies]

@@ -22,7 +22,7 @@ Contributions are welcome for:
 
 Prerequisites:
 
-- Rust `1.88+`
+- Rust `1.95+`
 - `cargo` and `rustfmt`
 - Optional: `cargo-nextest` for faster test cycles
 

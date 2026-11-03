@@ -66,7 +66,7 @@ helpers (`max_sim`, `colbert_rerank`, `sparse_dot`) in one `use`.
 
 ## Installation
 
-Defaults give you all three local backends and all eight remote API providers on CPU. Two follow-up questions:
+Defaults give you both local backends and all nine remote API providers on CPU. Two follow-up questions:
 
 1. **Want a leaner build?** Pass `default-features = false` and pick what you need.
 2. **Want GPU?** Add `gpu-cuda` (Linux/Windows + NVIDIA) or `gpu-metal` (macOS/iOS).
