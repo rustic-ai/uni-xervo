@@ -453,10 +453,11 @@ fn require_absolute_http_url(
 /// token budget drives the client-side truncation pre-pass. Those three keys
 /// are embed-only and rejected elsewhere, rather than silently ignored.
 ///
-/// `generate` takes no keys of its own. In particular there is no option for
-/// vision: whether images are accepted depends on whether `llama-server` was
-/// started with `--mmproj`, which is a property of the server process and not
-/// something the catalog can know.
+/// `generate` and `rerank` take no keys of their own. In particular there is
+/// no option for vision, and none for the rerank response shape: the first
+/// depends on whether `llama-server` was started with `--mmproj` and the
+/// second follows from the request key this crate chooses. Both are properties
+/// of the server process or the wire call, not things the catalog can know.
 fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
     /// Keys every task reads.
     const COMMON: [&str; 3] = ["base_url", "api_key_env", "request_timeout_secs"];
@@ -469,10 +470,10 @@ fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value
 
     let is_embed = match task {
         ModelTask::Embed => true,
-        ModelTask::Generate => false,
+        ModelTask::Generate | ModelTask::Rerank => false,
         other => {
             return Err(RuntimeError::Config(format!(
-                "Provider '{}' supports tasks 'embed' and 'generate' (got '{}')",
+                "Provider '{}' supports tasks 'embed', 'generate' and 'rerank' (got '{}')",
                 provider_id,
                 task_wire_name(other)
             )));

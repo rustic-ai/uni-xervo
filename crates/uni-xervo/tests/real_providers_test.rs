@@ -2781,9 +2781,12 @@ mod mistralrs_tests {
 // LLAMA.CPP REMOTE TESTS
 // =============================================================================
 
-/// Non-network: the provider is embed-only.
+/// Non-network: a task the provider does not serve is refused at load.
+///
+/// `embed`, `generate` and `rerank` are supported; `raw` is not, and never
+/// will be — `llama-server` exposes no tensor-level endpoint.
 #[tokio::test]
-async fn test_llamacpp_rerank_capability_mismatch() {
+async fn test_llamacpp_unsupported_task_capability_mismatch() {
     #[cfg(feature = "provider-llamacpp")]
     {
         use uni_xervo::provider::llamacpp::RemoteLlamaCppProvider;
@@ -2791,8 +2794,8 @@ async fn test_llamacpp_rerank_capability_mismatch() {
 
         let provider = RemoteLlamaCppProvider::new();
         let spec = ModelAliasSpec {
-            alias: "rerank/llamacpp".to_string(),
-            task: ModelTask::Rerank,
+            alias: "raw/llamacpp".to_string(),
+            task: ModelTask::Raw,
             provider_id: "remote/llamacpp".to_string(),
             model_id: "bge-small-en-v1.5".to_string(),
             revision: None,
@@ -2807,7 +2810,10 @@ async fn test_llamacpp_rerank_capability_mismatch() {
                 "embedding_dimensions": 384
             }),
         };
-        let err = provider.load(&spec).await.err().expect("must fail");
+        let err = provider
+            .load(&spec)
+            .await
+            .expect_err("raw must not load on remote/llamacpp");
         assert!(
             err.to_string().contains("does not support task"),
             "unexpected error: {err}"
@@ -3095,6 +3101,118 @@ async fn test_llamacpp_generation() {
                 eprintln!("Skipping vision half - server has no --mmproj loaded: {e}");
             }
         }
+    }
+    #[cfg(not(feature = "provider-llamacpp"))]
+    {
+        eprintln!("Skipping - provider-llamacpp feature not enabled");
+    }
+}
+
+/// Real rerank against a running llama-server with a cross-encoder reranker.
+///
+/// The server must have been started with `--reranking`; without it every
+/// request answers HTTP 501, which the provider surfaces as a non-retryable
+/// error naming the flag.
+///
+/// Start the server with, e.g.:
+/// `llama-server -m jina-reranker-v1-tiny-en-Q8_0.gguf --reranking -c 2048 --port 8098`
+/// then `EXPENSIVE_TESTS=1 LLAMACPP_RERANK_BASE_URL=http://127.0.0.1:8098/v1 cargo test
+/// -p uni-xervo --test real_providers_test test_llamacpp_rerank -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn test_llamacpp_rerank() {
+    require_expensive_tests!();
+    let Ok(base_url) = env::var("LLAMACPP_RERANK_BASE_URL") else {
+        eprintln!("Skipping - LLAMACPP_RERANK_BASE_URL not set");
+        return;
+    };
+
+    #[cfg(feature = "provider-llamacpp")]
+    {
+        use uni_xervo::provider::llamacpp::RemoteLlamaCppProvider;
+
+        let model_id = env::var("LLAMACPP_RERANK_MODEL").unwrap_or_else(|_| "local".to_string());
+        let mut options = serde_json::json!({
+            "base_url": base_url,
+            "request_timeout_secs": 120
+        });
+        if let Ok(key_env) = env::var("LLAMACPP_API_KEY_ENV") {
+            options["api_key_env"] = serde_json::json!(key_env);
+        }
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(RemoteLlamaCppProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "rerank/llamacpp".to_string(),
+                task: ModelTask::Rerank,
+                provider_id: "remote/llamacpp".to_string(),
+                model_id,
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options,
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .reranker("rerank/llamacpp")
+            .await
+            .expect("Failed to resolve reranker model");
+
+        // The answer is deliberately in the middle, so a provider that lost
+        // the index mapping would rank the wrong document first.
+        let docs = [
+            "Bananas are a tropical fruit grown in warm climates.",
+            "Paris is the capital and most populous city of France.",
+            "Berlin is the capital of Germany.",
+            "The Pacific Ocean is the largest ocean on Earth.",
+        ];
+        let scored = model
+            .rerank("What is the capital of France?", &docs)
+            .await
+            .expect("Rerank failed");
+
+        // One score per document, nothing dropped.
+        assert_eq!(scored.len(), docs.len());
+        let mut indices: Vec<usize> = scored.iter().map(|d| d.index).collect();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..docs.len()).collect::<Vec<_>>());
+
+        // Descending, and the right document on top.
+        for pair in scored.windows(2) {
+            assert!(
+                pair[0].score >= pair[1].score,
+                "not sorted descending: {scored:?}"
+            );
+        }
+        assert_eq!(
+            scored[0].index, 1,
+            "expected the Paris document first, got {scored:?}"
+        );
+
+        // llama-server returns a sigmoid of the cross-encoder logit, so every
+        // score is bounded — unlike `local/onnx`, which returns raw logits.
+        for d in &scored {
+            assert!(
+                (0.0..=1.0).contains(&d.score),
+                "score {} outside [0, 1]: {d:?}",
+                d.score
+            );
+        }
+
+        // Nothing to rank must not become a request the server would reject.
+        assert!(
+            model
+                .rerank("anything", &[])
+                .await
+                .expect("empty rerank")
+                .is_empty()
+        );
     }
     #[cfg(not(feature = "provider-llamacpp"))]
     {

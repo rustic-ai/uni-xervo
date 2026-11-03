@@ -170,12 +170,10 @@ async fn rejects_non_string_api_key_env() {
 
 #[tokio::test]
 async fn rejects_unsupported_tasks() {
-    for task in [ModelTask::Rerank, ModelTask::Raw] {
-        assert_rejects(
-            build(task, valid()).await,
-            "supports tasks 'embed' and 'generate'",
-        );
-    }
+    assert_rejects(
+        build(ModelTask::Raw, valid()).await,
+        "supports tasks 'embed', 'generate' and 'rerank'",
+    );
 }
 
 // --- generate -------------------------------------------------------------
@@ -235,6 +233,45 @@ async fn generate_rejects_each_embed_only_option() {
             "applies only to task 'embed'",
         );
     }
+}
+
+// --- rerank ---------------------------------------------------------------
+
+/// Rerank needs nothing but the endpoint — in particular no option for the
+/// response shape, which follows from the request key this crate sends.
+#[tokio::test]
+async fn rerank_accepts_base_url_alone() {
+    assert!(
+        build(
+            ModelTask::Rerank,
+            json!({ "base_url": "http://127.0.0.1:8081/v1" })
+        )
+        .await
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn rerank_rejects_each_embed_only_option() {
+    for (key, value) in [
+        ("max_input_tokens", json!(512)),
+        ("embedding_dimensions", json!(384)),
+        ("tokenizer_base_url", json!("http://127.0.0.1:8081")),
+    ] {
+        let mut options = json!({ "base_url": "http://127.0.0.1:8081/v1" });
+        options[key] = value;
+        assert_rejects(
+            build(ModelTask::Rerank, options).await,
+            "applies only to task 'embed'",
+        );
+    }
+}
+
+#[tokio::test]
+async fn rerank_rejects_a_response_format_option() {
+    let mut options = json!({ "base_url": "http://127.0.0.1:8081/v1" });
+    options["rerank_format"] = json!("tei");
+    assert_rejects(build(ModelTask::Rerank, options).await, "Unknown option");
 }
 
 #[tokio::test]

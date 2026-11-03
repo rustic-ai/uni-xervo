@@ -63,7 +63,7 @@ helpers (`max_sim`, `colbert_rerank`, `sparse_dot`) in one `use`.
 | `remote/voyageai` | `embed`, `rerank` | `provider-voyageai` |
 | `remote/cohere` | `embed`, `rerank`, `generate`, `embed_multimodal` | `provider-cohere` |
 | `remote/azure-openai` | `embed`, `generate` | `provider-azure-openai` |
-| `remote/llamacpp` | `embed` (llama.cpp `llama-server`, tokenizer-aware truncation), `generate` (text and vision) | `provider-llamacpp` |
+| `remote/llamacpp` | `embed` (llama.cpp `llama-server`, tokenizer-aware truncation), `generate` (text and vision), `rerank` | `provider-llamacpp` |
 
 ## Installation
 

@@ -4,15 +4,15 @@
 
 - Provider ID: `remote/llamacpp`
 - Feature flag: `provider-llamacpp`
-- Capabilities: `embed`, `generate`
+- Capabilities: `embed`, `generate`, `rerank`
 
 Targets a llama.cpp [`llama-server`](https://github.com/ggml-org/llama.cpp/tree/master/tools/server).
 Use `remote/openai` for generic OpenAI-compatible servers; use this provider when
-the server is llama.cpp — for bounded embedding input, and for text or vision
-generation against a locally served model.
+the server is llama.cpp — for bounded embedding input, for text or vision
+generation, and for reranking against a locally served model.
 
-One `llama-server` process serves one model, so an embedding alias and a
-generation alias point at two different servers (two `base_url`s).
+One `llama-server` process serves one model, so aliases for different tasks
+point at different servers (different `base_url`s).
 
 ## Why a dedicated provider
 
@@ -61,6 +61,38 @@ tokens an image expands into are produced inside the multimodal projector and
 are invisible to it. Context overflow is therefore left to the server, whose
 rejection becomes a non-retryable `InferenceError` naming `--ctx-size`.
 
+### `rerank`
+
+Reranking posts to the server's own `/v1/rerank` with the `documents` request
+key. The server must have been started with `--reranking` (or `--embedding
+--pooling rank`) and a cross-encoder reranker such as
+`gpustack/jina-reranker-v1-tiny-en-GGUF` or `bge-reranker-v2-m3`. A server
+started without the flag answers HTTP 501 for every request; because that is a
+permanent misconfiguration rather than an outage, it surfaces as a
+non-retryable `InferenceError` carrying the server's own advice, and does not
+count against the circuit breaker.
+
+`top_n` is deliberately not sent: `RerankerModel::rerank` contracts to return a
+score for **every** input document, and the server truncates when asked.
+Truncate the returned slice instead — it is already sorted descending. Indices
+are mapped back to the original `docs` positions and checked: an index past
+the end, a repeat, or a missing result is an error rather than a score silently
+attributed to the wrong document. `ScoredDoc.text` is always `None`, since the
+caller already holds the originals.
+
+An empty `docs` slice returns an empty result without a request, because
+`llama-server` rejects an empty `documents` array with HTTP 400.
+
+!!! warning "Rerank scores are not comparable with `local/onnx`"
+
+    `llama-server` returns a **sigmoid** of the cross-encoder logit, bounded to
+    `[0, 1]` and in practice small even for a strong match — 0.13 for an exact
+    answer is typical. `local/onnx`'s cross-encoder returns the **raw logit**,
+    unbounded in both directions. Rankings from the two agree; absolute scores
+    do not, so a threshold tuned against one provider will not transfer.
+    Neither score is rescaled, deliberately: a provider that quietly normalised
+    would make the difference harder to notice.
+
 !!! note "Reasoning models return the answer separately from the thinking"
 
     On a model with a thinking phase, `llama-server` puts the chain of thought
@@ -93,7 +125,9 @@ Shared by every task:
 | `max_input_tokens` | integer ≥ 3 | yes | Total token budget **including** special tokens. `512` for BGE / BERT models |
 | `embedding_dimensions` | integer > 0 | yes | Expected vector width (`384` for `bge-small-en-v1.5`) |
 
-`generate` takes no options of its own.
+`generate` and `rerank` take no options of their own. In particular there is no
+option for the rerank response shape: it follows from the request key this
+crate sends (see below).
 
 Authoritative Uni-Xervo option schema:
 
@@ -101,8 +135,8 @@ Authoritative Uni-Xervo option schema:
 
 ## Model ID
 
-`model_id` is sent as the `model` field of `/tokenize`, `/v1/embeddings` and
-`/v1/chat/completions`. When `llama-server` runs in router mode (`--models-dir` /
+`model_id` is sent as the `model` field of `/tokenize`, `/v1/embeddings`,
+`/v1/chat/completions` and `/v1/rerank`. When `llama-server` runs in router mode (`--models-dir` /
 `--models-preset`) it must equal the preset section name exactly; a
 single-model server accepts any value.
 
@@ -136,10 +170,20 @@ llama-server -m model-q4_0.gguf -c 4096 --port 8081
 llama-server -m model-q4_0.gguf --mmproj model-mmproj.gguf -c 8192 --port 8081
 ```
 
+### Reranking
+
+`--reranking` is required. Size `--ctx-size` for the longest
+query-plus-document pair, since the cross-encoder sees both at once:
+
+```bash
+llama-server -m jina-reranker-v1-tiny-en-Q8_0.gguf --reranking -c 2048 --port 8098
+```
+
 ## Authoritative model and config docs
 
 - llama-server README (endpoints, router mode, presets): <https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md>
 - BGE Small EN v1.5 GGUF: <https://huggingface.co/ggml-org/bge-small-en-v1.5-Q8_0-GGUF>
+- Jina Reranker v1 Tiny EN GGUF (35 MB, enough to try reranking): <https://huggingface.co/gpustack/jina-reranker-v1-tiny-en-GGUF>
 
 ## Example catalog entry
 
@@ -190,3 +234,39 @@ A generation alias — note that it carries none of the embedding keys:
   }
 }
 ```
+
+A rerank alias:
+
+```json
+{
+  "alias": "rerank/local",
+  "task": "rerank",
+  "provider_id": "remote/llamacpp",
+  "model_id": "jina-reranker-v1-tiny-en",
+  "options": {
+    "base_url": "http://127.0.0.1:8098/v1"
+  }
+}
+```
+
+### Response shape
+
+The server picks its response shape from the *request* key. `documents`, which
+this provider always sends, returns the Jina form:
+
+```json
+{
+  "model": "jina",
+  "object": "list",
+  "usage": { "prompt_tokens": 59, "total_tokens": 59 },
+  "results": [
+    { "index": 0, "relevance_score": 0.12988508 },
+    { "index": 2, "relevance_score": 0.03485725 },
+    { "index": 1, "relevance_score": 0.00940749 }
+  ]
+}
+```
+
+`texts` would instead return a bare array of `{"index", "score"}` (the TEI
+form). The provider accepts both, in case a gateway in front of the server
+normalises one into the other.

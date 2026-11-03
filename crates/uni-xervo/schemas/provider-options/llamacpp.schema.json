@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "llama.cpp Server Provider Options",
-  "description": "Options for the remote/llamacpp provider, which targets a llama.cpp `llama-server`. `base_url` is required for every task. The embed task additionally requires `max_input_tokens` and `embedding_dimensions` and runs a tokenizer-aware truncation pre-pass (via the server's native /tokenize endpoint), because llama-server never truncates embedding input. The generate task takes no options of its own; whether it accepts images depends on the server being started with --mmproj, not on the alias. Keys marked embed-only are rejected for other tasks.",
+  "description": "Options for the remote/llamacpp provider, which targets a llama.cpp `llama-server`. `base_url` is required for every task. The embed task additionally requires `max_input_tokens` and `embedding_dimensions` and runs a tokenizer-aware truncation pre-pass (via the server's native /tokenize endpoint), because llama-server never truncates embedding input. The generate and rerank tasks take no options of their own: whether generate accepts images depends on the server being started with --mmproj, and rerank needs the server started with --reranking. Both are properties of the server process, not of the alias. Keys marked embed-only are rejected for other tasks.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -36,7 +36,7 @@
       "type": "integer",
       "minimum": 1,
       "default": 60,
-      "description": "Per-HTTP-request timeout for the /tokenize, /v1/embeddings and /v1/chat/completions calls. The alias-level `timeout` still bounds the whole call."
+      "description": "Per-HTTP-request timeout for the /tokenize, /v1/embeddings, /v1/chat/completions and /v1/rerank calls. The alias-level `timeout` still bounds the whole call."
     }
   }
 }

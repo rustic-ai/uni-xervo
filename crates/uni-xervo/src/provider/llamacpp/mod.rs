@@ -9,6 +9,7 @@
 //! |------|--------|----------|
 //! | [`ModelTask::Embed`] | [`embed`] | `POST /v1/embeddings` + native `/tokenize` |
 //! | [`ModelTask::Generate`] | [`chat`] | `POST /v1/chat/completions` |
+//! | [`ModelTask::Rerank`] | [`rerank`] | `POST /v1/rerank` |
 //!
 //! # Shared options
 //!
@@ -32,16 +33,18 @@
 
 mod chat;
 mod embed;
+mod rerank;
 
 pub use chat::LlamaCppGeneratorModel;
 pub use embed::LlamaCppEmbeddingModel;
+pub use rerank::LlamaCppRerankerModel;
 
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
 use crate::provider::remote_common::RemoteProviderBase;
 use crate::traits::{
     EmbeddingModel, GeneratorModel, LoadedModelHandle, ModelProvider, ProviderCapabilities,
-    ProviderHealth,
+    ProviderHealth, RerankerModel,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -101,7 +104,7 @@ impl ModelProvider for RemoteLlamaCppProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            supported_tasks: vec![ModelTask::Embed, ModelTask::Generate],
+            supported_tasks: vec![ModelTask::Embed, ModelTask::Generate, ModelTask::Rerank],
         }
     }
 
@@ -125,6 +128,16 @@ impl ModelProvider for RemoteLlamaCppProvider {
                     chat::ChatConfig::from_options(&spec.options)?,
                 );
                 let handle: Arc<dyn GeneratorModel> = Arc::new(model);
+                Ok(Arc::new(handle) as LoadedModelHandle)
+            }
+            ModelTask::Rerank => {
+                let model = rerank::LlamaCppRerankerModel::new(
+                    self.base.client.clone(),
+                    self.base.circuit_breaker_for(spec),
+                    spec.model_id.clone(),
+                    rerank::RerankConfig::from_options(&spec.options)?,
+                );
+                let handle: Arc<dyn RerankerModel> = Arc::new(model);
                 Ok(Arc::new(handle) as LoadedModelHandle)
             }
             other => Err(RuntimeError::CapabilityMismatch(format!(
@@ -269,6 +282,10 @@ pub(crate) enum LlamaCppErrorKind {
     InputTooLarge,
     /// Prompt longer than the context window (`--ctx-size`).
     ExceedsContext,
+    /// The endpoint exists but this server process was not started with the
+    /// flag that enables it — `/rerank` without `--reranking`, for instance.
+    /// HTTP 501 in current builds.
+    NotSupported,
     /// Anything else.
     Other,
 }
@@ -298,6 +315,8 @@ pub(crate) fn classify_error_body(body: &str) -> (LlamaCppErrorKind, String) {
         || lower.contains("exceeds the available context size")
     {
         LlamaCppErrorKind::ExceedsContext
+    } else if err_type == "not_supported_error" || lower.contains("does not support") {
+        LlamaCppErrorKind::NotSupported
     } else {
         LlamaCppErrorKind::Other
     };
@@ -306,12 +325,18 @@ pub(crate) fn classify_error_body(body: &str) -> (LlamaCppErrorKind, String) {
 
 /// Map a non-2xx llama.cpp response to a [`RuntimeError`].
 ///
-/// Input-size rejections are deterministic client-side configuration problems
-/// (the server's `--ubatch-size`/`--ctx-size` is smaller than the request), so
-/// they become [`RuntimeError::InferenceError`] — not retryable and not
-/// counted against the circuit breaker — regardless of the HTTP status the
-/// server chose. `token_budget` names the offending option when the task has
-/// one; without it the advice can only point at the server's own flags.
+/// Two families of rejection are deterministic configuration problems rather
+/// than outages, so both become [`RuntimeError::InferenceError`] — not
+/// retryable and not counted against the circuit breaker — regardless of the
+/// HTTP status the server chose:
+///
+/// - **Input size**: the server's `--ubatch-size`/`--ctx-size` is smaller than
+///   the request. `token_budget` names the offending option when the task has
+///   one; without it the advice can only point at the server's own flags.
+/// - **Endpoint not enabled**: the route exists but the process was started
+///   without the flag that activates it, which current builds report as HTTP
+///   501. Retrying cannot help — the server has to be restarted — and the
+///   message already names the flag, so it is passed through verbatim.
 pub(crate) fn map_llamacpp_status(
     status: u16,
     body: &str,
@@ -335,6 +360,10 @@ pub(crate) fn map_llamacpp_status(
                 )),
             }
         }
+        LlamaCppErrorKind::NotSupported => RuntimeError::InferenceError(format!(
+            "llama.cpp server rejected the request: {}",
+            message
+        )),
         LlamaCppErrorKind::Other => match status {
             429 => RuntimeError::RateLimited,
             401 | 403 => RuntimeError::Unauthorized,
@@ -397,7 +426,7 @@ mod tests {
         assert_eq!(p.provider_id(), "remote/llamacpp");
         assert_eq!(
             p.capabilities().supported_tasks,
-            vec![ModelTask::Embed, ModelTask::Generate]
+            vec![ModelTask::Embed, ModelTask::Generate, ModelTask::Rerank]
         );
         assert!(matches!(p.health().await, ProviderHealth::Healthy));
     }
@@ -405,7 +434,7 @@ mod tests {
     #[tokio::test]
     async fn load_rejects_unsupported_tasks() {
         let p = RemoteLlamaCppProvider::new();
-        for task in [ModelTask::Rerank, ModelTask::Raw] {
+        for task in [ModelTask::Raw, ModelTask::EmbedImage] {
             let err = p
                 .load(&spec("x/y", task, "bge", options()))
                 .await
@@ -444,6 +473,23 @@ mod tests {
             .unwrap();
         let model = handle.downcast_ref::<Arc<dyn GeneratorModel>>().unwrap();
         assert_eq!(model.model_id(), "smolvlm");
+    }
+
+    #[tokio::test]
+    async fn load_rerank_yields_a_reranker_handle() {
+        let p = RemoteLlamaCppProvider::new();
+        // Reranking needs no embed-only options either.
+        let handle = p
+            .load(&spec(
+                "rerank/a",
+                ModelTask::Rerank,
+                "jina-reranker-v1-tiny-en",
+                json!({ "base_url": "http://127.0.0.1:8080/v1" }),
+            ))
+            .await
+            .unwrap();
+        let model = handle.downcast_ref::<Arc<dyn RerankerModel>>().unwrap();
+        assert_eq!(model.model_id(), "jina-reranker-v1-tiny-en");
     }
 
     #[tokio::test]
@@ -662,6 +708,20 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A 501 from an endpoint the server was not started for is permanent:
+    /// `Unavailable` would have it retried and would trip the breaker.
+    #[test]
+    fn an_endpoint_that_is_not_enabled_is_not_retryable() {
+        let body = r#"{"error":{"code":501,"message":"This server does not support reranking. Start it with `--reranking`","type":"not_supported_error"}}"#;
+        assert_eq!(classify_error_body(body).0, LlamaCppErrorKind::NotSupported);
+
+        let e = map_llamacpp_status(501, body, None);
+        assert!(matches!(e, RuntimeError::InferenceError(_)), "{e:?}");
+        assert!(!e.is_retryable(), "{e:?}");
+        // The server's own advice is the useful part, so keep it.
+        assert!(e.to_string().contains("--reranking"), "{e}");
     }
 
     #[test]

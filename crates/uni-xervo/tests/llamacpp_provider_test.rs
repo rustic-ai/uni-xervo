@@ -11,8 +11,9 @@
 mod common;
 
 use common::mock_http::{
-    CLS, EXCEED_CONTEXT_MESSAGE, MockLlamaServer, RouteResponse, SEP, TOO_LARGE_MESSAGE,
-    char_token, chat_completion, chat_echo, embeddings_echo, llama_error, tokenize_by_chars,
+    CLS, EXCEED_CONTEXT_MESSAGE, MockLlamaServer, NOT_SUPPORTED_MESSAGE, RouteResponse, SEP,
+    TOO_LARGE_MESSAGE, char_token, chat_completion, chat_echo, embeddings_echo, jina_rerank,
+    llama_error, rerank_by_position, tei_rerank, tokenize_by_chars,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use uni_xervo::provider::RemoteLlamaCppProvider;
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::traits::{
     ContentBlock, EmbedResult, EmbeddingModel, GenerationOptions, GeneratorModel, ImageInput,
-    Message, MessageRole,
+    Message, MessageRole, RerankerModel,
 };
 
 const MAX_TOKENS: u64 = 10;
@@ -617,11 +618,11 @@ async fn explicit_tokenizer_base_url_routes_tokenize_elsewhere() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn non_embed_task_is_rejected_at_catalog_validation() {
+async fn an_unsupported_task_is_rejected_at_catalog_validation() {
     let server = MockLlamaServer::start().await;
     let result = ModelRuntime::builder()
         .register_provider(RemoteLlamaCppProvider::new())
-        .catalog(vec![spec(ModelTask::Rerank, base_options(&server))])
+        .catalog(vec![spec(ModelTask::Raw, base_options(&server))])
         .build()
         .await;
     let err = match result {
@@ -630,7 +631,7 @@ async fn non_embed_task_is_rejected_at_catalog_validation() {
     };
     assert!(
         err.to_string()
-            .contains("supports tasks 'embed' and 'generate'"),
+            .contains("supports tasks 'embed', 'generate' and 'rerank'"),
         "{err}"
     );
 }
@@ -947,6 +948,282 @@ async fn generate_alias_rejects_embed_only_options() {
             .await;
         let err = match result {
             Ok(_) => panic!("{key} must be rejected for generate"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("applies only to task 'embed'"),
+            "{key}: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rerank — /v1/rerank
+// ---------------------------------------------------------------------------
+
+const RERANK_ALIAS: &str = "rerank/llamacpp";
+const RERANK_MODEL_ID: &str = "jina-reranker-v1-tiny-en";
+
+fn rerank_spec(server: &MockLlamaServer) -> ModelAliasSpec {
+    ModelAliasSpec {
+        alias: RERANK_ALIAS.to_string(),
+        task: ModelTask::Rerank,
+        provider_id: "remote/llamacpp".to_string(),
+        model_id: RERANK_MODEL_ID.to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options: json!({ "base_url": server.base_url() }),
+    }
+}
+
+async fn reranker_from(spec: ModelAliasSpec) -> Arc<dyn RerankerModel> {
+    let runtime = ModelRuntime::builder()
+        .register_provider(RemoteLlamaCppProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await
+        .expect("runtime builds");
+    runtime
+        .reranker(RERANK_ALIAS)
+        .await
+        .expect("reranker loads")
+}
+
+async fn reranker(server: &MockLlamaServer) -> Arc<dyn RerankerModel> {
+    reranker_from(rerank_spec(server)).await
+}
+
+#[tokio::test]
+async fn rerank_posts_the_documents_form_and_omits_top_n() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(rerank_by_position());
+    let model = reranker(&server).await;
+
+    let scored = model
+        .rerank(
+            "what is the capital of France?",
+            &["alpha", "beta", "gamma"],
+        )
+        .await
+        .expect("reranks");
+    assert_eq!(scored.len(), 3);
+
+    let requests = server.requests_to("/v1/rerank");
+    assert_eq!(requests.len(), 1);
+    let body = &requests[0].body;
+    assert_eq!(body["model"], json!(RERANK_MODEL_ID));
+    assert_eq!(body["query"], json!("what is the capital of France?"));
+    assert_eq!(body["documents"], json!(["alpha", "beta", "gamma"]));
+    // `top_n` would truncate; the trait contracts to score every document.
+    assert!(body.get("top_n").is_none(), "{body}");
+    // We always send `documents`, never `texts` — that choice is what fixes
+    // the response shape.
+    assert!(body.get("texts").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn rerank_maps_indices_back_to_the_original_order() {
+    let server = MockLlamaServer::start().await;
+    // Deliberately shuffled, with the middle document the best match.
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: jina_rerank(vec![
+            json!({ "index": 1, "relevance_score": 0.91 }),
+            json!({ "index": 2, "relevance_score": 0.42 }),
+            json!({ "index": 0, "relevance_score": 0.03 }),
+        ]),
+    });
+    let model = reranker(&server).await;
+
+    let scored = model
+        .rerank("q", &["irrelevant", "the answer", "related"])
+        .await
+        .expect("reranks");
+    assert_eq!(
+        scored.iter().map(|d| d.index).collect::<Vec<_>>(),
+        [1, 2, 0]
+    );
+    assert!((scored[0].score - 0.91).abs() < 1e-6);
+    // `text` is never populated: the caller already holds the originals.
+    assert!(scored.iter().all(|d| d.text.is_none()));
+}
+
+#[tokio::test]
+async fn rerank_accepts_the_bare_array_tei_shape_too() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: tei_rerank(vec![
+            json!({ "index": 1, "score": 0.8 }),
+            json!({ "index": 0, "score": 0.2 }),
+        ]),
+    });
+    let model = reranker(&server).await;
+
+    let scored = model.rerank("q", &["a", "b"]).await.expect("reranks");
+    assert_eq!(scored.iter().map(|d| d.index).collect::<Vec<_>>(), [1, 0]);
+}
+
+#[tokio::test]
+async fn rerank_sorts_descending_even_when_the_server_does_not() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: jina_rerank(vec![
+            json!({ "index": 0, "relevance_score": 0.1 }),
+            json!({ "index": 1, "relevance_score": 0.9 }),
+        ]),
+    });
+    let model = reranker(&server).await;
+
+    let scored = model.rerank("q", &["a", "b"]).await.expect("reranks");
+    assert_eq!(scored[0].index, 1);
+    assert!(scored[0].score > scored[1].score);
+}
+
+#[tokio::test]
+async fn reranking_no_documents_never_reaches_the_server() {
+    let server = MockLlamaServer::start().await;
+    let model = reranker(&server).await;
+
+    // A real llama-server answers an empty `documents` array with HTTP 400.
+    let scored = model.rerank("q", &[]).await.expect("reranks");
+    assert!(scored.is_empty());
+    assert!(server.requests_to("/v1/rerank").is_empty());
+}
+
+#[tokio::test]
+async fn an_out_of_range_rerank_index_is_rejected() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: jina_rerank(vec![
+            json!({ "index": 0, "relevance_score": 0.5 }),
+            json!({ "index": 9, "relevance_score": 0.4 }),
+        ]),
+    });
+    let model = reranker(&server).await;
+
+    let err = model.rerank("q", &["a", "b"]).await.expect_err("must fail");
+    assert!(
+        matches!(err, RuntimeError::ApiError(ref m) if m.contains("index 9")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_duplicate_rerank_index_is_rejected() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: jina_rerank(vec![
+            json!({ "index": 0, "relevance_score": 0.5 }),
+            json!({ "index": 0, "relevance_score": 0.4 }),
+        ]),
+    });
+    let model = reranker(&server).await;
+
+    let err = model.rerank("q", &["a", "b"]).await.expect_err("must fail");
+    assert!(
+        matches!(err, RuntimeError::ApiError(ref m) if m.contains("more than once")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dropped_rerank_result_is_rejected_rather_than_scored_zero() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: jina_rerank(vec![json!({ "index": 0, "relevance_score": 0.5 })]),
+    });
+    let model = reranker(&server).await;
+
+    let err = model
+        .rerank("q", &["a", "b", "c"])
+        .await
+        .expect_err("must fail");
+    assert!(
+        matches!(err, RuntimeError::ApiError(ref m) if m.contains("for 3 documents")),
+        "{err:?}"
+    );
+}
+
+/// A server started without `--reranking` answers 501 for every request. That
+/// is a permanent misconfiguration: retrying cannot fix it, and it must not
+/// count against the breaker either.
+#[tokio::test]
+async fn reranking_on_a_server_without_the_flag_is_not_retryable() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 501,
+        body: llama_error(501, NOT_SUPPORTED_MESSAGE, "not_supported_error"),
+    });
+    let model = reranker(&server).await;
+
+    // Well past the breaker's failure threshold: every call must still reach
+    // the server rather than being short-circuited.
+    for _ in 0..8 {
+        let err = model.rerank("q", &["a"]).await.expect_err("must fail");
+        assert!(matches!(err, RuntimeError::InferenceError(_)), "{err:?}");
+        assert!(!err.is_retryable(), "{err:?}");
+        assert!(err.to_string().contains("--reranking"), "{err}");
+    }
+    assert_eq!(server.requests_to("/v1/rerank").len(), 8);
+}
+
+#[tokio::test]
+async fn a_malformed_rerank_response_is_an_api_error() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Json {
+        status: 200,
+        body: json!({ "object": "list" }),
+    });
+    let model = reranker(&server).await;
+
+    let err = model.rerank("q", &["a"]).await.expect_err("must fail");
+    assert!(
+        matches!(err, RuntimeError::ApiError(ref m) if m.contains("results")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_hung_rerank_request_times_out() {
+    let server = MockLlamaServer::start().await;
+    server.on_rerank(|_| RouteResponse::Hang);
+
+    let mut spec = rerank_spec(&server);
+    spec.options["request_timeout_secs"] = json!(1);
+    let model = reranker_from(spec).await;
+
+    let started = Instant::now();
+    let err = model.rerank("q", &["a"]).await.expect_err("must time out");
+    assert!(matches!(err, RuntimeError::Timeout), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(10), "took too long");
+}
+
+#[tokio::test]
+async fn rerank_alias_rejects_embed_only_options() {
+    let server = MockLlamaServer::start().await;
+    for key in [
+        "max_input_tokens",
+        "embedding_dimensions",
+        "tokenizer_base_url",
+    ] {
+        let mut spec = rerank_spec(&server);
+        spec.options[key] = json!(512);
+        let result = ModelRuntime::builder()
+            .register_provider(RemoteLlamaCppProvider::new())
+            .catalog(vec![spec])
+            .build()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("{key} must be rejected for rerank"),
             Err(e) => e,
         };
         assert!(
