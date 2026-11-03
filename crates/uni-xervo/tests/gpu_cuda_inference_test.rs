@@ -19,18 +19,17 @@
 //!   building ort-rs with `load-dynamic`. Without that, you'll see:
 //!   `Failed to load library libonnxruntime_providers_shared.so`.
 //!
-//! - **mistralrs-based tests** (`test_mistralrs_generate_runs_on_cuda`):
-//!   the candle-cuda kernels are PTX-compiled at crate build time. If the
-//!   host driver is older than the build-time CUDA toolchain you'll see
-//!   `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`. Match the toolchain to the
-//!   driver (`nvidia-smi` reports `CUDA Version` — that's the maximum
-//!   supported by the driver).
+//! - **candle-based tests**: the candle-cuda kernels are PTX-compiled at
+//!   crate build time. If the host driver is older than the build-time CUDA
+//!   toolchain you'll see `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`. Match the
+//!   toolchain to the driver (`nvidia-smi` reports `CUDA Version` — that's
+//!   the maximum supported by the driver).
 //!
 //! Run with:
 //!
 //! ```sh
 //! EXPENSIVE_TESTS=1 cargo nextest run \
-//!     --features "gpu-cuda,provider-onnx,provider-mistralrs" \
+//!     --features "gpu-cuda,provider-onnx" \
 //!     --test gpu_cuda_inference_test \
 //!     --run-ignored all
 //! ```
@@ -201,70 +200,4 @@ async fn test_local_onnx_embed_runs_on_cuda() {
     );
 
     println!("✓ LocalOnnxProvider loaded on CUDA, inputs: {input_names:?}");
-}
-
-// ---------------------------------------------------------------------------
-// Generation on CUDA (LocalMistralRsProvider)
-//
-// mistralrs auto-selects CUDA when the `gpu-cuda` feature is on; there is
-// no explicit `execution_providers` knob for it. We just register a small
-// instruct model and verify it loads + generates.
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "provider-mistralrs")]
-mod mistralrs_cuda {
-    use super::*;
-    use uni_xervo::provider::LocalMistralRsProvider;
-    use uni_xervo::traits::{GenerationOptions, Message};
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_generate_runs_on_cuda() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/mistralrs-cuda".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                // dtype f16 is the GPU-appropriate default; mistralrs picks
-                // CUDA automatically when gpu-cuda is on.
-                options: serde_json::json!({"dtype": "f16"}),
-            }])
-            .build()
-            .await
-            .expect("runtime build failed (is CUDA available?)");
-
-        let model = runtime
-            .generator("generate/mistralrs-cuda")
-            .await
-            .expect("loading generate/mistralrs-cuda failed");
-
-        let messages = vec![Message::user("Say 'hello' and nothing else.")];
-        let options = GenerationOptions {
-            max_tokens: Some(16),
-            temperature: Some(0.1),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("generate call failed");
-
-        assert!(!result.text.is_empty(), "generated text must be non-empty");
-        assert!(result.usage.is_some(), "usage must be reported");
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0);
-
-        println!("✓ mistralrs generated on CUDA: {}", result.text);
-    }
 }

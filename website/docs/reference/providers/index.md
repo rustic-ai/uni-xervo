@@ -18,7 +18,6 @@ Each provider page documents:
 
 - [local/candle](candle.md)
 - [local/onnx](onnx.md)
-- [local/mistralrs](mistralrs.md)
 - [local/whisper-cpp](whisper-cpp.md)
 
 ### Remote providers

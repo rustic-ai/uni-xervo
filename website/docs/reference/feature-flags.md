@@ -11,7 +11,7 @@ Uni-Xervo's feature surface is small and orthogonal. Three independent axes:
 `uni-xervo = "0.18"` enables all three local backends and all nine remote providers on CPU:
 
 ```text
-provider-candle, provider-mistralrs, provider-onnx,
+provider-candle, provider-onnx,
 provider-openai, provider-gemini, provider-vertexai, provider-mistral,
 provider-anthropic, provider-voyageai, provider-cohere, provider-azure-openai,
 provider-llamacpp
@@ -29,7 +29,6 @@ Pass `default-features = false` when you want a leaner build.
 | Feature | Provider ID | Tasks |
 | --- | --- | --- |
 | `provider-candle` | `local/candle` | embed |
-| `provider-mistralrs` | `local/mistralrs` | embed, generate (text, vision, diffusion, speech), **document_extract** (olmOCR-2 on the vision pipeline) |
 | `provider-onnx` | `local/onnx` | raw, rerank, embed, **embed_sparse, embed_multi_vector, embed_image, nlp, ocr, document_extract** |
 | `provider-onnx-dynamic` | `local/onnx` | same as `provider-onnx` (BYO ORT linking) |
 | `provider-whisper-cpp` | `local/whisper-cpp` | transcribe (opt-in; needs CMake + C/C++ toolchain at build time) |
@@ -42,8 +41,8 @@ production-ready; the inference path returns `Unavailable` until an
 upstream canonical ONNX export of a target VLM ships). All other tasks
 on this provider are fully wired — including `ocr`, which gained an
 optional DBNet detection stage for full-page detect→recognize. The live
-`document_extract` path today is **olmOCR-2 on `provider-mistralrs`** (its
-vision pipeline).
+`document_extract` path today is **`provider-llamacpp`**, which runs a
+GGUF document VLM on a `llama-server` started with `--mmproj`.
 
 ### Remote
 
@@ -78,12 +77,12 @@ CPU is always available — there is no "CPU feature." GPU features are purely a
 
 | Feature | Targets | What it activates |
 | --- | --- | --- |
-| `gpu-cuda` | Linux + Windows, NVIDIA | ORT CUDA EP (when ORT is in the build) + CUDA kernels for candle / mistralrs. Pyke fetches the CUDA-flavored ORT bundle automatically; sidecar EP libs are staged into `target/<profile>/` via `ort/copy-dylibs`. |
-| `gpu-metal` | macOS + iOS | ORT CoreML EP (when ORT is in the build, hits Apple GPU + Neural Engine) + Metal kernels for candle / mistralrs. The CoreML EP is in pyke's standard macOS bundle — no extra fetch. |
+| `gpu-cuda` | Linux + Windows, NVIDIA | ORT CUDA EP (when ORT is in the build) + CUDA kernels for candle. Pyke fetches the CUDA-flavored ORT bundle automatically; sidecar EP libs are staged into `target/<profile>/` via `ort/copy-dylibs`. |
+| `gpu-metal` | macOS + iOS | ORT CoreML EP (when ORT is in the build, hits Apple GPU + Neural Engine) + Metal kernels for candle. The CoreML EP is in pyke's standard macOS bundle — no extra fetch. |
 
 Build host requirements:
 
-- `gpu-cuda` needs `nvcc` and `CUDA_COMPUTE_CAP` set for candle / mistralrs PTX generation. ORT side is handled by pyke.
+- `gpu-cuda` needs `nvcc` and `CUDA_COMPUTE_CAP` set for candle PTX generation. ORT side is handled by pyke.
 - `gpu-metal` needs an Apple build target — `build.rs` panics on non-Apple targets.
 
 Don't enable both — they target different platforms. For other vendors (AMD ROCm, Intel OpenVINO, Microsoft DirectML, Qualcomm QNN, TensorRT, WebGPU), use `provider-onnx-dynamic` with a vendor-supplied ORT build at runtime via `ORT_DYLIB_PATH`, and request the EP per alias by setting `execution_providers` to e.g. `["rocm", "cpu"]`.
@@ -144,7 +143,6 @@ uni-xervo = { version = "0.18", default-features = false, features = [
 # BYO ONNX Runtime (ROCm, OpenVINO, custom builds, sandboxed CI).
 uni-xervo = { version = "0.18", default-features = false, features = [
   "provider-candle",
-  "provider-mistralrs",
   "provider-onnx-dynamic",
 ] }
 # Then at runtime: ORT_DYLIB_PATH=/path/to/libonnxruntime.so ./your-binary

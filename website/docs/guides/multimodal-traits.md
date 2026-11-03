@@ -214,7 +214,7 @@ quartet:
 | Provider | Image embed | Sparse | Multi-vector | Hybrid | NLP | Doc extract | Transcribe | OCR | Multimodal embed |
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | `local/onnx` | ✓ | ✓ | ✓ | ✓ | ✓ | scaffold | | ✓ | |
-| `local/mistralrs` | | | | | | ✓ | | | |
+| `remote/llamacpp` | | | | | | ✓ | | | |
 | `remote/cohere` | | | | | | | | | ✓ |
 | `remote/gemini` | | | | | | | | | ✓ |
 | `local/whisper-cpp` | | | | | | | ✓ | | |
@@ -230,8 +230,9 @@ graph into a single forward pass — see
 `embed_audio` (`AudioEmbeddingModel`) is a defined task and trait but has no
 bundled provider implementation yet, so it appears in neither matrix.
 
-`local/mistralrs` **Doc extract** is the live olmOCR-2 path on its vision
-pipeline — see [`local/mistralrs` → Document extraction](../reference/providers/mistralrs.md#document-extraction-olmocr-2).
+`remote/llamacpp` **Doc extract** is the live path: a GGUF document VLM on a
+`llama-server` started with `--mmproj` — see
+[`remote/llamacpp` → document_extract](../reference/providers/llamacpp.md#document_extract).
 
 `local/onnx` **OCR** supports an optional DBNet detection stage for full-page
 detect→recognize (set `det_onnx_path`); without it, OCR is single-stage
@@ -243,7 +244,7 @@ validation are production-ready, but the inference path returns
 ONNX export of Granite-Docling / MinerU / olmOCR). The reusable building blocks
 (`provider::local_onnx::autoreg::greedy_decode`, the shared `doc_parse` DocTags
 / MinerU / olmOCR output parsers) are tested and available — and are exactly
-what the live olmOCR-2 path on `local/mistralrs` reuses.
+what the live `remote/llamacpp` path reuses.
 
 ## Instrumentation
 

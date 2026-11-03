@@ -6,6 +6,45 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`remote/llamacpp` now serves `generate`, `rerank` and `document_extract`
+  as well as `embed`.** One `llama-server` process serves one model, so each
+  task is an alias pointing at its own `base_url`.
+
+  `generate` posts to `/v1/chat/completions` including the multimodal content
+  parts array, so **the same alias does text and vision**. There is
+  deliberately no option to switch between them: whether images are accepted
+  depends on the server having been started with `--mmproj`, which is a
+  property of the server process rather than something the catalog can know.
+  `ImageInput::Bytes` becomes a `data:` URI and `ImageInput::Url` is passed
+  through verbatim. On a reasoning model the chain of thought arrives in
+  `reasoning_content` and only `content` becomes `GenerationResult.text`, so a
+  `max_tokens` exhausted during thinking returns non-zero usage with empty
+  text — raise the budget.
+
+  `rerank` posts to the native `/v1/rerank` with the `documents` key. `top_n`
+  is deliberately not sent, since `RerankerModel::rerank` contracts to score
+  every input document; truncate the returned slice, which is already sorted
+  descending. Indices are mapped back to the original positions and checked —
+  an index past the end, a repeat, or a missing result is an error rather than
+  a score silently attributed to the wrong document. Scores are a **sigmoid**
+  of the cross-encoder logit, bounded to `[0, 1]`, where `local/onnx` returns
+  the raw unbounded logit: rankings agree, absolute thresholds do not
+  transfer, and neither is rescaled.
+
+  `document_extract` runs a GGUF document VLM — olmOCR-2, MinerU 2.5 or
+  Granite-Docling — over the same chat endpoint with olmOCR's reference prompt
+  and sampling policy, and parses the output with the shared `doc_parse`
+  module. Pages are sent one request each, in order, so a long document is not
+  capped by one `--ctx-size`. The new `style` option names the model's output
+  dialect and is value-checked at catalog registration, so a typo fails when
+  the catalog is read rather than on the first extraction.
+
+  Options are now task-keyed: `base_url` is required everywhere,
+  `max_input_tokens` / `embedding_dimensions` / `tokenizer_base_url` are
+  embed-only, `style` is document-extract-only, and a key used on the wrong
+  task is **rejected** with a message naming the task it belongs to rather
+  than silently ignored.
+
 - **kniv v7 structured NLP on `local/onnx`.** The `nlp` task now serves
   `dragonscale-ai/kniv-v7-xlarge-u-en` (UltraBERT-380M) and
   `kniv-v7-xlarge-d-en` (DeBERTa-v3-large) alongside the v1 cascade. v7 is a
@@ -57,7 +96,51 @@ All notable changes to this project are documented in this file.
   Unlike the v1 path, the v7 path honours the `graph_optimization_level`,
   `intra_op_num_threads` and `inter_op_num_threads` options it validates.
 
+### Removed
+
+- **`local/mistralrs` and the `provider-mistralrs` feature are gone.** The
+  published `mistralrs` crate was frozen at 0.8.1 (2026-04-02) while upstream
+  moved to 0.9.x, and that release could not run its own vision pipeline:
+  SmolVLM/Idefics3 panicked in the forward pass and Qwen2-VL failed with an
+  out-of-bounds index-select, so the `generate` (vision) and
+  `document_extract` paths it nominally owned did not work. It also pulled 247
+  of the 565 crates in the default dependency tree — an AV1 encoder, the
+  `symphonia` audio family, `html5ever` — and made `tokenizers` compile three
+  times over. The default tree is now 318 crates.
+
+  **Replacements**: local text and vision `generate` and `document_extract`
+  move to `remote/llamacpp` against a `llama-server` (see Added). Local
+  `embed` is served by `local/candle` and `local/onnx`.
+
+  **No replacement**: image generation (`pipeline: "diffusion"`) and speech
+  synthesis (`pipeline: "speech"`) lose their only provider.
+  `llama-server` has no image-generation endpoint, and its `POST /tts` is
+  absent from current builds. `GenerationResult.images`, `.audio` and
+  `GenerationOptions.width` / `height` remain public API but are now populated
+  and read by no bundled provider, so a provider can be added later without an
+  API break.
+
+  This changes the behaviour of a default `cargo build`: generation and
+  document extraction no longer work out of the box without a running
+  `llama-server`. Hence the minor bump rather than a patch.
+
+  Also removed with it: `schemas/provider-options/mistralrs.schema.json`, its
+  `model-catalog.schema.json` branch, the `mistralrs?/cuda` and
+  `mistralrs?/metal` forwards in `gpu-cuda` / `gpu-metal`, the provider's
+  `prefetch` arm, and the `force_cpu` option — `execution_providers` on
+  `local/onnx` is now the crate's only per-spec device control.
+
 ### Changed
+
+- **`remote/openai` no longer discards image blocks.** Every message was built
+  as `{"role": …, "content": msg.text()}`, and `Message::text()` keeps only
+  `ContentBlock::Text`, so an image passed to an OpenAI-compatible endpoint
+  vanished with no error. Messages are now built by a shared
+  `build_openai_chat_messages` helper: all-text messages still emit a plain
+  string `content`, and a message containing an image emits a content-parts
+  array in block order. `remote/mistral` and `remote/cohere` have the same bug
+  with different vendor part shapes, and are left for a change testable
+  against their live APIs.
 
 - **Dependencies refreshed to their latest compatible releases.** Every
   semver-compatible update was taken (`cargo update`: tokio 1.54.1, serde
@@ -91,13 +174,13 @@ All notable changes to this project are documented in this file.
     / `Repo`, and the `tokio` feature is gone — touching all 11 model-download
     sites, with cache layout, revision handling and offline behaviour to
     re-verify against real downloads.
-  - **`candle` stays at 0.10** (0.11.1 available). `mistralrs` 0.8.1 requires
-    `candle-core ^0.10.2`, so bumping ours compiles two copies of a heavy crate
-    in the default feature set, for no capability we use — and leaves a latent
-    type-identity split between the two providers.
-  - **`regex` resolves to 1.12.4 and `generic-array` to 0.14.7**, both capped
-    through `mistralrs` (`serde-saphyr` requires `regex >=1.0, <1.13`;
-    `crypto-common` requires `generic-array ~0.14.7`). Not ours to move.
+  - **`candle` stays at 0.10** (0.11.1 available) and **`regex` at 1.12.4**
+    (1.13.1 available). Both were held by `mistralrs` 0.8.1, which required
+    `candle-core ^0.10.2` and capped `regex` below 1.13 through
+    `Inflector → variantly → serde-saphyr`. Removing that provider (see
+    Removed) lifts both caps, and `generic-array`'s `~0.14.7` pin is gone with
+    it — but moving them is dependency work, not provider work, and belongs in
+    its own change rather than tangled with this one.
 
 - **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
   struct literals no longer compile. Build one with `NlpRequest::new(text,

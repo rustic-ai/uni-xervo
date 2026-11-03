@@ -39,7 +39,7 @@ Good fits:
 - sequence classification and NER pipelines,
 - any ONNX graph where raw tensor I/O is the right abstraction.
 
-If you want a provider that already knows what "embed" means, use `local/onnx` with `task: "embed"` (preset-driven; replaces `local/fastembed`), `local/candle`, or `local/mistralrs`. If you want direct tensor control, use `local/onnx` with `task: "raw"`.
+If you want a provider that already knows what "embed" means, use `local/onnx` with `task: "embed"` (preset-driven; replaces `local/fastembed`), `local/candle`, or `remote/llamacpp`. If you want direct tensor control, use `local/onnx` with `task: "raw"`.
 
 ## Start here
 

@@ -10,6 +10,7 @@
 //! | [`ModelTask::Embed`] | [`embed`] | `POST /v1/embeddings` + native `/tokenize` |
 //! | [`ModelTask::Generate`] | [`chat`] | `POST /v1/chat/completions` |
 //! | [`ModelTask::Rerank`] | [`rerank`] | `POST /v1/rerank` |
+//! | [`ModelTask::DocumentExtract`] | [`docs`] | `POST /v1/chat/completions` |
 //!
 //! # Shared options
 //!
@@ -32,10 +33,12 @@
 //! [`embed::LlamaCppEmbeddingModel::embed`].
 
 mod chat;
+mod docs;
 mod embed;
 mod rerank;
 
 pub use chat::LlamaCppGeneratorModel;
+pub use docs::LlamaCppDocumentExtractor;
 pub use embed::LlamaCppEmbeddingModel;
 pub use rerank::LlamaCppRerankerModel;
 
@@ -43,8 +46,8 @@ use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
 use crate::provider::remote_common::RemoteProviderBase;
 use crate::traits::{
-    EmbeddingModel, GeneratorModel, LoadedModelHandle, ModelProvider, ProviderCapabilities,
-    ProviderHealth, RerankerModel,
+    DocumentExtractionModel, EmbeddingModel, GeneratorModel, LoadedModelHandle, ModelProvider,
+    ProviderCapabilities, ProviderHealth, RerankerModel,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -104,7 +107,12 @@ impl ModelProvider for RemoteLlamaCppProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            supported_tasks: vec![ModelTask::Embed, ModelTask::Generate, ModelTask::Rerank],
+            supported_tasks: vec![
+                ModelTask::Embed,
+                ModelTask::Generate,
+                ModelTask::Rerank,
+                ModelTask::DocumentExtract,
+            ],
         }
     }
 
@@ -138,6 +146,16 @@ impl ModelProvider for RemoteLlamaCppProvider {
                     rerank::RerankConfig::from_options(&spec.options)?,
                 );
                 let handle: Arc<dyn RerankerModel> = Arc::new(model);
+                Ok(Arc::new(handle) as LoadedModelHandle)
+            }
+            ModelTask::DocumentExtract => {
+                let model = docs::LlamaCppDocumentExtractor::new(
+                    self.base.client.clone(),
+                    self.base.circuit_breaker_for(spec),
+                    spec.model_id.clone(),
+                    docs::DocsConfig::from_options(&spec.options)?,
+                );
+                let handle: Arc<dyn DocumentExtractionModel> = Arc::new(model);
                 Ok(Arc::new(handle) as LoadedModelHandle)
             }
             other => Err(RuntimeError::CapabilityMismatch(format!(
@@ -426,7 +444,12 @@ mod tests {
         assert_eq!(p.provider_id(), "remote/llamacpp");
         assert_eq!(
             p.capabilities().supported_tasks,
-            vec![ModelTask::Embed, ModelTask::Generate, ModelTask::Rerank]
+            vec![
+                ModelTask::Embed,
+                ModelTask::Generate,
+                ModelTask::Rerank,
+                ModelTask::DocumentExtract
+            ]
         );
         assert!(matches!(p.health().await, ProviderHealth::Healthy));
     }
@@ -490,6 +513,24 @@ mod tests {
             .unwrap();
         let model = handle.downcast_ref::<Arc<dyn RerankerModel>>().unwrap();
         assert_eq!(model.model_id(), "jina-reranker-v1-tiny-en");
+    }
+
+    #[tokio::test]
+    async fn load_document_extract_yields_an_extractor_handle() {
+        let p = RemoteLlamaCppProvider::new();
+        let handle = p
+            .load(&spec(
+                "docs/a",
+                ModelTask::DocumentExtract,
+                "olmocr-2",
+                json!({ "base_url": "http://127.0.0.1:8080/v1", "style": "olmocr" }),
+            ))
+            .await
+            .unwrap();
+        let model = handle
+            .downcast_ref::<Arc<dyn DocumentExtractionModel>>()
+            .unwrap();
+        assert_eq!(model.model_id(), "olmocr-2");
     }
 
     #[tokio::test]

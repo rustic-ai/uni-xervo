@@ -8,7 +8,6 @@
 //! | Module | Feature | Engine |
 //! |--------|---------|--------|
 //! | `candle` | `provider-candle` | [Candle](https://github.com/huggingface/candle) |
-//! | `mistralrs` | `provider-mistralrs` | [mistral.rs](https://github.com/EricLBuehler/mistral.rs) |
 //! | `local_onnx` | `provider-onnx` | [ONNX Runtime](https://onnxruntime.ai/) — embeddings, cross-encoder rerank, and raw tensor execution |
 //!
 //! ## Remote providers
@@ -23,7 +22,7 @@
 //! | `voyageai` | `provider-voyageai` | Voyage AI |
 //! | `cohere` | `provider-cohere` | Cohere |
 //! | `azure_openai` | `provider-azure-openai` | Azure OpenAI |
-//! | `llamacpp` | `provider-llamacpp` | llama.cpp `llama-server` (OpenAI-compatible embeddings + native `/tokenize`) |
+//! | `llamacpp` | `provider-llamacpp` | llama.cpp `llama-server` (embeddings, generation, rerank, document extraction) |
 
 #[cfg(feature = "provider-candle")]
 pub mod candle;
@@ -49,9 +48,6 @@ pub mod gemini;
 
 #[cfg(feature = "provider-vertexai")]
 pub mod vertexai;
-
-#[cfg(feature = "provider-mistralrs")]
-pub mod mistralrs;
 
 #[cfg(any(feature = "provider-onnx", feature = "provider-onnx-dynamic"))]
 pub(crate) mod onnx_ep;
@@ -92,9 +88,6 @@ pub use gemini::RemoteGeminiProvider;
 
 #[cfg(feature = "provider-vertexai")]
 pub use vertexai::RemoteVertexAIProvider;
-
-#[cfg(feature = "provider-mistralrs")]
-pub use self::mistralrs::LocalMistralRsProvider;
 
 #[cfg(any(feature = "provider-onnx", feature = "provider-onnx-dynamic"))]
 pub use local_onnx::LocalOnnxProvider;

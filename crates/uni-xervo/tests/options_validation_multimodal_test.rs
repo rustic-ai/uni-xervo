@@ -23,7 +23,6 @@ const BUNDLED_PROVIDERS: &[&str] = &[
     "remote/vertexai",
     "local/candle",
     "local/onnx",
-    "local/mistralrs",
 ];
 
 const MULTIMODAL_TASKS: &[(ModelTask, &str)] = &[

@@ -6,7 +6,7 @@
 //! Single backend, multiple tasks. The provider declares
 //! [`ModelTask::Raw`] and [`ModelTask::Rerank`] in [`ProviderCapabilities`]
 //! and dispatches inside [`ModelProvider::load`] — matching the pattern
-//! used by `cohere.rs`, `mistralrs.rs`, etc.
+//! used by `cohere.rs`, `llamacpp/`, etc.
 //!
 //! Task implementations live in private submodules:
 //!

@@ -23,8 +23,9 @@ use uni_xervo::error::RuntimeError;
 use uni_xervo::provider::RemoteLlamaCppProvider;
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::traits::{
-    ContentBlock, EmbedResult, EmbeddingModel, GenerationOptions, GeneratorModel, ImageInput,
-    Message, MessageRole, RerankerModel,
+    ContentBlock, DocBlockKind, DocExtractOptions, DocOutputFormat, DocumentExtractionModel,
+    EmbedResult, EmbeddingModel, GenerationOptions, GeneratorModel, ImageInput, Message,
+    MessageRole, RerankerModel,
 };
 
 const MAX_TOKENS: u64 = 10;
@@ -631,7 +632,7 @@ async fn an_unsupported_task_is_rejected_at_catalog_validation() {
     };
     assert!(
         err.to_string()
-            .contains("supports tasks 'embed', 'generate' and 'rerank'"),
+            .contains("supports tasks 'embed', 'generate', 'rerank' and 'document_extract'"),
         "{err}"
     );
 }
@@ -1226,6 +1227,300 @@ async fn rerank_alias_rejects_embed_only_options() {
             Ok(_) => panic!("{key} must be rejected for rerank"),
             Err(e) => e,
         };
+        assert!(
+            err.to_string().contains("applies only to task 'embed'"),
+            "{key}: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Document extraction — /v1/chat/completions with a fixed prompt
+// ---------------------------------------------------------------------------
+
+const DOCS_ALIAS: &str = "docext/llamacpp";
+const DOCS_MODEL_ID: &str = "olmOCR-2-7B";
+
+fn docs_spec(server: &MockLlamaServer) -> ModelAliasSpec {
+    ModelAliasSpec {
+        alias: DOCS_ALIAS.to_string(),
+        task: ModelTask::DocumentExtract,
+        provider_id: "remote/llamacpp".to_string(),
+        model_id: DOCS_MODEL_ID.to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options: json!({ "base_url": server.base_url() }),
+    }
+}
+
+async fn extractor_from(spec: ModelAliasSpec) -> Arc<dyn DocumentExtractionModel> {
+    let runtime = ModelRuntime::builder()
+        .register_provider(RemoteLlamaCppProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await
+        .expect("runtime builds");
+    runtime
+        .document_extractor(DOCS_ALIAS)
+        .await
+        .expect("extractor loads")
+}
+
+async fn extractor(server: &MockLlamaServer) -> Arc<dyn DocumentExtractionModel> {
+    extractor_from(docs_spec(server)).await
+}
+
+/// Build a runtime expecting catalog validation to reject the spec.
+/// `ModelRuntime` is not `Debug`, so `expect_err` is unavailable.
+async fn catalog_error(spec: ModelAliasSpec) -> RuntimeError {
+    match ModelRuntime::builder()
+        .register_provider(RemoteLlamaCppProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await
+    {
+        Ok(_) => panic!("catalog validation must reject this spec"),
+        Err(e) => e,
+    }
+}
+
+fn doc_options() -> DocExtractOptions {
+    DocExtractOptions {
+        output: DocOutputFormat::Markdown,
+        include_tables: true,
+        include_formulas: true,
+        include_bboxes: false,
+    }
+}
+
+fn page(byte: u8) -> ImageInput {
+    ImageInput::Bytes {
+        data: vec![byte, byte, byte],
+        media_type: "image/png".to_string(),
+    }
+}
+
+/// The olmOCR prompt and the page travel together, text part first, and the
+/// result comes back parsed rather than raw.
+#[tokio::test]
+async fn extraction_sends_the_prompt_and_the_page_and_parses_the_markdown() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(|_| RouteResponse::Json {
+        status: 200,
+        body: chat_completion("# Title\n\nSome body text.\n", 150, 12),
+    });
+
+    let model = extractor(&server).await;
+    let pages = model
+        .extract(vec![page(0xab)], doc_options())
+        .await
+        .expect("extracts");
+
+    assert_eq!(pages.len(), 1);
+    assert!(pages[0].plain_markdown.contains("Some body text"));
+    let kinds: Vec<DocBlockKind> = pages[0].blocks.iter().map(|b| b.kind).collect();
+    assert!(
+        kinds.contains(&DocBlockKind::Heading) && kinds.contains(&DocBlockKind::Text),
+        "{kinds:?}"
+    );
+
+    let reqs = server.requests_to("/v1/chat/completions");
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].body["model"], json!(DOCS_MODEL_ID));
+    let parts = reqs[0].body["messages"][0]["content"]
+        .as_array()
+        .expect("a parts array, since the page is an image");
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0]["type"], json!("text"));
+    assert!(
+        parts[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Attached is one page of a document"),
+        "{:?}",
+        parts[0]["text"]
+    );
+    assert_eq!(parts[1]["type"], json!("image_url"));
+    assert_eq!(
+        parts[1]["image_url"]["url"],
+        json!("data:image/png;base64,q6ur")
+    );
+}
+
+/// olmOCR's sampling policy is part of the contract: near-greedy, with the
+/// reference per-page cap.
+#[tokio::test]
+async fn extraction_pins_the_olmocr_sampling_policy() {
+    let server = MockLlamaServer::start().await;
+    server.on_chat(chat_echo());
+    let model = extractor(&server).await;
+    let _ = model.extract(vec![page(1)], doc_options()).await.unwrap();
+
+    let body = &server.requests_to("/v1/chat/completions")[0].body;
+    assert_eq!(body["max_tokens"], json!(8000));
+    // Compared as f32: 0.1 is not representable, so the JSON number is the
+    // widened f32 rather than the f64 literal.
+    assert_eq!(body["temperature"].as_f64().unwrap() as f32, 0.1_f32);
+    assert!(body.get("top_p").is_none(), "{body}");
+}
+
+/// One request per page, in input order — not one batched multi-image call.
+#[tokio::test]
+async fn each_page_is_its_own_request_and_order_is_preserved() {
+    let server = MockLlamaServer::start().await;
+    let mut n = 0;
+    server.on_chat(move |_| {
+        n += 1;
+        RouteResponse::Json {
+            status: 200,
+            body: chat_completion(&format!("page {n} body"), 10, 3),
+        }
+    });
+
+    let model = extractor(&server).await;
+    let pages = model
+        .extract(vec![page(1), page(2), page(3)], doc_options())
+        .await
+        .expect("extracts");
+
+    assert_eq!(pages.len(), 3);
+    for (i, p) in pages.iter().enumerate() {
+        assert!(
+            p.plain_markdown.contains(&format!("page {} body", i + 1)),
+            "page {i}: {:?}",
+            p.plain_markdown
+        );
+    }
+    assert_eq!(server.requests_to("/v1/chat/completions").len(), 3);
+}
+
+/// Nothing to extract costs no request, and is not an error.
+#[tokio::test]
+async fn an_empty_page_list_makes_no_request() {
+    let server = MockLlamaServer::start().await;
+    let model = extractor(&server).await;
+
+    let pages = model
+        .extract(vec![], doc_options())
+        .await
+        .expect("extracts");
+    assert!(pages.is_empty());
+    assert!(server.requests_to("/v1/chat/completions").is_empty());
+}
+
+/// A page that fails fails the document: a transcript silently missing a page
+/// is worse than an error.
+#[tokio::test]
+async fn a_failing_page_fails_the_whole_document() {
+    let server = MockLlamaServer::start().await;
+    let mut n = 0;
+    server.on_chat(move |_| {
+        n += 1;
+        if n == 2 {
+            RouteResponse::Json {
+                status: 500,
+                body: llama_error(500, EXCEED_CONTEXT_MESSAGE, "exceed_context_size"),
+            }
+        } else {
+            RouteResponse::Json {
+                status: 200,
+                body: chat_completion("fine", 10, 2),
+            }
+        }
+    });
+
+    let model = extractor(&server).await;
+    let err = model
+        .extract(vec![page(1), page(2), page(3)], doc_options())
+        .await
+        .expect_err("must fail");
+    assert!(matches!(err, RuntimeError::InferenceError(_)), "{err:?}");
+    assert!(!err.is_retryable(), "{err:?}");
+    // The third page is never attempted.
+    assert_eq!(server.requests_to("/v1/chat/completions").len(), 2);
+}
+
+/// `style` picks the parser. The same text parses differently under olmOCR's
+/// Markdown rules and Granite-Docling's DocTags.
+#[tokio::test]
+async fn style_selects_the_parser() {
+    let doctags = "<heading>Quarterly report</heading><text>Revenue rose.</text>";
+    let server = MockLlamaServer::start().await;
+    server.on_chat(move |_| RouteResponse::Json {
+        status: 200,
+        body: chat_completion(doctags, 20, 9),
+    });
+
+    // Under the default olmOCR style the tags are not understood, so the raw
+    // text survives into the Markdown view.
+    let default_pages = extractor(&server)
+        .await
+        .extract(vec![page(1)], doc_options())
+        .await
+        .expect("extracts");
+    assert!(
+        default_pages[0].plain_markdown.contains("<heading>"),
+        "{:?}",
+        default_pages[0].plain_markdown
+    );
+
+    let mut spec = docs_spec(&server);
+    spec.options["style"] = json!("granite-docling");
+    let docling_pages = extractor_from(spec)
+        .await
+        .extract(vec![page(1)], doc_options())
+        .await
+        .expect("extracts");
+    assert_eq!(
+        docling_pages[0].blocks[0].kind,
+        DocBlockKind::Heading,
+        "{:?}",
+        docling_pages[0].blocks
+    );
+    assert_eq!(docling_pages[0].blocks[0].content, "Quarterly report");
+}
+
+#[tokio::test]
+async fn an_unknown_style_is_rejected_at_catalog_validation() {
+    let server = MockLlamaServer::start().await;
+    let mut spec = docs_spec(&server);
+    spec.options["style"] = json!("docling");
+
+    let err = catalog_error(spec).await;
+    assert!(err.to_string().contains("granite-docling"), "{err}");
+}
+
+/// `style` belongs to this task alone — it would be silently ignored by the
+/// others, which is exactly what the validator exists to prevent.
+#[tokio::test]
+async fn style_is_rejected_on_the_other_tasks() {
+    let server = MockLlamaServer::start().await;
+    let mut spec = gen_spec(&server);
+    spec.options["style"] = json!("olmocr");
+
+    let err = catalog_error(spec).await;
+    assert!(
+        err.to_string()
+            .contains("applies only to task 'document_extract'"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn extraction_alias_rejects_embed_only_options() {
+    let server = MockLlamaServer::start().await;
+    for key in [
+        "max_input_tokens",
+        "embedding_dimensions",
+        "tokenizer_base_url",
+    ] {
+        let mut spec = docs_spec(&server);
+        spec.options[key] = json!(512);
+        let err = catalog_error(spec).await;
         assert!(
             err.to_string().contains("applies only to task 'embed'"),
             "{key}: {err}"

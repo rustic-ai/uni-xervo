@@ -16,7 +16,6 @@ readme = "README.md"
 [features]
 default = [
     "provider-candle",
-    "provider-mistralrs",
     "provider-onnx",
     "provider-openai",
     "provider-gemini",
@@ -37,7 +36,6 @@ provider-candle = [
     "dep:tokenizers",
     "dep:hf-hub",
 ]
-provider-mistralrs = ["dep:mistralrs", "dep:image", "dep:base64"]
 
 # Speech-to-text via whisper.cpp (wraps `whisper-rs`). MIT end-to-end:
 # whisper.cpp is MIT; whisper-rs is MIT/Apache-2.0 dual. NOT in default
@@ -102,31 +100,29 @@ provider-llamacpp = ["dep:reqwest", "dep:base64"]
 # `gpu-cuda` (Linux + Windows): pyke fetches the CUDA-flavored ORT bundle
 #   (static `libonnxruntime.a` + sidecar `libonnxruntime_providers_cuda.so`,
 #   staged into target/<profile>/ via `ort/copy-dylibs` with `$ORIGIN` rpath).
-#   Activates CUDA kernels in candle and mistralrs only if those providers
-#   are already enabled — `?/feature` syntax avoids implicitly pulling them
-#   in for slim CUDA-ORT-only builds. Build host needs nvcc + CUDA_COMPUTE_CAP
-#   for candle/mistralrs PTX generation.
+#   Activates CUDA kernels in candle only if that provider is already
+#   enabled — `?/feature` syntax avoids implicitly pulling it in for slim
+#   CUDA-ORT-only builds. Build host needs nvcc + CUDA_COMPUTE_CAP for
+#   candle PTX generation.
 gpu-cuda = [
     "provider-onnx",
     "ort/cuda",
     "candle-core?/cuda",
     "candle-nn?/cuda",
     "candle-transformers?/cuda",
-    "mistralrs?/cuda",
 ]
 
-# `gpu-metal` (macOS + iOS): activates Metal kernels in candle/mistralrs and
-#   the CoreML execution provider in ORT (which is how ORT reaches Apple GPU
-#   and the Neural Engine — there is no Metal EP in ONNX Runtime). The
-#   `ort?/coreml` syntax means the CoreML EP is only switched on when an ORT
-#   linking mode is also active, so `gpu-metal` alone with only mistralrs
-#   doesn't drag ort into the build.
+# `gpu-metal` (macOS + iOS): activates Metal kernels in candle and the CoreML
+#   execution provider in ORT (which is how ORT reaches Apple GPU and the
+#   Neural Engine — there is no Metal EP in ONNX Runtime). The `ort?/coreml`
+#   syntax means the CoreML EP is only switched on when an ORT linking mode is
+#   also active, so `gpu-metal` alone with only candle doesn't drag ort into
+#   the build.
 gpu-metal = [
     "ort?/coreml",
     "candle-core?/metal",
     "candle-nn?/metal",
     "candle-transformers?/metal",
-    "mistralrs?/metal",
 ]
 
 # Future GPU backends (ROCm, OpenVINO, DirectML, QNN, WebGPU) will land as
@@ -158,7 +154,6 @@ candle-transformers = { version = "0.10", optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["onig", "http"], optional = true }
 hf-hub = { version = "0.5", features = ["tokio"], optional = true }
 reqwest = { version = "0.13", features = ["json", "rustls"], optional = true }
-mistralrs = { version = "0.8", default-features = true, optional = true }
 image = { workspace = true, optional = true }
 # Used by the kniv v7 NLP word tokenizer, which must reproduce the reference
 # runtime's Python `re` patterns exactly.

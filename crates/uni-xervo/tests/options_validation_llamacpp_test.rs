@@ -172,7 +172,7 @@ async fn rejects_non_string_api_key_env() {
 async fn rejects_unsupported_tasks() {
     assert_rejects(
         build(ModelTask::Raw, valid()).await,
-        "supports tasks 'embed', 'generate' and 'rerank'",
+        "supports tasks 'embed', 'generate', 'rerank' and 'document_extract'",
     );
 }
 
@@ -297,4 +297,83 @@ async fn rejects_multimodal_tasks() {
         build(ModelTask::EmbedImage, valid()).await,
         "does not support task",
     );
+}
+
+// --- document_extract -----------------------------------------------------
+
+/// `style` defaults to `olmocr`, so the endpoint alone is a valid alias.
+#[tokio::test]
+async fn document_extract_accepts_base_url_alone() {
+    assert!(
+        build(
+            ModelTask::DocumentExtract,
+            json!({ "base_url": "http://127.0.0.1:8082/v1" })
+        )
+        .await
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn document_extract_accepts_every_documented_style() {
+    for style in ["granite-docling", "mineru", "olmocr"] {
+        let options = json!({ "base_url": "http://127.0.0.1:8082/v1", "style": style });
+        assert!(
+            build(ModelTask::DocumentExtract, options).await.is_ok(),
+            "{style} must be accepted"
+        );
+    }
+}
+
+/// A typo fails when the catalog is read rather than on the first extraction,
+/// and the message names the accepted values.
+#[tokio::test]
+async fn document_extract_rejects_an_unknown_style() {
+    let options = json!({ "base_url": "http://127.0.0.1:8082/v1", "style": "docling" });
+    assert_rejects(
+        build(ModelTask::DocumentExtract, options).await,
+        "must be one of granite-docling, mineru, olmocr",
+    );
+}
+
+#[tokio::test]
+async fn document_extract_rejects_a_non_string_style() {
+    let options = json!({ "base_url": "http://127.0.0.1:8082/v1", "style": 3 });
+    assert_rejects(
+        build(ModelTask::DocumentExtract, options).await,
+        "must be a string",
+    );
+}
+
+#[tokio::test]
+async fn document_extract_rejects_each_embed_only_option() {
+    for (key, value) in [
+        ("max_input_tokens", json!(512)),
+        ("embedding_dimensions", json!(384)),
+        ("tokenizer_base_url", json!("http://127.0.0.1:8082")),
+    ] {
+        let mut options = json!({ "base_url": "http://127.0.0.1:8082/v1" });
+        options[key] = value;
+        assert_rejects(
+            build(ModelTask::DocumentExtract, options).await,
+            "applies only to task 'embed'",
+        );
+    }
+}
+
+/// And the other way round: `style` would be silently ignored by every other
+/// task, which is what this gate exists to prevent.
+#[tokio::test]
+async fn style_is_rejected_on_the_other_tasks() {
+    for task in [ModelTask::Embed, ModelTask::Generate, ModelTask::Rerank] {
+        let mut options = match task {
+            ModelTask::Embed => valid(),
+            _ => json!({ "base_url": "http://127.0.0.1:8080/v1" }),
+        };
+        options["style"] = json!("olmocr");
+        assert_rejects(
+            build(task, options).await,
+            "applies only to task 'document_extract'",
+        );
+    }
 }

@@ -8,13 +8,12 @@ Choose providers based on task coverage, latency profile, data governance, and o
 | --- | --- | --- | --- | --- | --- |
 | `local/candle` | Yes | No | No | No | Low-latency local embedding with simple deploys |
 | `local/onnx` | Yes | Yes | No | Yes | ONNX Runtime-backed dense embeddings (subsumes the retired `local/fastembed` provider; FastEmbed alias strings still resolve), cross-encoder reranking, and raw tensor execution. Also serves the extended tasks `embed_sparse`, `embed_multi_vector`, `embed_image`, `nlp`, and `ocr` — see the [task trait surface](multimodal-traits.md) |
-| `local/mistralrs` | Yes | No | Yes | No | Self-hosted local embedding + multimodal generation (text, vision, diffusion, speech) |
 | `remote/openai` | Yes | No | Yes | No | Hosted general-purpose embeddings and chat |
 | `remote/gemini` | Yes | No | Yes | No | Hosted Google model family |
 | `remote/vertexai` | Yes | No | Yes | No | GCP-native hosted models |
 | `remote/mistral` | Yes | No | Yes | No | Hosted Mistral models |
 | `remote/anthropic` | No | No | Yes | No | Hosted generation/chat only |
-| `remote/llamacpp` | Yes | Yes | Yes | No | Self-hosted llama.cpp `llama-server`: embeddings (e.g. BGE GGUF) with deterministic client-side truncation, text and vision generation (vision needs `--mmproj`), and reranking (needs `--reranking`) |
+| `remote/llamacpp` | Yes | Yes | Yes | No | Self-hosted llama.cpp `llama-server`: embeddings (e.g. BGE GGUF) with deterministic client-side truncation, text and vision generation (vision needs `--mmproj`), reranking (needs `--reranking`), and `document_extract` with a GGUF document VLM |
 | `remote/voyageai` | Yes | Yes | No | No | Hosted embedding + reranking focus |
 | `remote/cohere` | Yes | Yes | Yes | No | Hosted unified embedding/rerank/generate |
 | `remote/azure-openai` | Yes | No | Yes | No | Azure-governed OpenAI deployments |
@@ -46,11 +45,13 @@ providers that implement them are covered in the
   - embed via `remote/voyageai`
   - rerank via `remote/cohere`
   - generate via `remote/azure-openai`
-- Multimodal local pipelines:
-  - `generate/local` -> `local/mistralrs` (text pipeline, default)
-  - `vision/qwen` -> `local/mistralrs` (vision pipeline for image understanding)
-  - `image/flux` -> `local/mistralrs` (diffusion pipeline for image generation)
-  - `tts/dia` -> `local/mistralrs` (speech pipeline for audio synthesis)
+- Self-hosted generation pipelines (one `llama-server` process per model, so
+  each alias points at its own `base_url`):
+  - `generate/local` -> `remote/llamacpp` (a text-only server)
+  - `vision/smolvlm` -> `remote/llamacpp` (a server started with `--mmproj`)
+  - `docext/olmocr` -> `remote/llamacpp` with `task: "document_extract"`
+  - Image generation and speech synthesis have no bundled provider — see
+    [Multimodal Generation](multimodal-generation.md).
 - ONNX-backed pipelines (`local/onnx` serves several tasks beyond dense embed —
   see the [task trait surface](multimodal-traits.md) for the full list):
   - `embed/local` -> `local/onnx` with `task: "embed"` and a preset alias like `BGESmallENV15` (replaces the retired `local/fastembed` provider; same alias strings resolve)

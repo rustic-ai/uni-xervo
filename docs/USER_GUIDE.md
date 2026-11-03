@@ -14,13 +14,10 @@ Welcome to Uni-Xervo! This guide is designed to help you integrate `uni-xervo` i
     - [Text Generation (LLM)](#text-generation-llm)
     - [Raw ONNX Runtime](#raw-onnx-runtime)
     - [Vision Generation](#vision-generation)
-    - [Image Generation (Diffusion)](#image-generation-diffusion)
-    - [Speech Synthesis](#speech-synthesis)
+    - [Document Extraction](#document-extraction)
 7. [Advanced Topics](#advanced-topics)
     - [Warm-up Policies](#warm-up-policies)
-    - [GGUF Models](#gguf-models)
-    - [Model Precision (dtype)](#model-precision-dtype)
-    - [Mistralrs Pipeline Options](#mistralrs-pipeline-options)
+    - [GGUF and Quantized Models](#gguf-and-quantized-models)
     - [Error Handling](#error-handling)
 8. [Developer Guide: Adding Providers](#developer-guide-adding-providers)
 
@@ -47,7 +44,6 @@ Features split into three independent axes:
 | Feature | Default? | Backend |
 | --- | --- | --- |
 | `provider-candle` | ✓ | Hugging Face Candle (local, embeddings). |
-| `provider-mistralrs` | ✓ | mistral.rs (local, text / vision / diffusion / speech). |
 | `provider-onnx` | ✓ | ONNX Runtime (local; raw, rerank, embed). Subsumes the retired `provider-fastembed` as of 0.8.0. |
 | `provider-onnx-dynamic` |   | Same surface as `provider-onnx` but `dlopen`s ORT at runtime via `ORT_DYLIB_PATH`. Mutually exclusive with `provider-onnx`. |
 | `provider-openai` | ✓ | Remote OpenAI. |
@@ -58,7 +54,7 @@ Features split into three independent axes:
 | `provider-voyageai` | ✓ | Remote Voyage AI. |
 | `provider-cohere` | ✓ | Remote Cohere. |
 | `provider-azure-openai` | ✓ | Remote Azure OpenAI. |
-| `provider-llamacpp` | ✓ | Remote llama.cpp `llama-server`: embeddings with tokenizer-aware truncation, text and vision generation, reranking. |
+| `provider-llamacpp` | ✓ | Remote llama.cpp `llama-server`: embeddings with tokenizer-aware truncation, text and vision generation, reranking, document extraction. |
 
 **2. ORT linking** (only matters if you use ONNX)
 
@@ -69,8 +65,8 @@ Features split into three independent axes:
 
 **3. GPU acceleration** (purely additive; off by default)
 
-- `gpu-cuda` — Adds the CUDA EP to ORT (when bundled) plus CUDA kernels for candle / mistralrs. Linux + Windows + NVIDIA.
-- `gpu-metal` — Adds the CoreML EP to ORT (when bundled) plus Metal kernels for candle / mistralrs. macOS / iOS, covers Apple GPU + Neural Engine.
+- `gpu-cuda` — Adds the CUDA EP to ORT (when bundled) plus CUDA kernels for candle. Linux + Windows + NVIDIA.
+- `gpu-metal` — Adds the CoreML EP to ORT (when bundled) plus Metal kernels for candle. macOS / iOS, covers Apple GPU + Neural Engine.
 
 CPU is always available — there is no "CPU feature." At runtime, ORT registers the GPU EP first and silently falls back to CPU per-op if the GPU path isn't available.
 
@@ -147,18 +143,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Hybrid Local Setup (Multiple Providers)
 
-This example shows how to combine `candle` for embeddings and `mistral.rs` for generation in a single runtime.
+This example shows how to combine `candle` for in-process embeddings and a
+llama.cpp `llama-server` for generation in a single runtime.
 
 **Dependencies:**
 ```toml
-uni-xervo = { version = "0.9", features = ["provider-candle", "provider-mistralrs"] }
+uni-xervo = { version = "0.19", features = ["provider-candle", "provider-llamacpp"] }
+```
+
+Start the generation server first:
+
+```sh
+llama-server -hf ggml-org/gemma-3-270m-it-GGUF -c 4096 --port 8081
 ```
 
 **Code:**
 ```rust
 use uni_xervo::api::{ModelTask, ModelAliasSpec, WarmupPolicy};
 use uni_xervo::provider::candle::LocalCandleProvider;
-use uni_xervo::provider::mistralrs::LocalMistralRsProvider;
+use uni_xervo::provider::RemoteLlamaCppProvider;
 use uni_xervo::runtime::ModelRuntime;
 use uni_xervo::traits::{GenerationOptions, Message};
 use serde_json::json;
@@ -180,12 +183,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         options: serde_json::Value::Null,
     };
 
-    // 2. Configure Mistral.rs for Generation (Gemma 3)
+    // 2. Configure a llama-server for Generation (Gemma 3)
     let gen_spec = ModelAliasSpec {
         alias: "chat/gemma3".to_string(),
         task: ModelTask::Generate,
-        provider_id: "local/mistralrs".to_string(),
-        model_id: "google/gemma-3-270m".to_string(), // Gemma 3
+        provider_id: "remote/llamacpp".to_string(),
+        // A single-model server accepts any value here.
+        model_id: "local".to_string(),
         revision: None,
         warmup: WarmupPolicy::Lazy,
         required: true,
@@ -193,15 +197,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         load_timeout: None,
         retry: None,
         options: json!({
-            "isq": "Q4K",
-            "max_num_seqs": 4
+            "base_url": "http://127.0.0.1:8081/v1",
+            "request_timeout_secs": 180
         }),
     };
 
     // 3. Build Runtime with both providers
     let runtime = ModelRuntime::builder()
         .register_provider(LocalCandleProvider::new())
-        .register_provider(LocalMistralRsProvider::new())
+        .register_provider(RemoteLlamaCppProvider::new())
         .catalog(vec![embed_spec, gen_spec])
         .build()
         .await?;
@@ -450,18 +454,24 @@ Uni-Xervo validates tensor names, dtypes, and shapes against the graph signature
 
 ### Vision Generation
 
-Vision models process images alongside text prompts. Use the mistralrs vision pipeline to run models like Qwen2-VL or Gemma-3n locally.
+Vision models process images alongside text prompts. Point a `generate` alias
+at a `llama-server` started with a multimodal projector; whether images are
+accepted is a property of that server process, so there is no option for it.
+
+```sh
+llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF -c 4096 --port 8081
+```
 
 **Catalog config:**
 ```json
 {
-    "alias": "vision/qwen",
+    "alias": "vision/smolvlm",
     "task": "generate",
-    "provider_id": "local/mistralrs",
-    "model_id": "Qwen/Qwen2-VL-2B-Instruct",
+    "provider_id": "remote/llamacpp",
+    "model_id": "local",
     "options": {
-        "pipeline": "vision",
-        "dtype": "bf16"
+        "base_url": "http://127.0.0.1:8081/v1",
+        "request_timeout_secs": 180
     }
 }
 ```
@@ -482,88 +492,70 @@ let message = Message {
     ],
 };
 
-let vision = runtime.generator("vision/qwen").await?;
+let vision = runtime.generator("vision/smolvlm").await?;
 let result = vision.generate(&[message], GenerationOptions::default()).await?;
 println!("{}", result.text);
 ```
 
-### Image Generation (Diffusion)
+Sending an image to a text-only server fails with a non-retryable error naming
+the missing multimodal support, rather than silently dropping the image.
 
-Generate images from text prompts using the mistralrs diffusion pipeline (FLUX models).
+> **Image generation and speech synthesis have no bundled provider.**
+> `GenerationResult.images`, `.audio` and `GenerationOptions.width` / `height`
+> remain public API, but the provider that served them (`local/mistralrs`) was
+> removed in 0.19.0 and `llama-server` has no image-generation endpoint. Use a
+> dedicated service for these; the trait surface is unchanged, so a provider
+> can be added later without an API break.
+
+### Document Extraction
+
+A document VLM turns page images into structured blocks — tables, formulas,
+headings and reading order, not just the text an OCR model would return. The
+server needs a projector and a document model; `style` tells the provider
+which output dialect to parse.
 
 **Catalog config:**
 ```json
 {
-    "alias": "image/flux",
-    "task": "generate",
-    "provider_id": "local/mistralrs",
-    "model_id": "black-forest-labs/FLUX.1-schnell",
+    "alias": "docext/olmocr",
+    "task": "document_extract",
+    "provider_id": "remote/llamacpp",
+    "model_id": "local",
     "options": {
-        "pipeline": "diffusion",
-        "diffusion_loader_type": "flux"
+        "base_url": "http://127.0.0.1:8099/v1",
+        "style": "olmocr",
+        "request_timeout_secs": 600
     }
 }
 ```
 
 **Code:**
 ```rust
-use uni_xervo::traits::{Message, GenerationOptions};
+use uni_xervo::traits::{DocExtractOptions, DocOutputFormat, ImageInput};
 
-let gen = runtime.generator("image/flux").await?;
-let result = gen.generate(
-    &[Message::user("A serene mountain landscape at sunset")],
-    GenerationOptions {
-        width: Some(1024),
-        height: Some(1024),
-        ..Default::default()
-    },
-).await?;
+let extractor = runtime.document_extractor("docext/olmocr").await?;
+let pages = extractor
+    .extract(
+        vec![ImageInput::Bytes {
+            data: std::fs::read("page1.png")?,
+            media_type: "image/png".to_string(),
+        }],
+        DocExtractOptions {
+            output: DocOutputFormat::Markdown,
+            include_tables: true,
+            include_formulas: true,
+            include_bboxes: false,
+        },
+    )
+    .await?;
 
-// Access generated images
-for image in &result.images {
-    std::fs::write("output.png", &image.data)?;
-    println!("Generated image: {} ({} bytes)", image.media_type, image.data.len());
-}
+println!("{}", pages[0].plain_markdown);
+println!("{} block(s) in reading order", pages[0].blocks.len());
 ```
 
-### Speech Synthesis
-
-Generate audio from text using the mistralrs speech pipeline (Dia models).
-
-**Catalog config:**
-```json
-{
-    "alias": "tts/dia",
-    "task": "generate",
-    "provider_id": "local/mistralrs",
-    "model_id": "nari-labs/Dia-1.6B",
-    "options": {
-        "pipeline": "speech",
-        "speech_loader_type": "dia"
-    }
-}
-```
-
-**Code:**
-```rust
-use uni_xervo::traits::{Message, GenerationOptions};
-
-let tts = runtime.generator("tts/dia").await?;
-let result = tts.generate(
-    &[Message::user("[S1] Hello, welcome to Uni-Xervo!")],
-    GenerationOptions::default(),
-).await?;
-
-if let Some(audio) = &result.audio {
-    println!(
-        "Audio: {} samples, {}Hz, {} channels",
-        audio.pcm_data.len(),
-        audio.sample_rate,
-        audio.channels
-    );
-    // Write PCM data to a WAV file using your preferred audio library
-}
-```
+Pages are sent one request each, in order, so a multi-page document is a
+single call regardless of the server's context size. `style` accepts
+`olmocr` (default), `mineru` and `granite-docling`.
 
 ---
 
@@ -593,79 +585,25 @@ let runtime = ModelRuntime::builder()
 **Per-Model Configuration:**
 You can override the policy in the `ModelAliasSpec`.
 
-### GGUF Models
+### GGUF and Quantized Models
 
-GGUF is a quantized model format optimized for CPU inference with reduced memory usage. The mistralrs text pipeline supports loading GGUF models directly.
+GGUF is a quantized model format optimized for CPU inference with reduced
+memory usage. With `remote/llamacpp` the quantization, the precision and the
+device are all server-side concerns: `llama-server` loads the GGUF file, so
+they are chosen when the server starts and the catalog neither knows nor
+cares.
 
-**Catalog config:**
-```json
-{
-    "alias": "chat/phi-gguf",
-    "task": "generate",
-    "provider_id": "local/mistralrs",
-    "model_id": "microsoft/Phi-3.5-mini-instruct",
-    "options": {
-        "gguf_files": ["Phi-3.5-mini-instruct-Q4_K_M.gguf"]
-    }
-}
+```sh
+llama-server -m Phi-3.5-mini-instruct-Q4_K_M.gguf -c 8192 --port 8081
 ```
 
-GGUF support is only available for the text pipeline. Vision, diffusion, and speech pipelines do not support GGUF files.
-
-### Model Precision (dtype)
-
-Control the floating-point precision for mistralrs model loading:
-
-| Value | Description |
-|-------|-------------|
-| `auto` | Automatic selection (typically BF16 on GPU, F32 on CPU) |
-| `f16` | 16-bit floating point |
-| `bf16` | Brain floating point 16 |
-| `f32` | 32-bit floating point (default on CPU) |
-
-**Catalog config:**
-```json
-{
-    "alias": "chat/model",
-    "task": "generate",
-    "provider_id": "local/mistralrs",
-    "model_id": "google/gemma-3-270m",
-    "options": {
-        "dtype": "bf16"
-    }
-}
+```sh
+# Offload as much as fits onto the GPU
+llama-server -m Phi-3.5-mini-instruct-Q4_K_M.gguf -c 8192 --n-gpu-layers 99 --port 8081
 ```
 
-The `dtype` option is available for all four mistralrs pipeline types (text, vision, diffusion, speech).
-
-### Mistralrs Pipeline Options
-
-The `local/mistralrs` provider supports four pipeline types. Each pipeline accepts a different set of options:
-
-| Option | text | vision | diffusion | speech |
-|--------|:----:|:------:|:---------:|:------:|
-| `pipeline` | Y | Y | Y | Y |
-| `isq` | Y | Y | - | - |
-| `dtype` | Y | Y | Y | Y |
-| `force_cpu` | Y | Y | Y | Y |
-| `gguf_files` | Y | - | - | - |
-| `paged_attention` | Y | Y | - | - |
-| `max_num_seqs` | Y | Y | - | - |
-| `chat_template` | Y | Y | - | - |
-| `tokenizer_json` | Y | Y | - | - |
-| `embedding_dimensions` | Y* | - | - | - |
-| `diffusion_loader_type` | - | - | Y | - |
-| `speech_loader_type` | - | - | - | Y |
-
-\* `embedding_dimensions` is only valid for the `Embed` task.
-
-**Pipeline selection:** Set `"pipeline": "text"` (default), `"vision"`, `"diffusion"`, or `"speech"` in the model options.
-
-**ISQ values:** `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`, `Q2K`, `Q3K`, `Q4K`, `Q5K`, `Q6K`
-
-**Diffusion loader types:** `flux`, `flux_offloaded`
-
-**Speech loader types:** `dia`
+The alias options carry only the endpoint and the HTTP timeout, so swapping
+quantization is a server restart rather than a catalog change.
 
 ---
 

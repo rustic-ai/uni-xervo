@@ -8,7 +8,7 @@
 //! MinerU 2.5 emits structured Markdown with `$$`-delimited LaTeX, and olmOCR-2
 //! emits Markdown with inline `$`-delimited LaTeX — so [`DocStyle`] selects the
 //! parser. These live here (rather than under a single provider) so every
-//! provider that produces such text — `local/onnx` and `local/mistralrs` —
+//! provider that produces such text — `local/onnx` and `remote/llamacpp` —
 //! reuses the same, tested parsing without depending on the other's feature.
 //!
 //! Several parsers are `#[allow(dead_code)]`: which are exercised depends on the

@@ -6,16 +6,16 @@ Add Uni-Xervo to your Rust project.
 
 ```toml
 [dependencies]
-uni-xervo = "0.18"
+uni-xervo = "0.19"
 ```
 
-Defaults give you all three local backends (`provider-candle`, `provider-mistralrs`, `provider-onnx`) and all nine remote providers (`provider-openai`, `provider-gemini`, `provider-vertexai`, `provider-mistral`, `provider-anthropic`, `provider-voyageai`, `provider-cohere`, `provider-azure-openai`, `provider-llamacpp`) on CPU.
+Defaults give you both local backends (`provider-candle`, `provider-onnx`) and all nine remote providers (`provider-openai`, `provider-gemini`, `provider-vertexai`, `provider-mistral`, `provider-anthropic`, `provider-voyageai`, `provider-cohere`, `provider-azure-openai`, `provider-llamacpp`) on CPU.
 
 ## Lean build — pick what you need
 
 ```toml
 [dependencies]
-uni-xervo = { version = "0.18", default-features = false, features = [
+uni-xervo = { version = "0.19", default-features = false, features = [
   "provider-candle",
   "provider-onnx",
 ] }
@@ -29,16 +29,16 @@ GPU is opt-in and additive — CPU is always the fallback. Pick one based on you
 
 ```toml
 # NVIDIA on Linux / Windows
-uni-xervo = { version = "0.18", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.19", features = ["gpu-cuda"] }
 
 # Apple GPU + Neural Engine on macOS / iOS
-uni-xervo = { version = "0.18", features = ["gpu-metal"] }
+uni-xervo = { version = "0.19", features = ["gpu-metal"] }
 ```
 
 **Build-time** requirements:
 
-- `gpu-cuda` needs `nvcc` and `CUDA_COMPUTE_CAP` on the build host — only for candle / mistralrs PTX generation. The ORT side is fetched automatically by pyke.
-- `gpu-metal` only builds on Apple targets (`build.rs` panics elsewhere). Activates the CoreML EP for ORT plus Metal kernels for candle / mistralrs.
+- `gpu-cuda` needs `nvcc` and `CUDA_COMPUTE_CAP` on the build host — only for candle PTX generation. The ORT side is fetched automatically by pyke.
+- `gpu-metal` only builds on Apple targets (`build.rs` panics elsewhere). Activates the CoreML EP for ORT plus Metal kernels for candle.
 
 **Run-time** requirements:
 

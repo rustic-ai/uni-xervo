@@ -6,14 +6,13 @@ For build-time flags and `Cargo.toml` recipes see
 [Installation](../getting-started/installation.md) and
 [Feature Flags](../reference/feature-flags.md). For per-spec
 placement (mixing GPU and CPU models in the same catalog) see the
-[ONNX guide](onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog) and
-the [mistralrs device-placement reference](../reference/providers/mistralrs.md#device-placement).
+[ONNX guide](onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog).
 
 ## What runs where
 
 Uni-Xervo has three GPU surfaces, all opt-in:
 
-| Build axis | ORT execution provider | candle / mistralrs kernels |
+| Build axis | ORT execution provider | candle kernels |
 | --- | --- | --- |
 | default (no GPU feature) | CPU | CPU |
 | `gpu-cuda` | CUDA EP, falling back to CPU | CUDA |
@@ -24,12 +23,13 @@ The default EP list when a `ModelAliasSpec` doesn't set
 `gpu-cuda`, `[coreml, cpu]` under `gpu-metal`, `[cpu]` otherwise. This
 is set in `default_execution_providers()` in `src/provider/onnx_ep.rs`.
 
-candle and mistralrs follow the same build feature: enabling
-`gpu-cuda` activates their CUDA kernels, `gpu-metal` activates Metal.
-For `local/mistralrs` the per-spec switch is
-[`force_cpu`](../reference/providers/mistralrs.md#device-placement)
-(it's candle-backed, not ORT-backed, so it doesn't take
-`execution_providers`).
+candle follows the same build feature: enabling `gpu-cuda` activates
+its CUDA kernels, `gpu-metal` activates Metal. It has no per-spec
+device option — it is not ORT-backed, so it doesn't take
+`execution_providers` either, and the build features decide. A
+`remote/llamacpp` alias places nothing: inference happens in the
+`llama-server` process, so its device is a server flag
+(`--n-gpu-layers` and friends).
 
 ## NVIDIA / Linux runtime requirements
 
@@ -95,7 +95,7 @@ the driver version at the top.
 ## Apple / macOS runtime requirements
 
 Nothing extra. The CoreML execution provider ships inside the
-bundled ORT and the candle / mistralrs Metal kernels are
+bundled ORT and the candle Metal kernels are
 self-contained. macOS 13 (Ventura) or later is recommended for
 current CoreML feature coverage.
 

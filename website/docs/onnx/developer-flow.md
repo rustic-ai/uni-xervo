@@ -13,7 +13,7 @@ tokio = { version = "1", features = ["full"] }
 ndarray = "0.17"
 ```
 
-If you want a lean ONNX-only build (no candle, no mistralrs, no remote providers):
+If you want a lean ONNX-only build (no candle, no remote providers):
 
 ```toml
 uni-xervo = { version = "0.18", default-features = false, features = ["provider-onnx"] }

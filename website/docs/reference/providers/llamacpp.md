@@ -4,12 +4,13 @@
 
 - Provider ID: `remote/llamacpp`
 - Feature flag: `provider-llamacpp`
-- Capabilities: `embed`, `generate`, `rerank`
+- Capabilities: `embed`, `generate`, `rerank`, `document_extract`
 
 Targets a llama.cpp [`llama-server`](https://github.com/ggml-org/llama.cpp/tree/master/tools/server).
 Use `remote/openai` for generic OpenAI-compatible servers; use this provider when
 the server is llama.cpp — for bounded embedding input, for text or vision
-generation, and for reranking against a locally served model.
+generation, for reranking against a locally served model, and for document
+extraction with a GGUF document VLM.
 
 One `llama-server` process serves one model, so aliases for different tasks
 point at different servers (different `base_url`s).
@@ -83,6 +84,40 @@ caller already holds the originals.
 An empty `docs` slice returns an empty result without a request, because
 `llama-server` rejects an empty `documents` array with HTTP 400.
 
+### `document_extract`
+
+Document extraction is a vision generation call with a fixed prompt: a
+rendered page image goes in, the model's transcription comes out, and the
+shared `doc_parse` module turns that text into typed blocks. It therefore
+posts to the same `/v1/chat/completions` endpoint as `generate`, and needs the
+same `--mmproj` projector plus a document VLM — olmOCR-2, MinerU 2.5 or
+Granite-Docling.
+
+The `style` option names the loaded model's output dialect so the right parser
+is applied. It selects the parser, not the model: it has to match whatever the
+server actually loaded, because the three families emit different syntax for
+the same page. The value is checked at catalog registration rather than at
+load, so a typo fails when the catalog is read instead of on the first
+extraction.
+
+Pages are sent **one request each**, in order. That is what olmOCR-2 expects
+— it is single-image — and it keeps a long document from being capped by one
+shared `--ctx-size`. A page that fails fails the whole call: a partially
+transcribed document silently missing page 7 is worse than an error. An empty
+page list returns an empty result without a request. The whole document is one
+circuit-breaker call, not one per page, so a half-open probe is a document.
+
+The prompt and sampling policy follow olmOCR's reference pipeline:
+`max_tokens` 8000 per page and `temperature` 0.1. They are not configurable —
+they are part of what makes the output parseable.
+
+`DocExtractOptions` is ignored, matching the provider this replaced. A
+generative backend cannot be asked for trustworthy bounding boxes (it would
+invent plausible ones) and the output format follows from the model's own
+dialect, which `style` already names. Blocks carry whatever positions the
+model emitted — Granite-Docling's DocTags do include `loc` attributes — and
+`None` otherwise.
+
 !!! warning "Rerank scores are not comparable with `local/onnx`"
 
     `llama-server` returns a **sigmoid** of the cross-encoder logit, bounded to
@@ -125,9 +160,16 @@ Shared by every task:
 | `max_input_tokens` | integer ≥ 3 | yes | Total token budget **including** special tokens. `512` for BGE / BERT models |
 | `embedding_dimensions` | integer > 0 | yes | Expected vector width (`384` for `bge-small-en-v1.5`) |
 
+`document_extract` only — **rejected** on any other task rather than ignored:
+
+| Option | Type | Required | Description |
+| --- | --- | --- | --- |
+| `style` | `granite-docling` \| `mineru` \| `olmocr` | no | Output dialect of the document VLM the server loaded, which selects the parser. Default `olmocr` |
+
 `generate` and `rerank` take no options of their own. In particular there is no
-option for the rerank response shape: it follows from the request key this
-crate sends (see below).
+option for vision, and none for the rerank response shape: the first depends on
+whether the server was started with `--mmproj`, and the second follows from the
+request key this crate sends (see below).
 
 Authoritative Uni-Xervo option schema:
 
@@ -136,7 +178,8 @@ Authoritative Uni-Xervo option schema:
 ## Model ID
 
 `model_id` is sent as the `model` field of `/tokenize`, `/v1/embeddings`,
-`/v1/chat/completions` and `/v1/rerank`. When `llama-server` runs in router mode (`--models-dir` /
+`/v1/chat/completions` (both `generate` and `document_extract`) and
+`/v1/rerank`. When `llama-server` runs in router mode (`--models-dir` /
 `--models-preset`) it must equal the preset section name exactly; a
 single-model server accepts any value.
 
@@ -178,6 +221,19 @@ query-plus-document pair, since the cross-encoder sees both at once:
 ```bash
 llama-server -m jina-reranker-v1-tiny-en-Q8_0.gguf --reranking -c 2048 --port 8098
 ```
+
+### Document extraction
+
+`--mmproj` is required, as for vision generation, and `--ctx-size` has to hold
+the page's image tokens plus up to 8000 generated tokens:
+
+```bash
+llama-server -m olmOCR-2-7B-Q4_K_M.gguf --mmproj olmOCR-2-mmproj.gguf \
+    -c 8192 --port 8099
+```
+
+Set `request_timeout_secs` generously — it bounds one page, and a full page of
+transcription is far slower than a chat turn.
 
 ## Authoritative model and config docs
 
@@ -245,6 +301,22 @@ A rerank alias:
   "model_id": "jina-reranker-v1-tiny-en",
   "options": {
     "base_url": "http://127.0.0.1:8098/v1"
+  }
+}
+```
+
+A document-extraction alias:
+
+```json
+{
+  "alias": "docext/olmocr",
+  "task": "document_extract",
+  "provider_id": "remote/llamacpp",
+  "model_id": "local",
+  "options": {
+    "base_url": "http://127.0.0.1:8099/v1",
+    "style": "olmocr",
+    "request_timeout_secs": 600
   }
 }
 ```

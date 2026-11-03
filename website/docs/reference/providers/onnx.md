@@ -37,8 +37,9 @@ A single ONNX-Runtime-backed provider that dispatches by `task`:
   `doc_parse` module) all ship and are unit tested, but `extract()` returns
   `RuntimeError::Unavailable` until an upstream canonical ONNX export of one
   of the three target VLMs ships. The olmOCR-2 path is **live today on
-  [`local/mistralrs`](mistralrs.md#document-extraction-olmocr-2)** (its
-  vision pipeline), which reuses the same `doc_parse` parsers.
+  [`remote/llamacpp`](llamacpp.md#document_extract)** — a GGUF document VLM
+  on a `llama-server` started with `--mmproj`, which reuses the same
+  `doc_parse` parsers.
 
 ## Provider options
 
@@ -48,7 +49,7 @@ Options are validated per task (unknown keys are rejected with a precise `Runtim
 
 - `artifact` (string) — explicit `.onnx` filename within an HF repo (auto-detected if a single match exists).
 - `max_batch_size` (integer)
-- `execution_providers` — array of EP identifiers. Accepted by option validation: `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Other identifiers (e.g. `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"`) are rejected at catalog load with `RuntimeError::Config`. Defaults to a feature-aware list: `["cuda", "cpu"]` under `gpu-cuda`, `["coreml", "cpu"]` under `gpu-metal`, `["cpu"]` otherwise. Vendor EPs are never default — opt in explicitly. Selecting `"cuda"`/`"coreml"` still requires the matching GPU feature (or a `provider-onnx-dynamic` build pointed at a vendor ORT library via `ORT_DYLIB_PATH`). **Per-spec**, so a single catalog can mix GPU and CPU placement on a `gpu-cuda` build (e.g. embedder on `["cpu"]`, reranker on `["cuda", "cpu"]`) — see the [mixed-catalog recipe](../../guides/onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog). For `local/mistralrs` aliases the analogous per-spec switch is [`force_cpu`](mistralrs.md#device-placement) (mistralrs is candle-backed, not ORT-backed, so it doesn't accept this option). If a requested EP fails to initialize (missing cuDNN, wrong CUDA major version, etc.), ORT silently falls through to the next EP in the list — see [GPU setup → verifying the GPU EP actually loaded](../../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) for how to detect this. See `docs/migrations/0.9.0-feature-surface.md` for vendor-build setup.
+- `execution_providers` — array of EP identifiers. Accepted by option validation: `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Other identifiers (e.g. `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"`) are rejected at catalog load with `RuntimeError::Config`. Defaults to a feature-aware list: `["cuda", "cpu"]` under `gpu-cuda`, `["coreml", "cpu"]` under `gpu-metal`, `["cpu"]` otherwise. Vendor EPs are never default — opt in explicitly. Selecting `"cuda"`/`"coreml"` still requires the matching GPU feature (or a `provider-onnx-dynamic` build pointed at a vendor ORT library via `ORT_DYLIB_PATH`). **Per-spec**, so a single catalog can mix GPU and CPU placement on a `gpu-cuda` build (e.g. embedder on `["cpu"]`, reranker on `["cuda", "cpu"]`) — see the [mixed-catalog recipe](../../guides/onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog). No other provider takes a per-spec device option: `local/candle` places from the build features alone, and `remote/llamacpp` runs inference in the server process, where the device is a `llama-server` flag. If a requested EP fails to initialize (missing cuDNN, wrong CUDA major version, etc.), ORT silently falls through to the next EP in the list — see [GPU setup → verifying the GPU EP actually loaded](../../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) for how to detect this. See `docs/migrations/0.9.0-feature-surface.md` for vendor-build setup.
 - `graph_optimization_level` — `"disable" | "basic" | "extended" | "all"`.
 - `inter_op_num_threads`, `intra_op_num_threads` (integers)
 - `cache_dir` (string) — overrides `UNI_CACHE_DIR` and the default `.uni_cache/onnx-…/` location.
@@ -333,7 +334,7 @@ By task:
 - **`document_extract`** → `runtime.document_extractor(alias)` returns
   `Arc<dyn DocumentExtractionModel>`. Method: `extract(pages, options)`
   → `Vec<DocExtractResult>` (scaffold on `local/onnx` — returns `Unavailable`;
-  use [`local/mistralrs`](mistralrs.md#document-extraction-olmocr-2) for olmOCR-2).
+  use [`remote/llamacpp`](llamacpp.md#document_extract) for a GGUF document VLM).
 
 ## Example catalog entries
 
@@ -470,7 +471,7 @@ DBNet detection + English recognizer. Drop `det_onnx_path` for single-stage
 
 `local/onnx` document extraction is gated on an upstream ONNX export. For a
 working VLM document extractor today, use the olmOCR-2 path on
-[`local/mistralrs`](mistralrs.md#document-extraction-olmocr-2).
+[`remote/llamacpp`](llamacpp.md#document_extract).
 
 ```json
 {

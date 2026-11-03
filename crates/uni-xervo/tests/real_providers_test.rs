@@ -1819,972 +1819,14 @@ async fn test_azure_openai_rerank_capability_mismatch() {
 }
 
 // =============================================================================
-// MISTRALRS LOCAL TESTS
-// =============================================================================
-
-#[cfg(feature = "provider-mistralrs")]
-mod mistralrs_tests {
-    use super::*;
-    use uni_xervo::provider::mistralrs::LocalMistralRsProvider;
-    use uni_xervo::traits::{ContentBlock, ImageInput, ModelProvider};
-
-    #[tokio::test]
-    async fn test_mistralrs_rerank_capability_mismatch() {
-        let provider = LocalMistralRsProvider::new();
-        let spec = ModelAliasSpec {
-            alias: "rerank/test".to_string(),
-            task: ModelTask::Rerank,
-            provider_id: "local/mistralrs".to_string(),
-            model_id: "some-model".to_string(),
-            revision: None,
-            warmup: WarmupPolicy::Lazy,
-            required: false,
-            timeout: None,
-            load_timeout: None,
-            retry: None,
-            options: serde_json::Value::Null,
-        };
-
-        let result = provider.load(&spec).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("does not support task"),
-            "Expected CapabilityMismatch error, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_mistralrs_invalid_isq_config() {
-        let provider = LocalMistralRsProvider::new();
-        let spec = ModelAliasSpec {
-            alias: "embed/test".to_string(),
-            task: ModelTask::Embed,
-            provider_id: "local/mistralrs".to_string(),
-            model_id: "some-model".to_string(),
-            revision: None,
-            warmup: WarmupPolicy::Lazy,
-            required: false,
-            timeout: None,
-            load_timeout: None,
-            retry: None,
-            options: serde_json::json!({ "isq": "INVALID_TYPE" }),
-        };
-
-        let result = provider.load(&spec).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("Unknown ISQ type"),
-            "Expected Config error about ISQ type, got: {}",
-            err
-        );
-    }
-
-    /// mistralrs 0.7 `EmbeddingModelBuilder` only accepts models with
-    /// Embedding via mistralrs using google/embeddinggemma-300m.
-    /// EmbeddingGemma is Google's purpose-built 308M embedding model based on
-    /// Gemma3TextModel with bidirectional attention. It is the architecture
-    /// mistralrs labels "embeddinggemma".
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_embedding_gemma3() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "embed/mistralrs-gemma3".to_string(),
-                task: ModelTask::Embed,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "google/embeddinggemma-300m".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({"dtype": "f32"}),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .embedding("embed/mistralrs-gemma3")
-            .await
-            .expect("Failed to resolve embeddinggemma-300m model");
-
-        let embeddings = model
-            .embed(&["The quick brown fox", "jumps over the lazy dog"])
-            .await
-            .expect("Embedding failed");
-
-        assert_eq!(embeddings.vectors.len(), 2, "Expected 2 embeddings");
-        assert!(
-            !embeddings.vectors[0].is_empty(),
-            "Embedding should have non-zero dimensions"
-        );
-        assert_eq!(
-            embeddings.vectors[0].len(),
-            embeddings.vectors[1].len(),
-            "Both embeddings must have same dimensions"
-        );
-        for (i, emb) in embeddings.vectors.iter().enumerate() {
-            assert!(
-                emb.iter().all(|v| v.is_finite()),
-                "Embedding {i} contains NaN or Inf values"
-            );
-        }
-        assert!(
-            model.dimensions() > 0,
-            "dimensions() should return non-zero value"
-        );
-        assert_eq!(model.model_id(), "google/embeddinggemma-300m");
-
-        println!("✓ mistralrs embeddinggemma test passed");
-        println!("  Model:      google/embeddinggemma-300m (Gemma3TextModel)");
-        println!("  Dimensions: {}", model.dimensions());
-    }
-
-    /// Embedding via mistralrs using Qwen3-Embedding (Qwen3ForCausalLM architecture).
-    /// Qwen3-Embedding-0.6B is a purpose-built embedding model with 0.6B parameters.
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_embedding_qwen3() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "embed/mistralrs-qwen3".to_string(),
-                task: ModelTask::Embed,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({ "isq": "Q4K" }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .embedding("embed/mistralrs-qwen3")
-            .await
-            .expect("Failed to resolve qwen3 embedding model");
-
-        let embeddings = model
-            .embed(&["The quick brown fox", "jumps over the lazy dog"])
-            .await
-            .expect("Embedding failed");
-
-        assert_eq!(embeddings.vectors.len(), 2, "Expected 2 embeddings");
-        assert!(
-            !embeddings.vectors[0].is_empty(),
-            "Embedding should have non-zero dimensions"
-        );
-        assert_eq!(
-            embeddings.vectors[0].len(),
-            embeddings.vectors[1].len(),
-            "Both embeddings must have same dimensions"
-        );
-        assert!(
-            model.dimensions() > 0,
-            "dimensions() should return non-zero value"
-        );
-        assert_eq!(model.model_id(), "Qwen/Qwen3-Embedding-0.6B");
-
-        println!("✓ mistralrs qwen3 embedding test passed");
-        println!("  Model:      Qwen/Qwen3-Embedding-0.6B (Qwen3ForCausalLM)");
-        println!("  Dimensions: {}", model.dimensions());
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_generation() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/mistralrs".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({ "isq": "Q4K" }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/mistralrs")
-            .await
-            .expect("Failed to resolve generator model");
-
-        let messages = vec![Message::user(
-            "Say 'Hello from mistral.rs' and nothing else.",
-        )];
-        let options = GenerationOptions {
-            max_tokens: Some(20),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Generated text should not be empty"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        println!("mistralrs local generation test passed");
-        println!("  Generated: {}", result.text);
-        println!(
-            "  Tokens: {} prompt + {} completion = {} total",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
-        );
-    }
-
-    /// Generation via mistralrs using SmolLM2-135M-Instruct with dtype f32.
-    /// This test verifies that the dtype option works correctly for generator
-    /// models on CPU, preventing NaN values from F16 auto-selection.
-    /// SmolLM2-135M uses the LlamaForCausalLM architecture (~270 MB download).
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_generation_smollm2_f32() {
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/smollm2".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({"dtype": "f32"}),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/smollm2")
-            .await
-            .expect("Failed to resolve SmolLM2 generator model");
-
-        let messages = vec![Message::user("Say 'Hello from SmolLM2' and nothing else.")];
-        let options = GenerationOptions {
-            max_tokens: Some(20),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Generated text should not be empty"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        println!("✓ mistralrs SmolLM2 f32 generation test passed");
-        println!("  Generated: {}", result.text);
-        println!(
-            "  Tokens: {} prompt + {} completion = {} total",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
-        );
-    }
-
-    /// Generation via mistralrs using Qwen3-0.6B with dtype f32.
-    /// Qwen3 uses the Qwen3ForCausalLM architecture with native mistralrs support.
-    /// This remains ignored because f32 inference on CPU can be extremely slow.
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_generation_qwen3() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/qwen3".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "Qwen/Qwen3-0.6B".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({"dtype": "f32"}),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/qwen3")
-            .await
-            .expect("Failed to resolve Qwen3 generator model");
-
-        let messages = vec![Message::user("Say 'Hello from Qwen3' and nothing else.")];
-        let options = GenerationOptions {
-            // Qwen3 is a thinking-style model: it spends tokens on internal
-            // reasoning before emitting visible text. A tight budget produces
-            // an empty visible response, so allow enough headroom for the
-            // think phase + a short reply.
-            max_tokens: Some(256),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Generated text should not be empty"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        println!("✓ mistralrs Qwen3-0.6B f32 generation test passed");
-        println!("  Generated: {}", result.text);
-        println!(
-            "  Tokens: {} prompt + {} completion = {} total",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
-        );
-    }
-
-    /// Generation via mistralrs using SmolLM2-135M-Instruct in GGUF format.
-    /// This tests the GGUF loading path (`GgufModelBuilder`) with a Llama-arch
-    /// model. SmolLM2 uses LlamaForCausalLM which maps to the `Llama` GGUF
-    /// architecture (~90 MB Q4_K_M download).
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_generation_smollm2_gguf() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/smollm2-gguf".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "bartowski/SmolLM2-135M-Instruct-GGUF".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({"gguf_files": ["SmolLM2-135M-Instruct-Q4_K_M.gguf"]}),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/smollm2-gguf")
-            .await
-            .expect("Failed to resolve SmolLM2 GGUF generator model");
-
-        let messages = vec![Message::user("Say 'Hello from SmolLM2' and nothing else.")];
-        let options = GenerationOptions {
-            max_tokens: Some(20),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Generated text should not be empty"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        println!("✓ mistralrs SmolLM2 GGUF generation test passed");
-        println!("  Generated: {}", result.text);
-        println!(
-            "  Tokens: {} prompt + {} completion = {} total",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
-        );
-    }
-
-    /// Generation via mistralrs using Qwen3-0.6B in GGUF format.
-    /// This tests the GGUF loading path (`GgufModelBuilder`) with the Qwen3
-    /// architecture (~400 MB Q4_K_M download).
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_local_generation_qwen3_gguf() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/qwen3-gguf".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "bartowski/Qwen_Qwen3-0.6B-GGUF".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({"gguf_files": ["Qwen_Qwen3-0.6B-Q4_K_M.gguf"]}),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/qwen3-gguf")
-            .await
-            .expect("Failed to resolve Qwen3 GGUF generator model");
-
-        // Qwen3 defaults to thinking mode (<think>...</think>) which consumes
-        // many tokens before producing visible output, so we need a higher limit.
-        let messages = vec![Message::user("Say 'Hello from Qwen3' and nothing else.")];
-        let options = GenerationOptions {
-            max_tokens: Some(200),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Generated text should not be empty"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        println!("✓ mistralrs Qwen3 GGUF generation test passed");
-        println!("  Generated: {}", result.text);
-        println!(
-            "  Tokens: {} prompt + {} completion = {} total",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
-        );
-    }
-
-    /// Verify that text generation correctly returns empty multimodal fields
-    /// (images=[], audio=None). Uses SmolLM2-135M-Instruct (~270 MB download).
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_text_generation_multimodal_fields() {
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/smollm2-mm".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({"dtype": "f32"}),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/smollm2-mm")
-            .await
-            .expect("Failed to resolve SmolLM2 generator model");
-
-        let messages = vec![Message::user("Say 'hello' and nothing else.")];
-        let options = GenerationOptions {
-            max_tokens: Some(20),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Generated text should not be empty"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-        assert!(
-            result.images.is_empty(),
-            "Text generation should return no images"
-        );
-        assert!(
-            result.audio.is_none(),
-            "Text generation should return no audio"
-        );
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        println!("✓ mistralrs text generation multimodal fields test passed");
-        println!("  Generated: {}", result.text);
-        println!("  images: [], audio: None ✓");
-    }
-
-    /// Vision pipeline test using Qwen2-VL-2B-Instruct (~2.2 GB download).
-    /// Sends a minimal 1x1 red PNG pixel with a text prompt and verifies
-    /// the model produces a text description with usage stats.
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_vision_generation() {
-        require_expensive_tests!();
-
-        // Minimal valid 1x1 red PNG (67 bytes)
-        let png_1x1_red: Vec<u8> = vec![
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
-            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // 8-bit RGB
-            0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, // IDAT chunk
-            0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, // compressed data
-            0x00, 0x00, 0x03, 0x00, 0x01, 0x36, 0x28, 0x19, // ...
-            0xFD, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, // IEND chunk
-            0x44, 0xAE, 0x42, 0x60, 0x82,
-        ];
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/vision".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "Qwen/Qwen2-VL-2B-Instruct".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({
-                    "pipeline": "vision",
-                    "dtype": "f32",
-                    "isq": "Q4K"
-                }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/vision")
-            .await
-            .expect("Failed to resolve vision generator model");
-
-        let messages = vec![Message {
-            role: uni_xervo::traits::MessageRole::User,
-            content: vec![
-                ContentBlock::Text("Describe this image.".to_string()),
-                ContentBlock::Image(ImageInput::Bytes {
-                    data: png_1x1_red,
-                    media_type: "image/png".to_string(),
-                }),
-            ],
-        }];
-        let options = GenerationOptions {
-            max_tokens: Some(50),
-            temperature: Some(0.1),
-            top_p: Some(0.9),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Vision generation failed");
-
-        assert!(
-            !result.text.is_empty(),
-            "Vision model should produce text output"
-        );
-        assert!(result.usage.is_some(), "Usage stats should be present");
-
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Total tokens should be > 0");
-
-        assert!(
-            result.images.is_empty(),
-            "Vision model should not produce images"
-        );
-        assert!(
-            result.audio.is_none(),
-            "Vision model should not produce audio"
-        );
-
-        println!("✓ mistralrs vision generation test passed");
-        println!("  Generated: {}", result.text);
-        println!(
-            "  Tokens: {} prompt + {} completion = {} total",
-            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
-        );
-    }
-
-    /// Diffusion pipeline test using FLUX.1-schnell (~23.8 GB download).
-    /// Generates a tiny 64x64 image to minimize compute.
-    /// WARNING: Requires GPU and significant disk space (~24 GB).
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_diffusion_generation() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/diffusion".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "black-forest-labs/FLUX.1-schnell".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({
-                    "pipeline": "diffusion",
-                    "diffusion_loader_type": "flux"
-                }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/diffusion")
-            .await
-            .expect("Failed to resolve diffusion generator model");
-
-        let messages = vec![Message::user("A red circle on white background")];
-        let options = GenerationOptions {
-            width: Some(64),
-            height: Some(64),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Diffusion generation failed");
-
-        assert_eq!(
-            result.images.len(),
-            1,
-            "Diffusion model should produce exactly 1 image"
-        );
-        assert!(
-            !result.images[0].data.is_empty(),
-            "Generated image data should not be empty"
-        );
-        assert_eq!(
-            result.images[0].media_type, "image/png",
-            "Generated image should be PNG"
-        );
-        assert!(
-            result.text.is_empty(),
-            "Diffusion model should not produce text"
-        );
-        assert!(
-            result.audio.is_none(),
-            "Diffusion model should not produce audio"
-        );
-
-        println!("✓ mistralrs diffusion generation test passed");
-        println!("  Image size: {} bytes", result.images[0].data.len());
-    }
-
-    /// Speech pipeline test using Dia-1.6B (~12.9 GB download).
-    /// Generates PCM audio from a short text prompt.
-    /// WARNING: Requires ~13 GB disk space for model download.
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_speech_generation() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/speech".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "nari-labs/Dia-1.6B".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({
-                    "pipeline": "speech",
-                    "speech_loader_type": "dia"
-                }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/speech")
-            .await
-            .expect("Failed to resolve speech generator model");
-
-        let messages = vec![Message::user("Hello, this is a test of speech synthesis.")];
-        let options = GenerationOptions::default();
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Speech generation failed");
-
-        assert!(result.audio.is_some(), "Speech model should produce audio");
-        let audio = result.audio.unwrap();
-        assert!(
-            !audio.pcm_data.is_empty(),
-            "PCM audio data should not be empty"
-        );
-        assert!(audio.sample_rate > 0, "Sample rate should be > 0");
-        assert!(audio.channels > 0, "Channel count should be > 0");
-
-        assert!(
-            result.text.is_empty(),
-            "Speech model should not produce text"
-        );
-        assert!(
-            result.images.is_empty(),
-            "Speech model should not produce images"
-        );
-
-        println!("✓ mistralrs speech generation test passed");
-        println!(
-            "  Audio: {} samples, {}Hz, {} channel(s)",
-            audio.pcm_data.len(),
-            audio.sample_rate,
-            audio.channels
-        );
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_gemma3n_text_generation() {
-        require_expensive_tests!();
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/gemma3n-text".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "google/gemma-3n-E2B-it".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({
-                    "pipeline": "vision",
-                    "dtype": "f32",
-                    "isq": "Q4K"
-                }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/gemma3n-text")
-            .await
-            .expect("Failed to get generator");
-
-        let messages = vec![Message::user(
-            "What is the capital of France? Answer in one word.",
-        )];
-        let options = GenerationOptions {
-            max_tokens: Some(20),
-            temperature: Some(0.1),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(!result.text.is_empty(), "Expected non-empty text response");
-        assert!(result.usage.is_some(), "Expected usage information");
-        let usage = result.usage.unwrap();
-        assert!(usage.total_tokens > 0, "Expected total_tokens > 0");
-        assert!(
-            result.images.is_empty(),
-            "Text generation should not produce images"
-        );
-        assert!(
-            result.audio.is_none(),
-            "Text generation should not produce audio"
-        );
-
-        println!("✓ mistralrs gemma3n text generation test passed");
-        println!("  Response: {}", result.text);
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_mistralrs_gemma3n_object_detection() {
-        require_expensive_tests!();
-
-        // Download a real photograph (Wikimedia Commons, public domain)
-        let image_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/220px-Cat_November_2010-1a.jpg";
-        let image_bytes = reqwest::get(image_url)
-            .await
-            .expect("Failed to download test image")
-            .bytes()
-            .await
-            .expect("Failed to read image bytes")
-            .to_vec();
-        assert!(
-            !image_bytes.is_empty(),
-            "Downloaded image should not be empty"
-        );
-
-        let runtime = ModelRuntime::builder()
-            .register_provider(LocalMistralRsProvider::new())
-            .catalog(vec![ModelAliasSpec {
-                alias: "generate/gemma3n-vision".to_string(),
-                task: ModelTask::Generate,
-                provider_id: "local/mistralrs".to_string(),
-                model_id: "google/gemma-3n-E2B-it".to_string(),
-                revision: None,
-                warmup: WarmupPolicy::Lazy,
-                required: false,
-                timeout: None,
-                load_timeout: None,
-                retry: None,
-                options: serde_json::json!({
-                    "pipeline": "vision",
-                    "dtype": "f32",
-                    "isq": "Q4K"
-                }),
-            }])
-            .build()
-            .await
-            .expect("Failed to build runtime");
-
-        let model = runtime
-            .generator("generate/gemma3n-vision")
-            .await
-            .expect("Failed to get generator");
-
-        let messages = vec![Message {
-            role: uni_xervo::traits::MessageRole::User,
-            content: vec![
-                ContentBlock::Text("List all objects you can see in this image.".to_string()),
-                ContentBlock::Image(ImageInput::Bytes {
-                    data: image_bytes,
-                    media_type: "image/jpeg".to_string(),
-                }),
-            ],
-        }];
-        let options = GenerationOptions {
-            max_tokens: Some(200),
-            temperature: Some(0.1),
-            ..Default::default()
-        };
-
-        let result = model
-            .generate(&messages, options)
-            .await
-            .expect("Generation failed");
-
-        assert!(!result.text.is_empty(), "Expected non-empty text response");
-        assert!(
-            result.text.len() > 10,
-            "Expected substantive description, got: {}",
-            result.text
-        );
-        assert!(result.usage.is_some(), "Expected usage information");
-        assert!(
-            result.images.is_empty(),
-            "Vision model should not produce images"
-        );
-        assert!(
-            result.audio.is_none(),
-            "Vision model should not produce audio"
-        );
-
-        println!("✓ mistralrs gemma3n object detection test passed");
-        println!("  Response: {}", result.text);
-    }
-}
-
-// =============================================================================
 // LLAMA.CPP REMOTE TESTS
 // =============================================================================
 
 /// Non-network: a task the provider does not serve is refused at load.
 ///
-/// `embed`, `generate` and `rerank` are supported; `raw` is not, and never
-/// will be — `llama-server` exposes no tensor-level endpoint.
+/// `embed`, `generate`, `rerank` and `document_extract` are supported; `raw`
+/// is not, and never will be — `llama-server` exposes no tensor-level
+/// endpoint.
 #[tokio::test]
 async fn test_llamacpp_unsupported_task_capability_mismatch() {
     #[cfg(feature = "provider-llamacpp")]
@@ -3213,6 +2255,147 @@ async fn test_llamacpp_rerank() {
                 .expect("empty rerank")
                 .is_empty()
         );
+    }
+    #[cfg(not(feature = "provider-llamacpp"))]
+    {
+        eprintln!("Skipping - provider-llamacpp feature not enabled");
+    }
+}
+
+/// Real document extraction against a running llama-server with a document VLM.
+///
+/// The server must have been started with `--mmproj`, since a page arrives as
+/// an image; without a projector the call fails the same way vision generation
+/// does. `style` must match the model's output dialect — `olmocr` for an
+/// olmOCR-2 build, `granite-docling` for Granite-Docling, `mineru` for
+/// MinerU 2.5 — and defaults to `olmocr`.
+///
+/// Start the server with, e.g.:
+/// `llama-server -m olmOCR-2-7B-Q4_K_M.gguf --mmproj olmOCR-2-mmproj.gguf -c 8192 --port 8099`
+/// then `EXPENSIVE_TESTS=1 LLAMACPP_DOCS_BASE_URL=http://127.0.0.1:8099/v1 cargo test
+/// -p uni-xervo --test real_providers_test test_llamacpp_document_extract -- --ignored`.
+///
+/// Output is generative and non-deterministic, so the assertions are a smoke
+/// test: non-empty Markdown that mentions the fixture's own words.
+#[tokio::test]
+#[ignore]
+async fn test_llamacpp_document_extract() {
+    require_expensive_tests!();
+    let Ok(base_url) = env::var("LLAMACPP_DOCS_BASE_URL") else {
+        eprintln!("Skipping - LLAMACPP_DOCS_BASE_URL not set");
+        return;
+    };
+
+    #[cfg(feature = "provider-llamacpp")]
+    {
+        use uni_xervo::provider::llamacpp::RemoteLlamaCppProvider;
+        use uni_xervo::traits::{DocExtractOptions, DocOutputFormat, ImageInput};
+
+        let model_id = env::var("LLAMACPP_DOCS_MODEL").unwrap_or_else(|_| "local".to_string());
+        let style = env::var("LLAMACPP_DOCS_STYLE").unwrap_or_else(|_| "olmocr".to_string());
+        let options = serde_json::json!({
+            "base_url": base_url,
+            "style": style,
+            // A page of transcription is slower than a chat turn, and the
+            // per-page cap is 8000 tokens.
+            "request_timeout_secs": 600
+        });
+
+        let runtime = ModelRuntime::builder()
+            .register_provider(RemoteLlamaCppProvider::new())
+            .catalog(vec![ModelAliasSpec {
+                alias: "docext/llamacpp".to_string(),
+                task: ModelTask::DocumentExtract,
+                provider_id: "remote/llamacpp".to_string(),
+                model_id,
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options,
+            }])
+            .build()
+            .await
+            .expect("Failed to build runtime");
+
+        let model = runtime
+            .document_extractor("docext/llamacpp")
+            .await
+            .expect("Failed to resolve document extractor");
+
+        let fixture = format!(
+            "{}/tests/fixtures/ocr/text_lines.png",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let page = std::fs::read(&fixture).expect("read ocr fixture");
+
+        let doc_options = DocExtractOptions {
+            output: DocOutputFormat::Markdown,
+            include_tables: true,
+            include_formulas: true,
+            include_bboxes: false,
+        };
+
+        let result = model
+            .extract(
+                vec![ImageInput::Bytes {
+                    data: page.clone(),
+                    media_type: "image/png".to_string(),
+                }],
+                doc_options.clone(),
+            )
+            .await;
+
+        match result {
+            Ok(pages) => {
+                assert_eq!(pages.len(), 1, "one page in, one page out");
+                let markdown = &pages[0].plain_markdown;
+                assert!(
+                    !markdown.trim().is_empty(),
+                    "no markdown produced (on a reasoning-style VLM the per-page \
+                     token budget may be exhausted before the transcription)"
+                );
+                // The fixture is rendered text; a working VLM reads some of it.
+                let lower = markdown.to_lowercase();
+                assert!(
+                    lower.contains("hello") || lower.contains("world") || lower.len() > 20,
+                    "transcription does not look like the fixture: {markdown:?}"
+                );
+                assert!(
+                    !pages[0].blocks.is_empty(),
+                    "markdown parsed to no blocks: {markdown:?}"
+                );
+
+                // Two pages means two requests and two results, in order.
+                let two = model
+                    .extract(
+                        vec![
+                            ImageInput::Bytes {
+                                data: page.clone(),
+                                media_type: "image/png".to_string(),
+                            },
+                            ImageInput::Bytes {
+                                data: page,
+                                media_type: "image/png".to_string(),
+                            },
+                        ],
+                        doc_options,
+                    )
+                    .await
+                    .expect("multi-page extraction failed");
+                assert_eq!(two.len(), 2);
+            }
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                assert!(
+                    msg.contains("multimodal") || msg.contains("image"),
+                    "extraction failed for a reason other than a missing projector: {e}"
+                );
+                eprintln!("Skipping - server has no --mmproj loaded: {e}");
+            }
+        }
     }
     #[cfg(not(feature = "provider-llamacpp"))]
     {

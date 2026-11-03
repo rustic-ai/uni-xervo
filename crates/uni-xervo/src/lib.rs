@@ -75,11 +75,11 @@
 pub mod api;
 pub mod cache;
 // Shared document-VLM output parsers, used by any provider that runs such a
-// model (`local/onnx`, `local/mistralrs`).
+// model (`local/onnx`, `remote/llamacpp`).
 #[cfg(any(
     feature = "provider-onnx",
     feature = "provider-onnx-dynamic",
-    feature = "provider-mistralrs"
+    feature = "provider-llamacpp"
 ))]
 mod doc_parse;
 pub mod error;
