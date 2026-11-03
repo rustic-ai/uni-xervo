@@ -15,10 +15,11 @@
 //! The actual VLM inference loop (vision encoder forward + LLM decoder
 //! generation) is deferred to a follow-up that picks concrete ONNX-exported
 //! variants and validates them end-to-end. Until then, `extract()` returns
-//! `RuntimeError::Unavailable` with a clear message. The olmOCR-2 path is now
-//! served on the `local/mistralrs` vision pipeline instead — see
-//! `provider::mistralrs`. Catalog authors can register `document_extract/*`
-//! aliases now and they will pass validation.
+//! `RuntimeError::Unavailable` with a clear message. The olmOCR-2 path is
+//! served by `remote/llamacpp` instead, which runs a GGUF document VLM on a
+//! `llama-server` started with `--mmproj` — see
+//! [`crate::provider::llamacpp`]. Catalog authors can register
+//! `document_extract/*` aliases here now and they will pass validation.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -79,8 +80,8 @@ impl DocumentExtractionModel for OnnxDocumentExtractor {
         //
         //   - Granite-Docling: official IBM repo is SafeTensors only.
         //   - MinerU 2.5: no public ONNX export at time of writing.
-        //   - olmOCR-2: no public ONNX export — now served via the
-        //     `local/mistralrs` vision pipeline instead.
+        //   - olmOCR-2: no public ONNX export — served via `remote/llamacpp`
+        //     against a `llama-server` with a projector instead.
         //
         // When an official ONNX export lands, the wiring is small: download
         // ONNX + tokenizer, preprocess pages via `image::preprocess_batch`,
@@ -94,8 +95,9 @@ impl DocumentExtractionModel for OnnxDocumentExtractor {
             "local/onnx document_extract invoked but no official ONNX export of \
              the target VLM has been validated yet. The style-aware parsers \
              (`crate::doc_parse`) and the autoregressive decoder helper are \
-             production-ready; wiring is gated on an upstream ONNX release. For \
-             olmOCR-2, use the local/mistralrs vision pipeline. Returning \
+             production-ready; wiring is gated on an upstream ONNX release. \
+             Point a remote/llamacpp document_extract alias at a llama-server \
+             started with --mmproj and a GGUF document VLM instead. Returning \
              Unavailable."
         );
         Err(RuntimeError::Unavailable)

@@ -1,10 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "llama.cpp Server Provider Options",
-  "description": "Options for the remote/llamacpp embedding provider. It targets a llama.cpp `llama-server` and runs a tokenizer-aware truncation pre-pass (via the server's native /tokenize endpoint) because llama-server never truncates embedding input.",
+  "description": "Options for the remote/llamacpp provider, which targets a llama.cpp `llama-server`. `base_url` is required for every task. The embed task additionally requires `max_input_tokens` and `embedding_dimensions` and runs a tokenizer-aware truncation pre-pass (via the server's native /tokenize endpoint), because llama-server never truncates embedding input. The document_extract task takes one optional key, `style`, naming the output dialect of the loaded document VLM. The generate and rerank tasks take no options of their own: whether generate accepts images depends on the server being started with --mmproj, and rerank needs the server started with --reranking. Both are properties of the server process, not of the alias. Keys marked as belonging to one task are rejected for the others rather than ignored.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["base_url", "max_input_tokens", "embedding_dimensions"],
+  "required": [
+    "base_url"
+  ],
   "properties": {
     "base_url": {
       "type": "string",
@@ -14,17 +16,27 @@
     "tokenizer_base_url": {
       "type": "string",
       "format": "uri",
-      "description": "Server root used for the native /tokenize endpoint (which lives outside /v1). Defaults to base_url with one trailing /v1 segment removed."
+      "description": "Embed task only. Server root used for the native /tokenize endpoint (which lives outside /v1). Defaults to base_url with one trailing /v1 segment removed."
     },
     "max_input_tokens": {
       "type": "integer",
       "minimum": 3,
-      "description": "Total token budget per input INCLUDING the model's special tokens (512 for BGE / BERT models). Inputs that would exceed it are truncated client-side to the first max_input_tokens-1 ids plus the trailing special token. Must not exceed the server's --ubatch-size or --ctx-size."
+      "description": "Embed task only. Total token budget per input INCLUDING the model's special tokens (512 for BGE / BERT models). Inputs that would exceed it are truncated client-side to the first max_input_tokens-1 ids plus the trailing special token. Must not exceed the server's --ubatch-size or --ctx-size."
     },
     "embedding_dimensions": {
       "type": "integer",
       "minimum": 1,
-      "description": "Expected embedding vector width (384 for bge-small-en-v1.5). Responses with a different width are rejected."
+      "description": "Embed task only. Expected embedding vector width (384 for bge-small-en-v1.5). Responses with a different width are rejected."
+    },
+    "style": {
+      "type": "string",
+      "enum": [
+        "granite-docling",
+        "mineru",
+        "olmocr"
+      ],
+      "default": "olmocr",
+      "description": "Document extract task only. Output dialect of the document VLM the server loaded, which selects the parser: olmOCR-2 Markdown, MinerU 2.5 Markdown, or Granite-Docling DocTags. It must match the model actually loaded - the three families emit different syntax for the same page."
     },
     "api_key_env": {
       "type": "string",
@@ -34,7 +46,7 @@
       "type": "integer",
       "minimum": 1,
       "default": 60,
-      "description": "Per-HTTP-request timeout for the /tokenize and /v1/embeddings calls. The alias-level `timeout` still bounds the whole embed call."
+      "description": "Per-HTTP-request timeout for the /tokenize, /v1/embeddings, /v1/chat/completions and /v1/rerank calls. Document extraction sends one request per page, so this bounds a page rather than the document. The alias-level `timeout` still bounds the whole call."
     }
   }
 }

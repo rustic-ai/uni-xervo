@@ -8,8 +8,8 @@ set -euo pipefail
 # or website/site/api/uni_xervo/index.html for the API reference.
 
 echo "Building rustdoc..."
-# Use explicit feature list instead of --all-features because
-# provider-mistralrs and gpu-cuda require a CUDA toolkit at build time.
+# Use explicit feature list instead of --all-features because gpu-cuda
+# requires a CUDA toolkit at build time.
 DOC_FEATURES="provider-candle,provider-onnx,provider-openai,provider-gemini,provider-vertexai,provider-mistral,provider-anthropic,provider-voyageai,provider-cohere,provider-azure-openai,provider-llamacpp"
 cargo doc -p uni-xervo --no-deps --features "$DOC_FEATURES"
 

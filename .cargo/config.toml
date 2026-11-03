@@ -6,7 +6,7 @@
 # package (`nvidia-driver-libs.i686` on Fedora, `libnvidia-cuda:i386` on
 # Debian/Ubuntu, etc.) is installed alongside the x86_64 one, both
 # `/usr/lib/libcuda.so` (32-bit) and `/usr/lib64/libcuda.so` (64-bit)
-# exist. Cargo build scripts (e.g. mistralrs-quant, candle-kernels) emit
+# exist. Cargo build scripts (e.g. candle-kernels) emit
 # `cargo:rustc-link-search=/usr/lib` early in the link line. The default
 # `rust-lld` walks the search path in order and resolves `-lcuda` against
 # whichever `libcuda.so` it finds first — the 32-bit one — and the link
@@ -23,7 +23,7 @@
 # library's ELF class and skips ones that don't match the target arch,
 # so the 32-bit `/usr/lib/libcuda.so` is silently bypassed in favor of
 # `/usr/lib64/libcuda.so`. This is also dramatically faster (~10×) than
-# rust-lld for large CUDA-enabled builds (mistralrs + candle CUDA + ORT).
+# rust-lld for large CUDA-enabled builds (candle CUDA + ORT).
 #
 # The mold setting is target-scoped to Linux only, so macOS / Windows
 # builds keep their default linkers.

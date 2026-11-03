@@ -1,6 +1,6 @@
 #![cfg(feature = "provider-onnx")]
 
-use hf_hub::{Cache, Repo, RepoType};
+use hf_hub::{HFClientBuilder, split_id};
 use ndarray::{Array2, Ix2, Ix3};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -57,31 +57,41 @@ async fn runtime_for(spec: ModelAliasSpec) -> std::sync::Arc<ModelRuntime> {
         .unwrap()
 }
 
-fn repo_for_spec(spec: &ModelAliasSpec) -> Repo {
-    match &spec.revision {
-        Some(revision) => {
-            Repo::with_revision(spec.model_id.clone(), RepoType::Model, revision.clone())
-        }
-        None => Repo::model(spec.model_id.clone()),
-    }
-}
-
-fn snapshot_file(spec: &ModelAliasSpec, filename: &str) -> std::path::PathBuf {
+/// Locate a file the provider has already pulled into the cache.
+///
+/// `local_files_only` keeps this a pure cache lookup — the provider's own load
+/// did the downloading, and a second network fetch here would make the test
+/// pass even if the provider had failed to materialize the snapshot.
+async fn snapshot_file(spec: &ModelAliasSpec, filename: &str) -> std::path::PathBuf {
     let cache_dir = resolve_cache_dir("onnx", &spec.model_id, &spec.options);
-    let cache = Cache::new(cache_dir);
-    cache
-        .repo(repo_for_spec(spec))
-        .get(filename)
-        .unwrap_or_else(|| panic!("missing snapshot file '{filename}' for {}", spec.model_id))
+    let client = HFClientBuilder::new()
+        .cache_dir(cache_dir)
+        .build()
+        .expect("failed to build HF client");
+    let (owner, name) = split_id(&spec.model_id);
+    client
+        .model(owner, name)
+        .download_file()
+        .filename(filename)
+        .maybe_revision(spec.revision.clone())
+        .local_files_only(true)
+        .send()
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "missing snapshot file '{filename}' for {}: {e}",
+                spec.model_id
+            )
+        })
 }
 
-fn tokenizer_for_spec(spec: &ModelAliasSpec) -> Tokenizer {
-    let tokenizer_path = snapshot_file(spec, "tokenizer.json");
+async fn tokenizer_for_spec(spec: &ModelAliasSpec) -> Tokenizer {
+    let tokenizer_path = snapshot_file(spec, "tokenizer.json").await;
     Tokenizer::from_file(tokenizer_path).expect("failed to load tokenizer")
 }
 
-fn config_for_spec(spec: &ModelAliasSpec) -> HfConfig {
-    let config_path = snapshot_file(spec, "config.json");
+async fn config_for_spec(spec: &ModelAliasSpec) -> HfConfig {
+    let config_path = snapshot_file(spec, "config.json").await;
     let config = std::fs::read_to_string(config_path).expect("failed to read config");
     serde_json::from_str(&config).expect("failed to parse config.json")
 }
@@ -170,8 +180,8 @@ async fn test_local_onnx_hf_sequence_classification_e2e() {
         .raw_tensor_model("raw/sequence-classify")
         .await
         .expect("failed to resolve onnx runner");
-    let tokenizer = tokenizer_for_spec(&spec);
-    let config = config_for_spec(&spec);
+    let tokenizer = tokenizer_for_spec(&spec).await;
+    let config = config_for_spec(&spec).await;
 
     let positive = tokenizer
         .encode("I love this movie.", true)
@@ -219,8 +229,8 @@ async fn test_local_onnx_hf_ner_e2e() {
         .raw_tensor_model("raw/ner")
         .await
         .expect("failed to resolve onnx runner");
-    let tokenizer = tokenizer_for_spec(&spec);
-    let config = config_for_spec(&spec);
+    let tokenizer = tokenizer_for_spec(&spec).await;
+    let config = config_for_spec(&spec).await;
 
     let text = "My name is Sarah and I live in London";
     let encoding = tokenizer

@@ -34,7 +34,7 @@ fn cache_root() -> PathBuf {
 
 /// Resolve the root cache directory for a provider (no model sub-directory).
 ///
-/// Used when setting a process-global cache env var (e.g. `HF_HOME` for mistralrs)
+/// Used when setting a process-global cache env var (e.g. `HF_HOME`)
 /// before the first model load.
 ///
 /// Priority:

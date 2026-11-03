@@ -8,7 +8,7 @@ capability ladder:
 | --- | --- | --- | --- | :-: |
 | `Native` | "what text is digitally embedded" | pure-Rust PDF text parse | ~free | no |
 | `Ocr` | "what text is visually present" (scans) | [`local/onnx` OCR](../reference/providers/onnx.md#ocr-only-keys-task-ocr) (PP-OCR det+rec) | low (CPU) | no |
-| `Vlm` | "what is the document *structure*" (tables/formulas/order) | [`local/mistralrs` olmOCR-2](../reference/providers/mistralrs.md#document-extraction-olmocr-2) | high (GPU) | **yes** |
+| `Vlm` | "what is the document *structure*" (tables/formulas/order) | [`remote/llamacpp` document VLM](../reference/providers/llamacpp.md#document_extract) | high (GPU) | **yes** |
 
 ## Why a separate crate
 
@@ -29,7 +29,7 @@ It still feels native to the `embed` / `generate` / `nlp` family via an
 - `pdf-input` (default) — pure-Rust native text extraction via `lopdf`.
 
 The OCR/VLM providers themselves are enabled on the `uni-xervo` dependency by
-your app (`provider-onnx`, `provider-mistralrs`).
+your app (`provider-onnx`, `provider-llamacpp`).
 
 ## Usage
 

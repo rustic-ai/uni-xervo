@@ -328,11 +328,11 @@ mod tests {
         {
             "alias": "chat/fast",
             "task": "generate",
-            "provider_id": "local/mistralrs",
-            "model_id": "mistralai/Mistral-7B-v0.1",
+            "provider_id": "remote/llamacpp",
+            "model_id": "local",
             "warmup": "background",
             "required": false,
-            "options": { "isq": "Q4K" }
+            "options": { "base_url": "http://127.0.0.1:8080/v1" }
         }
     ]"#;
 
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].alias, "embed/default");
         assert_eq!(specs[1].alias, "chat/fast");
-        assert_eq!(specs[1].options["isq"], "Q4K");
+        assert_eq!(specs[1].options["base_url"], "http://127.0.0.1:8080/v1");
     }
 
     #[test]

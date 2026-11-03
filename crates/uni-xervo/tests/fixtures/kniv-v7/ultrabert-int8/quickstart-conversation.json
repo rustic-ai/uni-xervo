@@ -1,0 +1,494 @@
+{
+ "case": "quickstart-conversation",
+ "input": {
+  "turns": [
+   [
+    "user",
+    "I moved to Lisbon last year and started at a bank."
+   ],
+   [
+    "assistant",
+    "Congratulations on the move!"
+   ]
+  ]
+ },
+ "run": "ultrabert-380m-v7b8ev",
+ "schema": "memory",
+ "variant": "int8",
+ "windows": [
+  {
+   "analysed_words": 17,
+   "coref": [],
+   "entities": [
+    {
+     "speaker": true,
+     "text": "user",
+     "type": "speaker"
+    },
+    {
+     "speaker": true,
+     "text": "assistant",
+     "type": "speaker"
+    },
+    {
+     "mentions": [
+      "moved"
+     ],
+     "spans": [
+      [
+       1,
+       2
+      ]
+     ],
+     "text": "moved",
+     "type": "event"
+    },
+    {
+     "mentions": [
+      "Lisbon"
+     ],
+     "spans": [
+      [
+       3,
+       4
+      ]
+     ],
+     "text": "Lisbon",
+     "type": "location"
+    },
+    {
+     "mentions": [
+      "last year"
+     ],
+     "spans": [
+      [
+       4,
+       6
+      ]
+     ],
+     "text": "last year",
+     "type": "time"
+    },
+    {
+     "mentions": [
+      "a bank"
+     ],
+     "spans": [
+      [
+       9,
+       11
+      ]
+     ],
+     "text": "a bank",
+     "type": "organization"
+    },
+    {
+     "mentions": [
+      "the move"
+     ],
+     "spans": [
+      [
+       14,
+       16
+      ]
+     ],
+     "text": "the move",
+     "type": "event"
+    }
+   ],
+   "facts": [
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 5.282,
+     "modality": "planned",
+     "polarity": "positive",
+     "relation": "participant in",
+     "tail": 2,
+     "time": 4
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 2.36,
+     "modality": "planned",
+     "polarity": "positive",
+     "relation": "attended",
+     "tail": 2,
+     "time": 4
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 2.285,
+     "modality": "planned",
+     "polarity": "positive",
+     "relation": "completed",
+     "tail": 2,
+     "time": 4
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 1.809,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "plans to",
+     "tail": 2,
+     "time": 4
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 3.159,
+     "modality": "desired",
+     "polarity": "positive",
+     "relation": "visited",
+     "tail": 3,
+     "time": null
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 1.558,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "located in",
+     "tail": 3,
+     "time": null
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 1.394,
+     "modality": "desired",
+     "polarity": "positive",
+     "relation": "residence",
+     "tail": 3,
+     "time": null
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 3.734,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "employer",
+     "tail": 5,
+     "time": null
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 1.432,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "member of",
+     "tail": 5,
+     "time": null
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 2.16,
+     "modality": "planned",
+     "polarity": "positive",
+     "relation": "participant in",
+     "tail": 6,
+     "time": 4
+    },
+    {
+     "head": 0,
+     "holder": 0,
+     "margin": 0.485,
+     "modality": "planned",
+     "polarity": "positive",
+     "relation": "attended",
+     "tail": 6,
+     "time": 4
+    },
+    {
+     "head": 2,
+     "holder": 0,
+     "margin": 7.416,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "occurred at",
+     "tail": 4,
+     "time": 4
+    },
+    {
+     "head": 2,
+     "holder": 0,
+     "margin": 5.522,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "scheduled for",
+     "tail": 4,
+     "time": 4
+    },
+    {
+     "head": 5,
+     "holder": 1,
+     "margin": 2.403,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "located in",
+     "tail": 3,
+     "time": null
+    },
+    {
+     "head": 6,
+     "holder": 0,
+     "margin": 5.196,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "occurred at",
+     "tail": 4,
+     "time": 4
+    },
+    {
+     "head": 6,
+     "holder": 0,
+     "margin": 4.018,
+     "modality": "asserted",
+     "polarity": "positive",
+     "relation": "scheduled for",
+     "tail": 4,
+     "time": 4
+    }
+   ],
+   "ner": [
+    [
+     "GPE",
+     3,
+     4
+    ],
+    [
+     "DATE",
+     4,
+     6
+    ]
+   ],
+   "sentence_layers": [
+    {
+     "cls": [
+      "Inform"
+     ],
+     "sentiment": "neutral",
+     "whole": true
+    },
+    {
+     "cls": [
+      "Social"
+     ],
+     "sentiment": "positive",
+     "whole": true
+    }
+   ],
+   "sentences": [
+    {
+     "end": 12,
+     "speaker": "user",
+     "start": 0
+    },
+    {
+     "end": 17,
+     "speaker": "assistant",
+     "start": 12
+    }
+   ],
+   "srl": [
+    {
+     "args": [
+      [
+       "ARG1",
+       0,
+       1
+      ],
+      [
+       "ARG2",
+       2,
+       4
+      ],
+      [
+       "ARGM-TMP",
+       4,
+       6
+      ]
+     ],
+     "predicate": 1
+    },
+    {
+     "args": [
+      [
+       "ARG1",
+       0,
+       1
+      ],
+      [
+       "ARG2",
+       8,
+       11
+      ]
+     ],
+     "predicate": 7
+    },
+    {
+     "args": [
+      [
+       "ARG2",
+       13,
+       16
+      ]
+     ],
+     "predicate": 12
+    },
+    {
+     "args": [],
+     "predicate": 15
+    }
+   ],
+   "tokens": [
+    "I",
+    "moved",
+    "to",
+    "Lisbon",
+    "last",
+    "year",
+    "and",
+    "started",
+    "at",
+    "a",
+    "bank",
+    ".",
+    "Congratulations",
+    "on",
+    "the",
+    "move",
+    "!"
+   ],
+   "words": [
+    {
+     "deprel": "nsubj",
+     "head": 2,
+     "lemma": "I",
+     "morph": "Case=Nom|Number=Sing|Person=1|PronType=Prs",
+     "pos": "PRON"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "move",
+     "morph": "Mood=Ind|Number=Sing|Person=1|Tense=Past|VerbForm=Fin",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "case",
+     "head": 4,
+     "lemma": "to",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "obl",
+     "head": 2,
+     "lemma": "Lisbon",
+     "morph": "Number=Sing",
+     "pos": "PROPN"
+    },
+    {
+     "deprel": "amod",
+     "head": 6,
+     "lemma": "last",
+     "morph": "Degree=Pos",
+     "pos": "ADJ"
+    },
+    {
+     "deprel": "obl:tmod",
+     "head": 2,
+     "lemma": "year",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "cc",
+     "head": 8,
+     "lemma": "and",
+     "morph": "_",
+     "pos": "CCONJ"
+    },
+    {
+     "deprel": "conj",
+     "head": 2,
+     "lemma": "start",
+     "morph": "Mood=Ind|Number=Sing|Person=1|Tense=Past|VerbForm=Fin",
+     "pos": "VERB"
+    },
+    {
+     "deprel": "case",
+     "head": 11,
+     "lemma": "at",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "det",
+     "head": 11,
+     "lemma": "a",
+     "morph": "Definite=Ind|PronType=Art",
+     "pos": "DET"
+    },
+    {
+     "deprel": "obl",
+     "head": 8,
+     "lemma": "bank",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "punct",
+     "head": 2,
+     "lemma": ".",
+     "morph": "_",
+     "pos": "PUNCT"
+    },
+    {
+     "deprel": "root",
+     "head": 0,
+     "lemma": "congratulation",
+     "morph": "Number=Plur",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "case",
+     "head": 16,
+     "lemma": "on",
+     "morph": "_",
+     "pos": "ADP"
+    },
+    {
+     "deprel": "det",
+     "head": 16,
+     "lemma": "the",
+     "morph": "Definite=Def|PronType=Art",
+     "pos": "DET"
+    },
+    {
+     "deprel": "nmod",
+     "head": 13,
+     "lemma": "move",
+     "morph": "Number=Sing",
+     "pos": "NOUN"
+    },
+    {
+     "deprel": "punct",
+     "head": 13,
+     "lemma": "!",
+     "morph": "_",
+     "pos": "PUNCT"
+    }
+   ]
+  }
+ ]
+}

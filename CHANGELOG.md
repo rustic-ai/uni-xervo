@@ -4,6 +4,260 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-02
+
+### Added
+
+- **`remote/llamacpp` now serves `generate`, `rerank` and `document_extract`
+  as well as `embed`.** One `llama-server` process serves one model, so each
+  task is an alias pointing at its own `base_url`.
+
+  `generate` posts to `/v1/chat/completions` including the multimodal content
+  parts array, so **the same alias does text and vision**. There is
+  deliberately no option to switch between them: whether images are accepted
+  depends on the server having been started with `--mmproj`, which is a
+  property of the server process rather than something the catalog can know.
+  `ImageInput::Bytes` becomes a `data:` URI and `ImageInput::Url` is passed
+  through verbatim. On a reasoning model the chain of thought arrives in
+  `reasoning_content` and only `content` becomes `GenerationResult.text`, so a
+  `max_tokens` exhausted during thinking returns non-zero usage with empty
+  text — raise the budget.
+
+  `rerank` posts to the native `/v1/rerank` with the `documents` key. `top_n`
+  is deliberately not sent, since `RerankerModel::rerank` contracts to score
+  every input document; truncate the returned slice, which is already sorted
+  descending. Indices are mapped back to the original positions and checked —
+  an index past the end, a repeat, or a missing result is an error rather than
+  a score silently attributed to the wrong document. Scores are a **sigmoid**
+  of the cross-encoder logit, bounded to `[0, 1]`, where `local/onnx` returns
+  the raw unbounded logit: rankings agree, absolute thresholds do not
+  transfer, and neither is rescaled.
+
+  `document_extract` runs a GGUF document VLM — olmOCR-2, MinerU 2.5 or
+  Granite-Docling — over the same chat endpoint with olmOCR's reference prompt
+  and sampling policy, and parses the output with the shared `doc_parse`
+  module. Pages are sent one request each, in order, so a long document is not
+  capped by one `--ctx-size`. The new `style` option names the model's output
+  dialect and is value-checked at catalog registration, so a typo fails when
+  the catalog is read rather than on the first extraction.
+
+  Options are now task-keyed: `base_url` is required everywhere,
+  `max_input_tokens` / `embedding_dimensions` / `tokenizer_base_url` are
+  embed-only, `style` is document-extract-only, and a key used on the wrong
+  task is **rejected** with a message naming the task it belongs to rather
+  than silently ignored.
+
+- **kniv v7 structured NLP on `local/onnx`.** The `nlp` task now serves
+  `dragonscale-ai/kniv-v7-xlarge-u-en` (UltraBERT-380M) and
+  `kniv-v7-xlarge-d-en` (DeBERTa-v3-large) alongside the v1 cascade. v7 is a
+  different model rather than a bigger one: eight graphs instead of one,
+  windows of up to 512 whole-sentence words instead of 128 subwords, and —
+  beyond POS / NER / DEP / SRL / dialogue acts — morphology, lemmas,
+  sentiment, coreference clusters, typed entities and entity-to-entity facts
+  carrying polarity, modality, holder and time. Entity types and relations are
+  supplied **per request** by name and description and scored across the
+  window, so a schema the model has never seen needs no fine-tuning.
+
+  The generation is inferred from the model repo (`onnx/onnx_meta.json` means
+  v7) and can be pinned with `"generation"`. The v1 code path is untouched and
+  still selected for v1 repos.
+
+  Most of a v7 model's behaviour is host code, not graph weights: BIO Viterbi
+  under proper transition constraints, one Chu-Liu-Edmonds tree per sentence
+  with a forced single root, predicate-aware SRL that pins `V` to its
+  predicate, greedy flat span decoding, union-find coreference clusters with
+  learned boundaries, and calibrated per-relation margins. All of it is a port
+  of the model's Python reference runtime, and
+  `local_onnx_nlp_v7_golden_expensive_test` replays the reference's own output
+  on committed fixtures for both encoders: every tag, head, span, entity, fact
+  and attribute matches exactly, with margins inside 2e-3 (the reference
+  rounds them to three decimals, and the INT8 graphs reduce in whatever order
+  each runtime's thread partitioning picks).
+  `scripts/gen-kniv-v7-goldens.py` regenerates those fixtures.
+
+  New option keys: `variant` — a precision *fallback chain*, so `"int8,fp16"`
+  resolves per graph to `plain-int8`, `marker-int8` and `label-fp16`, the label
+  graph publishing no INT8 file because it runs once per schema and is cached
+  — plus `calibration_path`, `label_bank_path` and `generation`. Only the files
+  a variant needs are downloaded. The v1-only keys (`onnx_path`,
+  `label_maps_path`, `max_seq_len`) are rejected for a v7 model at catalog
+  registration, before a multi-gigabyte download rather than after; v7 reads
+  its graph set and window size from `onnx_meta.json`.
+
+  `NlpRequest` gains `turns` (a conversation, where each speaker becomes an
+  entity in its own right, so a first-person statement can be stored about the
+  speaker), `schema` and `calibration`. `NlpResult` gains `windows`, and the
+  v1-shaped fields are filled as a flattened projection of them so existing
+  callers keep working. `NlpTasks` gains `MORPH`, `LEMMA`, `SENTIMENT`,
+  `COREF`, `ENTITIES` and `FACTS`, with `CASCADE` and `LINGUISTIC` as
+  convenience sets; requesting a narrow set skips the graph calls behind the
+  heads nothing asked for. `NlpModel::calibration()` exposes the release's
+  dev-tuned decoding thresholds, which `NlpRequest::calibration` overrides per
+  request.
+
+  Unlike the v1 path, the v7 path honours the `graph_optimization_level`,
+  `intra_op_num_threads` and `inter_op_num_threads` options it validates.
+
+### Removed
+
+- **`local/mistralrs` and the `provider-mistralrs` feature are gone.** The
+  published `mistralrs` crate was frozen at 0.8.1 (2026-04-02) while upstream
+  moved to 0.9.x, and that release could not run its own vision pipeline:
+  SmolVLM/Idefics3 panicked in the forward pass and Qwen2-VL failed with an
+  out-of-bounds index-select, so the `generate` (vision) and
+  `document_extract` paths it nominally owned did not work. It also pulled 247
+  of the 565 crates in the default dependency tree — an AV1 encoder, the
+  `symphonia` audio family, `html5ever` — and made `tokenizers` compile three
+  times over. The default tree is now 318 crates.
+
+  **Replacements**: local text and vision `generate` and `document_extract`
+  move to `remote/llamacpp` against a `llama-server` (see Added). Local
+  `embed` is served by `local/candle` and `local/onnx`.
+
+  **No replacement**: image generation (`pipeline: "diffusion"`) and speech
+  synthesis (`pipeline: "speech"`) lose their only provider.
+  `llama-server` has no image-generation endpoint, and its `POST /tts` is
+  absent from current builds. `GenerationResult.images`, `.audio` and
+  `GenerationOptions.width` / `height` remain public API but are now populated
+  and read by no bundled provider, so a provider can be added later without an
+  API break.
+
+  This changes the behaviour of a default `cargo build`: generation and
+  document extraction no longer work out of the box without a running
+  `llama-server`. Hence the minor bump rather than a patch.
+
+  Also removed with it: `schemas/provider-options/mistralrs.schema.json`, its
+  `model-catalog.schema.json` branch, the `mistralrs?/cuda` and
+  `mistralrs?/metal` forwards in `gpu-cuda` / `gpu-metal`, the provider's
+  `prefetch` arm, and the `force_cpu` option — `execution_providers` on
+  `local/onnx` is now the crate's only per-spec device control.
+
+### Changed
+
+- **`remote/openai` no longer discards image blocks.** Every message was built
+  as `{"role": …, "content": msg.text()}`, and `Message::text()` keeps only
+  `ContentBlock::Text`, so an image passed to an OpenAI-compatible endpoint
+  vanished with no error. Messages are now built by a shared
+  `build_openai_chat_messages` helper: all-text messages still emit a plain
+  string `content`, and a message containing an image emits a content-parts
+  array in block order. `remote/mistral` and `remote/cohere` have the same bug
+  with different vendor part shapes, and are left for a change testable
+  against their live APIs.
+
+- **Dependencies refreshed to their latest compatible releases.** Every
+  semver-compatible update was taken (`cargo update`: tokio 1.54.1, serde
+  1.0.229, serde_json 1.0.154, thiserror 2.0.21, anyhow 1.0.104, async-trait
+  0.1.92, tracing 0.1.44, bitflags 2.13.2, futures 0.3.34, indexmap 2.14.2,
+  ndarray 0.17.2, dashmap 6.2.1, image 0.25.10, reqwest 0.13.5, mistralrs
+  0.8.1, tokenizers 0.23.2, criterion 0.8.2, metrics 0.24.6, metrics-util
+  0.20.4, tempfile 3.27.0 and their transitive closure), plus three manifest
+  bumps past the declared range: `base64` 0.22 → 0.23, `lopdf` 0.36 → 0.46 and
+  `hayro` 0.7 → 0.8.
+
+  `hayro` 0.8 moved the output-buffer settings (scale, background colour) out
+  of `RenderSettings` into a new `PixmapSettings`, and dropped the unused
+  `width` / `height` overrides, so `uni-xervo-pdf`'s rasterizer was adapted
+  and the settings hoisted out of the per-page loop. Nothing else needed a
+  source change.
+
+  Because `tokenizers` moved, the kniv v7 golden conformance suite was re-run
+  against both released encoders: subword alignment, and every tag, head,
+  span, entity and fact downstream of it, still match the reference.
+
+  The four dependencies this entry originally held back have since moved too —
+  see **Every dependency is now at its latest release** below.
+
+- **Every dependency is now at its latest release.** The remaining
+  semver-compatible moves were taken (`regex` 1.13.1 — the cap `mistralrs`
+  imposed through `Inflector → variantly → serde-saphyr`, now lifted — plus
+  `aes` 0.9.4, `cc` 1.11.0, `ureq` 3.5.1 and the `hayro` sub-crates), along
+  with four manifest bumps that each needed source changes or a feature
+  review.
+
+  **`candle` 0.10 → 0.11.1.** No source change at all, and it collapses a
+  duplicate: candle 0.10 pinned `tokenizers` 0.22 while this crate declares
+  0.23, so the default tree compiled `tokenizers` twice. It now builds once.
+
+  **`hayro` 0.8 → 0.9.0** in `uni-xervo-pdf`. No source change; the
+  rasterizer's own tests render a generated PDF and still pass.
+
+  **`ort` `=2.0.0-rc.12` → `=2.0.0-rc.15`.** `Session::builder` now takes an
+  explicit `&Environment` instead of reaching for a hidden global, so there is
+  a process-global `Environment` behind `onnx_ep::ort_environment()` that all
+  seven session sites borrow. Execution providers deliberately stay on the
+  session builder rather than moving to the environment, because EP selection
+  is per alias here. `ort::execution_providers` moved to `ort::ep`, and the
+  vendor EP types (`ROCm`, `DirectML`, `OpenVINO`, `QNN`, `TensorRT`,
+  `WebGPU`) became feature-gated in `ort`, so `provider-onnx-dynamic` now
+  forwards those six `ort` features — they only switch on the registration
+  API, since the kernels come from the library supplied via `ORT_DYLIB_PATH`.
+
+  rc.15 also fixes the re-entrant `OnceLock` deadlock
+  ([pykeio/ort#560](https://github.com/pykeio/ort/issues/560)) that
+  `preflight_ort_dylib` was written to work around: a missing dylib now
+  panics instead of hanging. The preflight stays — a panic from inside a
+  library is still worse than a `Config` error naming the alias and the path
+  — but it is documented as a fast-fail rather than a workaround.
+
+  **`hf-hub` 0.5 → 1.0.0.** A rewrite: `HFClient` / `HFClientBuilder` /
+  `HFRepository` replace `Api` / `ApiBuilder` / `Repo`, repositories are named
+  by separate owner and name rather than one `owner/name` string, the revision
+  is passed per download call rather than baked into the repo handle, and the
+  `tokio` feature is gone (async is the default; `blocking` is now the opt-in).
+  The ten download sites across `local/candle`, `local/onnx` and
+  `local/whisper-cpp` now share one `crate::hf::HfModelRepo` wrapper, which
+  holds the alias's revision so a single repository cannot be read at two
+  revisions by accident.
+
+  `local/onnx`'s `raw` task changed shape rather than just its calls: it used
+  to list a repo, download each file, then reconstruct the snapshot directory
+  from `Cache::pointer_path`. 1.0's `snapshot_download` returns that directory
+  itself, so the reconstruction is gone, and `select_onnx_artifact` now takes
+  the file names instead of the hub's info type — which is what lets it be
+  tested without building a full API response.
+
+  **Existing caches are preserved.** Verified by populating a cache with 0.5,
+  then reading it with 1.0: the blobs were reused byte-for-byte, same inodes,
+  no re-download. Verified too against a cold cache, which re-downloads and
+  rebuilds the same layout.
+
+  hf-hub 1.0 is the one bump here that costs rather than saves: it depends on
+  the Xet stack (`hf-xet`, `xet-client`, `xet-runtime`, `xet-data`,
+  `xet-core-structures`, `reqwest-middleware`) unconditionally, with no feature
+  to opt out, which takes the default tree from 318 crates to 397. Part of that
+  is bought back by dropping `tokenizers`' `http` feature, which exists for
+  `Tokenizer::from_pretrained` — a call this crate never makes, since tokenizers
+  are always loaded from a path a provider downloaded itself — and was quietly
+  pulling a second, older major of `hf-hub` into the graph beside the one in
+  use.
+
+- **The declared MSRV is now 1.95, up from 1.88.** The old figure was not a
+  policy this release abandoned — it was already wrong. `hayro` has required
+  1.92 since 0.7, which 0.18.1 shipped with, so the published `rust-version`
+  has understated the real floor for a release already. CI builds on `stable`
+  and so never noticed.
+
+  1.95 is the true floor for the default feature set, set by `sysinfo` 0.39.6
+  by way of `hf-hub` 1.0 → `hf-xet` → `xet-runtime`. `ort` and the `hayro`
+  family account for the 1.92 step below it. The figure in `Cargo.toml`,
+  `CONTRIBUTING.md`, `DEVELOPMENT.md` and the getting-started page now agree
+  with what cargo will actually enforce.
+- **Documentation version snippets and backend counts updated for 0.19.**
+  `uni-xervo = "0.18"` would not resolve a 0.19 release, and the default build
+  no longer has "three local backends" now that `local/mistralrs` is gone — it
+  has two, plus nine remote providers. `docs/USER_GUIDE.md` was further behind
+  than the rest: its install snippets still said `"0.9"`, unchanged since the
+  0.9.0 feature-surface rework.
+
+- **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
+  struct literals no longer compile. Build one with `NlpRequest::new(text,
+  tasks)` or `NlpRequest::from_turns(turns, tasks)` and chain `with_schema` /
+  `with_turns` / `with_calibration`. This is the last change of its kind:
+  further request inputs can now be added without breaking callers.
+- **`NlpTasks::ALL` now includes the v7 heads.** Code that means exactly the
+  five cascade heads should say `NlpTasks::CASCADE`, which is also what a v1
+  model now reports from `supported_tasks()` instead of claiming `ALL`.
+
 ## [0.18.1] - 2026-09-20
 
 ### Fixed

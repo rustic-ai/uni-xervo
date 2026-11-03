@@ -645,6 +645,7 @@ impl NlpModel for MockNlpModel {
                 frames: Vec::new(),
                 speech_acts: Vec::new(),
                 entities: Vec::new(),
+                windows: Vec::new(),
             })
             .collect())
     }

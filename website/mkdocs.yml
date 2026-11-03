@@ -45,7 +45,6 @@ nav:
           - Overview: reference/providers/index.md
           - local/candle: reference/providers/candle.md
           - local/onnx: reference/providers/onnx.md
-          - local/mistralrs: reference/providers/mistralrs.md
           - local/whisper-cpp: reference/providers/whisper-cpp.md
           - remote/openai: reference/providers/openai.md
           - remote/gemini: reference/providers/gemini.md

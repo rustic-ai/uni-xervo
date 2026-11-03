@@ -163,18 +163,6 @@ async fn run() -> anyhow::Result<()> {
                     "  warn  {provider_id}: compiled without provider-candle feature, skipping"
                 );
             }
-            "local/mistralrs" => {
-                #[cfg(feature = "provider-mistralrs")]
-                {
-                    use uni_xervo::provider::mistralrs::LocalMistralRsProvider;
-                    builder = builder.register_provider(LocalMistralRsProvider::new());
-                    registered.insert(provider_id.to_string());
-                }
-                #[cfg(not(feature = "provider-mistralrs"))]
-                eprintln!(
-                    "  warn  {provider_id}: compiled without provider-mistralrs feature, skipping"
-                );
-            }
             "local/onnx" => {
                 #[cfg(feature = "provider-onnx")]
                 {

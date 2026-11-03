@@ -4,7 +4,7 @@ This document covers local development workflows for `uni-xervo`.
 
 ## Prerequisites
 
-- Rust toolchain `1.88+`
+- Rust toolchain `1.95+`
 - `cargo fmt`
 - Optional: `cargo-nextest`
 - Optional (website docs): Python + Poetry

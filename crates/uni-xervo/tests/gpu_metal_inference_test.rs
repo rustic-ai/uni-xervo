@@ -5,7 +5,7 @@
 //! called *CoreML*, not "Metal": ONNX Runtime has no Metal execution
 //! provider, and CoreML is how ORT reaches the Apple GPU and the Neural
 //! Engine. The `gpu-metal` feature switches on `ort/coreml` alongside the
-//! Metal kernels in candle and mistral.rs.
+//! Metal kernels in candle.
 //!
 //! All tests are gated by both:
 //!
@@ -26,10 +26,6 @@
 //! - CoreML silently declines operators it cannot handle, falling back to CPU
 //!   per-op. These tests therefore assert that the session *builds and runs*
 //!   with CoreML requested, not that every kernel executed on the ANE.
-//!
-//! mistral.rs generation on Metal is deliberately not covered here: it
-//! auto-selects the device from the feature flag and exposes no
-//! `execution_providers` knob, so there is nothing EP-specific to assert.
 //!
 //! Run with:
 //!

@@ -200,15 +200,14 @@ ModelRuntime::builder()
 The order in `execution_providers` is priority; ORT silently falls
 through per-op when an EP can't run a particular kernel.
 
-For `local/mistralrs` models the equivalent per-spec control is
-`force_cpu: true` — see the
-[mistralrs device placement reference](../reference/providers/mistralrs.md#device-placement).
-The two mechanisms can be combined in a single catalog (an ONNX
-embedder on CPU + a mistralrs generator on GPU) without conflict.
+`execution_providers` is the only per-spec device control in the
+crate: `local/candle` takes its device from the build features alone,
+and `remote/llamacpp` runs inference in the server process, where the
+device is a `llama-server` flag rather than a catalog option. The two
+can still be mixed freely in one catalog.
 
-On a build with neither `gpu-cuda` nor `gpu-metal`, both
-`execution_providers` and `force_cpu` are no-ops — the only available
-device is CPU.
+On a build with neither `gpu-cuda` nor `gpu-metal`,
+`execution_providers` is a no-op — the only available device is CPU.
 
 ## Developer workflow
 

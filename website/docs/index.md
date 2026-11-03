@@ -19,7 +19,7 @@ Uni-Xervo is a unified Rust runtime for model serving across local and remote pr
   - inference timeout (`timeout`)
   - load timeout (`load_timeout`)
   - retry policy (`retry`)
-- Multimodal generation: vision (image understanding), diffusion (image generation), and speech synthesis via `local/mistralrs`.
+- Multimodal generation: vision (image understanding) via `remote/llamacpp` against a `llama-server` started with `--mmproj`.
 - Strict provider option validation with JSON Schema support.
 
 ## Capability matrix
@@ -28,7 +28,6 @@ Uni-Xervo is a unified Rust runtime for model serving across local and remote pr
 | --- | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | --- |
 | `local/candle` | local | ✓ | | | | | | | | | | N/A |
 | `local/onnx` | local | ✓ | ✓ | | ✓ | ✓ | | ✓ | ✓ | | scaffold | N/A |
-| `local/mistralrs` | local | ✓ | | ✓ | | | | | | | ✓ | N/A |
 | `local/whisper-cpp` | local | | | | | | | | | ✓ | | N/A |
 | `remote/openai` | remote | ✓ | | ✓ | | | | | | | | `OPENAI_API_KEY` |
 | `remote/gemini` | remote | ✓ | | ✓ | | | ✓ | | | | | `GEMINI_API_KEY` |
@@ -38,7 +37,7 @@ Uni-Xervo is a unified Rust runtime for model serving across local and remote pr
 | `remote/voyageai` | remote | ✓ | ✓ | | | | | | | | | `VOYAGE_API_KEY` |
 | `remote/cohere` | remote | ✓ | ✓ | ✓ | | | ✓ | | | | | `CO_API_KEY` |
 | `remote/azure-openai` | remote | ✓ | | ✓ | | | | | | | | `AZURE_OPENAI_API_KEY` |
-| `remote/llamacpp` | remote | ✓ | | | | | | | | | | none (optional `api_key_env`) |
+| `remote/llamacpp` | remote | ✓ | ✓ | ✓ | | | | | | | ✓ | none (optional `api_key_env`) |
 
 **Reading the matrix**:
 

@@ -35,13 +35,12 @@
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
+use crate::hf::HfModelRepo;
 use crate::traits::{
     AudioInput, LoadedModelHandle, ModelInfo, ModelProvider, ProviderCapabilities, ProviderHealth,
     TranscribeOptions, TranscribeResult, TranscribeSegment, TranscribeWord, TranscriptionModel,
 };
 use async_trait::async_trait;
-use hf_hub::api::tokio::ApiBuilder;
-use hf_hub::{Repo, RepoType};
 use std::path::Path;
 use std::sync::Arc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -303,17 +302,10 @@ async fn download_ggml_model(
     cache_dir: &Path,
     filename: &str,
 ) -> Result<std::path::PathBuf> {
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .map_err(|e| {
-            RuntimeError::Load(format!("whisper-cpp HF api init failed for '{alias}': {e}"))
-        })?;
-    let repo = match revision {
-        Some(rev) => Repo::with_revision(model_id.to_string(), RepoType::Model, rev.to_string()),
-        None => Repo::model(model_id.to_string()),
-    };
-    api.repo(repo).get(filename).await.map_err(|e| {
+    let api_repo = HfModelRepo::open(cache_dir, model_id, revision).map_err(|e| {
+        RuntimeError::Load(format!("whisper-cpp HF api init failed for '{alias}': {e}"))
+    })?;
+    api_repo.get(filename).await.map_err(|e| {
         RuntimeError::Load(format!(
             "whisper-cpp could not download '{filename}' from '{model_id}' for alias '{alias}': {e}"
         ))

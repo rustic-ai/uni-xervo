@@ -4,7 +4,7 @@ This section gets you from dependency setup to a production-ready runtime config
 
 ## Prerequisites
 
-- Rust `1.88+` (crate `edition = "2024"`).
+- Rust `1.95+` (crate `edition = "2024"`).
 - Tokio async runtime.
 - Provider feature flags enabled for the providers you plan to register.
 - Required API keys/tokens in environment variables for remote providers.

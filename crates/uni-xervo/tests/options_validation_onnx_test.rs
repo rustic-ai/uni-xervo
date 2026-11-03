@@ -195,3 +195,134 @@ async fn builder_rejects_det_bin_threshold_not_a_number() {
     .await;
     assert!(runtime.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// NLP: the two kniv generations take different options
+// ---------------------------------------------------------------------------
+
+fn nlp_spec(options: serde_json::Value) -> ModelAliasSpec {
+    ModelAliasSpec {
+        alias: "nlp/kniv".to_string(),
+        task: ModelTask::Nlp,
+        provider_id: "local/onnx".to_string(),
+        model_id: "dragonscale-ai/kniv-v7-xlarge-u-en".to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options,
+    }
+}
+
+/// Validation runs at catalog registration, before any download, so a
+/// mismatched option is caught in milliseconds rather than after fetching a
+/// couple of gigabytes of graphs.
+async fn build_nlp(options: serde_json::Value) -> Result<(), String> {
+    ModelRuntime::builder()
+        .register_provider(LocalOnnxProvider::new())
+        .catalog(vec![nlp_spec(options)])
+        .build()
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tokio::test]
+async fn builder_accepts_kniv_v7_options() {
+    build_nlp(serde_json::json!({
+        "variant": "int8,fp16",
+        "calibration_path": "calibration.json",
+        "label_bank_path": "label_bank.json",
+        "tokenizer_path": "tokenizer.json",
+        "generation": "v7",
+        "execution_providers": ["cpu"],
+        "intra_op_num_threads": 8,
+        "graph_optimization_level": "all"
+    }))
+    .await
+    .expect("v7 options accepted");
+}
+
+#[tokio::test]
+async fn builder_accepts_kniv_v1_options() {
+    build_nlp(serde_json::json!({
+        "onnx_path": "onnx/cascade-int8.onnx",
+        "label_maps_path": "label_maps.json",
+        "max_seq_len": 128,
+        "generation": "v1"
+    }))
+    .await
+    .expect("v1 options accepted");
+}
+
+#[tokio::test]
+async fn builder_rejects_mixing_the_two_generations() {
+    let err = build_nlp(serde_json::json!({
+        "variant": "int8,fp16",
+        "max_seq_len": 128
+    }))
+    .await
+    .expect_err("v1 and v7 options together");
+    assert!(
+        err.contains("variant") && err.contains("max_seq_len"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn builder_rejects_v1_options_on_a_declared_v7_model() {
+    for key in ["onnx_path", "label_maps_path", "max_seq_len"] {
+        let value = if key == "max_seq_len" {
+            serde_json::json!(128)
+        } else {
+            serde_json::json!("x")
+        };
+        let err = build_nlp(serde_json::json!({"generation": "v7", key: value}))
+            .await
+            .expect_err("rejected");
+        assert!(err.contains(key), "{key}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn builder_rejects_v7_options_on_a_declared_v1_model() {
+    for key in ["variant", "calibration_path", "label_bank_path"] {
+        let err = build_nlp(serde_json::json!({"generation": "v1", key: "x"}))
+            .await
+            .expect_err("rejected");
+        assert!(err.contains(key), "{key}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn builder_rejects_an_unknown_generation() {
+    let err = build_nlp(serde_json::json!({"generation": "v6"}))
+        .await
+        .expect_err("rejected");
+    assert!(err.contains("generation"), "{err}");
+}
+
+#[tokio::test]
+async fn builder_rejects_non_string_v7_options() {
+    for key in [
+        "variant",
+        "calibration_path",
+        "label_bank_path",
+        "generation",
+    ] {
+        let err = build_nlp(serde_json::json!({key: 1}))
+            .await
+            .expect_err("rejected");
+        assert!(err.contains(key), "{key}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn builder_rejects_an_unknown_nlp_option() {
+    let err = build_nlp(serde_json::json!({"schema_path": "schema.json"}))
+        .await
+        .expect_err("rejected");
+    assert!(err.contains("schema_path"), "{err}");
+}

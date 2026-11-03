@@ -78,7 +78,6 @@ pub fn validate_provider_options(
             | "remote/llamacpp"
             | "local/candle"
             | "local/onnx"
-            | "local/mistralrs"
             | "local/whisper-cpp"
     );
 
@@ -94,7 +93,7 @@ pub fn validate_provider_options(
         | ("local/onnx", ModelTask::Ocr) // PR-2b
         | ("local/whisper-cpp", ModelTask::Transcribe) // PR-4
         | ("local/onnx", ModelTask::DocumentExtract) // PR-5
-        | ("local/mistralrs", ModelTask::DocumentExtract) // olmOCR-2 on the vision pipeline
+        | ("remote/llamacpp", ModelTask::DocumentExtract) // a document VLM on llama-server
         | ("local/onnx", ModelTask::EmbedSparse) // SPLADE / BGE-M3 sparse head
         | ("local/onnx", ModelTask::EmbedMultiVector) // ColBERT / BGE-M3 multi-vector head
         | ("local/onnx", ModelTask::EmbedHybrid) // BGE-M3 dense+sparse+ColBERT, single pass
@@ -135,7 +134,6 @@ pub fn validate_provider_options(
         "remote/llamacpp" => validate_llamacpp_options(provider_id, task, options),
         "local/candle" => validate_string_keys_only(provider_id, options, &["cache_dir"]),
         "local/onnx" => validate_local_onnx_options(provider_id, task, options),
-        "local/mistralrs" => validate_mistralrs_options(provider_id, task, options),
         "local/whisper-cpp" => validate_whisper_cpp_options(provider_id, task, options),
         _ => Ok(()),
     }
@@ -190,6 +188,53 @@ fn reject_unknown_keys(
                 key, provider_id
             )));
         }
+    }
+    Ok(())
+}
+
+/// Validate the kniv generation and reject options meant for the other one.
+///
+/// The two generations of the kniv NLP family take different options
+/// entirely: v1 names one graph and a 128-token cap, v7 reads its graph set
+/// and window size from `onnx/onnx_meta.json` and takes a precision variant
+/// instead. Mixing them is always a mistake, and catching it here means the
+/// error arrives before a multi-gigabyte download rather than after.
+fn validate_nlp_generation(provider_id: &str, map: &serde_json::Map<String, Value>) -> Result<()> {
+    const V1_ONLY: [&str; 3] = ["onnx_path", "label_maps_path", "max_seq_len"];
+    const V7_ONLY: [&str; 3] = ["variant", "calibration_path", "label_bank_path"];
+
+    let generation = map.get("generation").and_then(Value::as_str);
+    if let Some(g) = generation
+        && !matches!(g, "v1" | "v7")
+    {
+        return Err(RuntimeError::Config(format!(
+            "Option 'generation' for provider '{provider_id}' must be one of: v1, v7"
+        )));
+    }
+
+    let declared_v7 = generation == Some("v7");
+    let declared_v1 = generation == Some("v1");
+    let has_v7_key = V7_ONLY.iter().find(|k| map.contains_key(**k));
+    let has_v1_key = V1_ONLY.iter().find(|k| map.contains_key(**k));
+
+    if let (Some(v7), Some(v1)) = (has_v7_key, has_v1_key) {
+        return Err(RuntimeError::Config(format!(
+            "Options '{v7}' (kniv v7) and '{v1}' (kniv v1 cascade) cannot both be set \
+             for provider '{provider_id}'"
+        )));
+    }
+    if declared_v7 && let Some(v1) = has_v1_key {
+        return Err(RuntimeError::Config(format!(
+            "Option '{v1}' does not apply to a kniv v7 model for provider \
+             '{provider_id}'; v7 reads its graph set and window size from \
+             onnx/onnx_meta.json"
+        )));
+    }
+    if declared_v1 && let Some(v7) = has_v7_key {
+        return Err(RuntimeError::Config(format!(
+            "Option '{v7}' does not apply to the kniv v1 cascade for provider \
+             '{provider_id}'"
+        )));
     }
     Ok(())
 }
@@ -396,41 +441,105 @@ fn require_absolute_http_url(
     Ok(())
 }
 
-/// Validate `remote/llamacpp` options. Unlike the other remote providers,
-/// `base_url`, `max_input_tokens`, and `embedding_dimensions` are **required**:
-/// llama.cpp has no hosted default endpoint and no model-id → dimensions
-/// table, and the token budget drives client-side truncation. The provider is
-/// embed-only, so other tasks are rejected here rather than at load time.
-fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
-    const REQUIRED: [&str; 3] = ["base_url", "max_input_tokens", "embedding_dimensions"];
+/// Validate `remote/llamacpp` options.
+///
+/// `base_url` is required for every task: llama.cpp has no hosted default
+/// endpoint, so there is nothing to fall back to. The rest is task-keyed.
+///
+/// `embed` additionally requires `max_input_tokens` and
+/// `embedding_dimensions` — there is no model-id → dimensions table, and the
+/// token budget drives the client-side truncation pre-pass. Those three keys
+/// are embed-only and rejected elsewhere, rather than silently ignored.
+///
+/// `document_extract` takes one optional key, `style`, naming the output
+/// dialect of the loaded document VLM so the right parser is applied. Its
+/// value is checked here rather than at load, so a typo fails when the catalog
+/// is read.
+///
+/// `generate` and `rerank` take no keys of their own. In particular there is
+/// no option for vision, and none for the rerank response shape: the first
+/// depends on whether `llama-server` was started with `--mmproj` and the
+/// second follows from the request key this crate chooses. Both are properties
+/// of the server process or the wire call, not things the catalog can know.
+/// Accepted `style` values for `remote/llamacpp` `document_extract`.
+///
+/// Kept in step with `doc_parse::style_from_str` by hand: that module is
+/// feature-gated on the providers that run a document VLM, and this validator
+/// is not.
+const LLAMACPP_DOC_STYLES: [&str; 3] = ["granite-docling", "mineru", "olmocr"];
 
-    if task != ModelTask::Embed {
+fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
+    /// Keys every task reads.
+    const COMMON: [&str; 3] = ["base_url", "api_key_env", "request_timeout_secs"];
+    /// Keys only `embed` reads.
+    const EMBED_ONLY: [&str; 3] = [
+        "tokenizer_base_url",
+        "max_input_tokens",
+        "embedding_dimensions",
+    ];
+
+    /// Keys only `document_extract` reads.
+    const DOCS_ONLY: [&str; 1] = ["style"];
+
+    let is_embed = matches!(task, ModelTask::Embed);
+    let is_docs = matches!(task, ModelTask::DocumentExtract);
+    if !matches!(
+        task,
+        ModelTask::Embed | ModelTask::Generate | ModelTask::Rerank | ModelTask::DocumentExtract
+    ) {
         return Err(RuntimeError::Config(format!(
-            "Provider '{}' only supports task 'embed' (got '{}')",
+            "Provider '{}' supports tasks 'embed', 'generate', 'rerank' and \
+             'document_extract' (got '{}')",
             provider_id,
             task_wire_name(task)
         )));
     }
+
+    let mut required: Vec<&str> = vec!["base_url"];
+    if is_embed {
+        required.extend(["max_input_tokens", "embedding_dimensions"]);
+    }
+
     let Some(map) = as_object(provider_id, options)? else {
         return Err(RuntimeError::Config(format!(
             "Provider '{}' requires options: {}",
             provider_id,
-            REQUIRED.join(", ")
+            required.join(", ")
         )));
     };
-    reject_unknown_keys(
-        provider_id,
-        map,
-        &[
-            "base_url",
-            "tokenizer_base_url",
-            "max_input_tokens",
-            "embedding_dimensions",
-            "api_key_env",
-            "request_timeout_secs",
-        ],
-    )?;
-    for key in REQUIRED {
+
+    // Name the task-specific keys explicitly before the unknown-key sweep, so
+    // a misplaced one says *why* it does not belong rather than "unknown".
+    for (keys, owner, belongs) in [
+        (&EMBED_ONLY[..], "embed", is_embed),
+        (&DOCS_ONLY[..], "document_extract", is_docs),
+    ] {
+        if belongs {
+            continue;
+        }
+        for key in keys {
+            if map.contains_key(*key) {
+                return Err(RuntimeError::Config(format!(
+                    "Option '{}' for provider '{}' applies only to task '{}' (got '{}')",
+                    key,
+                    provider_id,
+                    owner,
+                    task_wire_name(task)
+                )));
+            }
+        }
+    }
+
+    let mut allowed: Vec<&str> = COMMON.to_vec();
+    if is_embed {
+        allowed.extend(EMBED_ONLY);
+    }
+    if is_docs {
+        allowed.extend(DOCS_ONLY);
+    }
+    reject_unknown_keys(provider_id, map, &allowed)?;
+
+    for key in required {
         if !map.contains_key(key) {
             return Err(RuntimeError::Config(format!(
                 "Option '{}' for provider '{}' is required",
@@ -438,22 +547,37 @@ fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value
             )));
         }
     }
+
     require_string_keys(
         provider_id,
         map,
-        &["base_url", "tokenizer_base_url", "api_key_env"],
+        &["base_url", "tokenizer_base_url", "api_key_env", "style"],
     )?;
     require_absolute_http_url(provider_id, map, "base_url")?;
     require_absolute_http_url(provider_id, map, "tokenizer_base_url")?;
-    require_positive_u64(provider_id, map, "max_input_tokens")?;
-    if map["max_input_tokens"].as_u64().unwrap_or(0) < 3 {
+    require_positive_u64(provider_id, map, "request_timeout_secs")?;
+
+    if let Some(style) = map.get("style").and_then(|v| v.as_str())
+        && !LLAMACPP_DOC_STYLES.contains(&style)
+    {
         return Err(RuntimeError::Config(format!(
-            "Option 'max_input_tokens' for provider '{}' must be at least 3 \
-             (two special tokens plus one content token)",
-            provider_id
+            "Option 'style' for provider '{}' must be one of {} (got '{}')",
+            provider_id,
+            LLAMACPP_DOC_STYLES.join(", "),
+            style
         )));
     }
-    require_positive_u64(provider_id, map, "request_timeout_secs")?;
+
+    if is_embed {
+        require_positive_u64(provider_id, map, "max_input_tokens")?;
+        if map["max_input_tokens"].as_u64().unwrap_or(0) < 3 {
+            return Err(RuntimeError::Config(format!(
+                "Option 'max_input_tokens' for provider '{}' must be at least 3 \
+                 (two special tokens plus one content token)",
+                provider_id
+            )));
+        }
+    }
     require_embedding_dimensions(provider_id, task, map)
 }
 
@@ -510,299 +634,6 @@ fn validate_vertexai_options(provider_id: &str, task: ModelTask, options: &Value
     require_embedding_dimensions(provider_id, task, map)
 }
 
-/// Validate mistral.rs-specific options: ISQ type, boolean flags, GGUF files,
-/// pipeline selection, and embedding dimensions.
-fn validate_mistralrs_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
-    let Some(map) = as_object(provider_id, options)? else {
-        return Ok(());
-    };
-
-    // All known keys across all pipelines
-    reject_unknown_keys(
-        provider_id,
-        map,
-        &[
-            "isq",
-            "force_cpu",
-            "paged_attention",
-            "max_num_seqs",
-            "chat_template",
-            "tokenizer_json",
-            "embedding_dimensions",
-            "gguf_files",
-            "dtype",
-            "pipeline",
-            "diffusion_loader_type",
-            "speech_loader_type",
-            "max_seq_len",
-            "max_batch_size",
-            "max_image_shape",
-            "max_num_images",
-            "uqff_files",
-            "style",
-        ],
-    )?;
-
-    // Validate pipeline value if present
-    let pipeline = if let Some(value) = map.get("pipeline") {
-        let s = value.as_str().ok_or_else(|| {
-            RuntimeError::Config(format!(
-                "Option 'pipeline' for provider '{}' must be a string",
-                provider_id
-            ))
-        })?;
-        let valid = ["text", "vision", "diffusion", "speech"];
-        if !valid.contains(&s) {
-            return Err(RuntimeError::Config(format!(
-                "Option 'pipeline' for provider '{}' must be one of: text, vision, diffusion, speech",
-                provider_id
-            )));
-        }
-        s
-    } else {
-        "text"
-    };
-
-    // Shared validation across all pipelines
-    require_string_keys(provider_id, map, &["dtype"])?;
-
-    if let Some(value) = map.get("dtype") {
-        if let Some(s) = value.as_str() {
-            let valid = ["auto", "f16", "bf16", "f32"];
-            if !valid.contains(&s.to_lowercase().as_str()) {
-                return Err(RuntimeError::Config(format!(
-                    "Option 'dtype' for provider '{}' must be one of: auto, f16, bf16, f32",
-                    provider_id
-                )));
-            }
-        }
-    }
-
-    if let Some(value) = map.get("force_cpu")
-        && !value.is_boolean()
-    {
-        return Err(RuntimeError::Config(format!(
-            "Option 'force_cpu' for provider '{}' must be a boolean",
-            provider_id
-        )));
-    }
-
-    // Auto-device-mapper overrides (positive integers, applicable to text,
-    // vision, and embedding pipelines; rejected for diffusion/speech below).
-    require_positive_u64(provider_id, map, "max_seq_len")?;
-    require_positive_u64(provider_id, map, "max_batch_size")?;
-    require_positive_u64(provider_id, map, "max_num_images")?;
-
-    if let Some(value) = map.get("max_image_shape") {
-        let items = value.as_array().ok_or_else(|| {
-            RuntimeError::Config(format!(
-                "Option 'max_image_shape' for provider '{}' must be a 2-element array of positive integers",
-                provider_id
-            ))
-        })?;
-        if items.len() != 2
-            || items
-                .iter()
-                .any(|v| v.as_u64().is_none_or(|n| n == 0 || n > usize::MAX as u64))
-        {
-            return Err(RuntimeError::Config(format!(
-                "Option 'max_image_shape' for provider '{}' must be a 2-element array of positive integers",
-                provider_id
-            )));
-        }
-    }
-
-    if let Some(value) = map.get("uqff_files") {
-        let Some(items) = value.as_array() else {
-            return Err(RuntimeError::Config(format!(
-                "Option 'uqff_files' for provider '{}' must be a non-empty array of strings",
-                provider_id
-            )));
-        };
-        if items.is_empty()
-            || items
-                .iter()
-                .any(|item| !item.is_string() || item.as_str().unwrap().is_empty())
-        {
-            return Err(RuntimeError::Config(format!(
-                "Option 'uqff_files' for provider '{}' must be a non-empty array of strings",
-                provider_id
-            )));
-        }
-        if map.contains_key("gguf_files") {
-            return Err(RuntimeError::Config(
-                "Options 'uqff_files' and 'gguf_files' are mutually exclusive (both load pre-quantized weights)"
-                    .to_string(),
-            ));
-        }
-        if map.contains_key("isq") {
-            return Err(RuntimeError::Config(
-                "Option 'isq' is incompatible with 'uqff_files' (UQFF files embed their own quantization)"
-                    .to_string(),
-            ));
-        }
-    }
-
-    // Pipeline-specific validation
-    match pipeline {
-        "vision" => {
-            if map.contains_key("gguf_files") {
-                return Err(RuntimeError::Config(
-                    "Option 'gguf_files' is not supported for the vision pipeline".to_string(),
-                ));
-            }
-            if map.contains_key("embedding_dimensions") {
-                return Err(RuntimeError::Config(
-                    "Option 'embedding_dimensions' is not supported for the vision pipeline"
-                        .to_string(),
-                ));
-            }
-            require_string_keys(
-                provider_id,
-                map,
-                &["isq", "chat_template", "tokenizer_json"],
-            )?;
-            if let Some(value) = map.get("paged_attention")
-                && !value.is_boolean()
-            {
-                return Err(RuntimeError::Config(format!(
-                    "Option 'paged_attention' for provider '{}' must be a boolean",
-                    provider_id
-                )));
-            }
-            require_positive_u64(provider_id, map, "max_num_seqs")?;
-        }
-        "diffusion" => {
-            // Validate diffusion_loader_type
-            if let Some(value) = map.get("diffusion_loader_type") {
-                let s = value.as_str().ok_or_else(|| {
-                    RuntimeError::Config(format!(
-                        "Option 'diffusion_loader_type' for provider '{}' must be a string",
-                        provider_id
-                    ))
-                })?;
-                let valid = ["flux", "flux_offloaded"];
-                if !valid.contains(&s) {
-                    return Err(RuntimeError::Config(format!(
-                        "Option 'diffusion_loader_type' for provider '{}' must be one of: flux, flux_offloaded",
-                        provider_id
-                    )));
-                }
-            }
-            // Reject options not relevant to diffusion
-            for key in [
-                "isq",
-                "paged_attention",
-                "max_num_seqs",
-                "chat_template",
-                "tokenizer_json",
-                "embedding_dimensions",
-                "gguf_files",
-                "uqff_files",
-                "speech_loader_type",
-                "max_seq_len",
-                "max_batch_size",
-                "max_image_shape",
-                "max_num_images",
-            ] {
-                if map.contains_key(key) {
-                    return Err(RuntimeError::Config(format!(
-                        "Option '{}' is not supported for the diffusion pipeline",
-                        key
-                    )));
-                }
-            }
-        }
-        "speech" => {
-            // Validate speech_loader_type
-            if let Some(value) = map.get("speech_loader_type") {
-                let s = value.as_str().ok_or_else(|| {
-                    RuntimeError::Config(format!(
-                        "Option 'speech_loader_type' for provider '{}' must be a string",
-                        provider_id
-                    ))
-                })?;
-                let valid = ["dia"];
-                if !valid.contains(&s) {
-                    return Err(RuntimeError::Config(format!(
-                        "Option 'speech_loader_type' for provider '{}' must be one of: dia",
-                        provider_id
-                    )));
-                }
-            }
-            // Reject options not relevant to speech
-            for key in [
-                "isq",
-                "paged_attention",
-                "max_num_seqs",
-                "chat_template",
-                "tokenizer_json",
-                "embedding_dimensions",
-                "gguf_files",
-                "uqff_files",
-                "diffusion_loader_type",
-                "max_seq_len",
-                "max_batch_size",
-                "max_image_shape",
-                "max_num_images",
-            ] {
-                if map.contains_key(key) {
-                    return Err(RuntimeError::Config(format!(
-                        "Option '{}' is not supported for the speech pipeline",
-                        key
-                    )));
-                }
-            }
-        }
-        _ => {
-            // text pipeline (default) — full validation
-            require_string_keys(
-                provider_id,
-                map,
-                &["isq", "chat_template", "tokenizer_json"],
-            )?;
-
-            for key in ["max_image_shape", "max_num_images"] {
-                if map.contains_key(key) {
-                    return Err(RuntimeError::Config(format!(
-                        "Option '{}' is only supported for the vision pipeline",
-                        key
-                    )));
-                }
-            }
-
-            if let Some(value) = map.get("paged_attention")
-                && !value.is_boolean()
-            {
-                return Err(RuntimeError::Config(format!(
-                    "Option 'paged_attention' for provider '{}' must be a boolean",
-                    provider_id
-                )));
-            }
-
-            require_positive_u64(provider_id, map, "max_num_seqs")?;
-            require_embedding_dimensions(provider_id, task, map)?;
-
-            if let Some(value) = map.get("gguf_files") {
-                let Some(items) = value.as_array() else {
-                    return Err(RuntimeError::Config(format!(
-                        "Option 'gguf_files' for provider '{}' must be an array of strings",
-                        provider_id
-                    )));
-                };
-                if items.iter().any(|item| !item.is_string()) {
-                    return Err(RuntimeError::Config(format!(
-                        "Option 'gguf_files' for provider '{}' must be an array of strings",
-                        provider_id
-                    )));
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
@@ -841,10 +672,17 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         ModelTask::Nlp => {
             let mut keys = common_keys.to_vec();
             keys.extend_from_slice(&[
-                "onnx_path",
+                // Shared.
                 "tokenizer_path",
+                "generation",
+                // v1 cascade only.
+                "onnx_path",
                 "label_maps_path",
                 "max_seq_len",
+                // kniv v7 only.
+                "variant",
+                "calibration_path",
+                "label_bank_path",
             ]);
             keys
         }
@@ -937,9 +775,18 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         require_string_keys(
             provider_id,
             map,
-            &["onnx_path", "tokenizer_path", "label_maps_path"],
+            &[
+                "onnx_path",
+                "tokenizer_path",
+                "label_maps_path",
+                "variant",
+                "calibration_path",
+                "label_bank_path",
+                "generation",
+            ],
         )?;
         require_positive_u64(provider_id, map, "max_seq_len")?;
+        validate_nlp_generation(provider_id, map)?;
     }
 
     if matches!(task, ModelTask::DocumentExtract) {

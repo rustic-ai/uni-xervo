@@ -10,19 +10,16 @@
 use crate::api::ModelAliasSpec;
 use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
+use crate::hf::HfModelRepo;
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, effective_ep_list,
+    OnnxExecutionProvider, build_execution_providers, effective_ep_list, ort_environment,
     parse_execution_providers_option,
 };
 use crate::traits::{DimSize, RawTensorModel, TensorBatch, TensorDtype, TensorSpec, TensorValue};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use hf_hub::{
-    Cache, Repo, RepoType,
-    api::{RepoInfo, tokio::ApiBuilder},
-};
 use ndarray::{ArrayD, Axis, stack};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::{DynTensor, Tensor, TensorElementType, ValueType};
@@ -328,21 +325,18 @@ async fn resolve_hf_model_path(
     repo_id: &str,
 ) -> Result<PathBuf> {
     let cache_dir = resolve_cache_dir("onnx", repo_id, &spec.options);
-    let cache = Cache::new(cache_dir.clone());
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir)
-        .build()
-        .map_err(|e| RuntimeError::OnnxDownloadFailure {
-            alias: spec.alias.clone(),
-            cause: e.to_string(),
+    let api_repo =
+        HfModelRepo::open(&cache_dir, repo_id, spec.revision.as_deref()).map_err(|e| {
+            RuntimeError::OnnxDownloadFailure {
+                alias: spec.alias.clone(),
+                cause: e.to_string(),
+            }
         })?;
-    let repo = match &spec.revision {
-        Some(revision) => {
-            Repo::with_revision(repo_id.to_string(), RepoType::Model, revision.clone())
-        }
-        None => Repo::model(repo_id.to_string()),
-    };
-    let api_repo = api.repo(repo.clone());
+
+    // The whole repo is listed before anything is fetched, because which
+    // artifact to load is decided from the file list — `task: "raw"` takes
+    // whatever single `.onnx` the repo publishes unless `options.artifact`
+    // names one.
     let repo_info = api_repo
         .info()
         .await
@@ -350,19 +344,51 @@ async fn resolve_hf_model_path(
             alias: spec.alias.clone(),
             cause: e.to_string(),
         })?;
-    let artifact = select_onnx_artifact(&spec.alias, &repo_info, options.artifact.as_deref())?;
+    let filenames: Vec<String> = repo_info
+        .siblings
+        .ok_or_else(|| RuntimeError::OnnxArtifactSelectionFailure {
+            alias: spec.alias.clone(),
+            cause: "Hugging Face repo returned no file list".to_string(),
+        })?
+        .into_iter()
+        .map(|sibling| sibling.rfilename)
+        .collect();
+    let artifact = select_onnx_artifact(&spec.alias, &filenames, options.artifact.as_deref())?;
 
-    materialize_hf_snapshot(&api_repo, &spec.alias, &repo_info).await?;
-    resolve_snapshot_artifact_path(&cache, &repo, &repo_info, &spec.alias, &artifact)
+    // The whole snapshot, not just the chosen artifact: a raw graph may
+    // reference external-data sidecars by relative path, and `snapshot_download`
+    // hands back the directory they all land in.
+    let snapshot = api_repo
+        .snapshot()
+        .await
+        .map_err(|e| RuntimeError::OnnxDownloadFailure {
+            alias: spec.alias.clone(),
+            cause: format!("failed to download repo snapshot: {e}"),
+        })?;
+
+    let path = snapshot.join(&artifact);
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(RuntimeError::OnnxArtifactSelectionFailure {
+            alias: spec.alias.clone(),
+            cause: format!("artifact '{artifact}' was not materialized into the repo snapshot"),
+        })
+    }
 }
 
+/// Pick the `.onnx` file to load from a repo's file list.
+///
+/// Takes the filenames rather than the hub's own info type: the choice is
+/// pure, and keeping the hub type out of the signature is what lets this be
+/// tested without constructing a full API response.
 fn select_onnx_artifact(
     alias: &str,
-    repo_info: &RepoInfo,
+    filenames: &[String],
     explicit_artifact: Option<&str>,
 ) -> Result<String> {
     if let Some(artifact) = explicit_artifact {
-        if repo_info.siblings.iter().any(|s| s.rfilename == artifact) {
+        if filenames.iter().any(|name| name == artifact) {
             return Ok(artifact.to_string());
         }
         return Err(RuntimeError::OnnxArtifactSelectionFailure {
@@ -371,11 +397,10 @@ fn select_onnx_artifact(
         });
     }
 
-    let mut candidates = repo_info
-        .siblings
+    let mut candidates = filenames
         .iter()
-        .map(|s| s.rfilename.clone())
         .filter(|name| name.ends_with(".onnx"))
+        .cloned()
         .collect::<Vec<_>>();
     candidates.sort();
     candidates.dedup();
@@ -396,49 +421,13 @@ fn select_onnx_artifact(
     }
 }
 
-async fn materialize_hf_snapshot(
-    api_repo: &hf_hub::api::tokio::ApiRepo,
-    alias: &str,
-    repo_info: &RepoInfo,
-) -> Result<()> {
-    for sibling in &repo_info.siblings {
-        api_repo
-            .get(&sibling.rfilename)
-            .await
-            .map_err(|e| RuntimeError::OnnxDownloadFailure {
-                alias: alias.to_string(),
-                cause: format!("failed to download repo file '{}': {e}", sibling.rfilename),
-            })?;
-    }
-
-    Ok(())
-}
-
-fn resolve_snapshot_artifact_path(
-    cache: &Cache,
-    repo: &Repo,
-    repo_info: &RepoInfo,
-    alias: &str,
-    artifact: &str,
-) -> Result<PathBuf> {
-    let cache_repo = cache.repo(repo.clone());
-    let path = cache_repo.pointer_path(&repo_info.sha).join(artifact);
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(RuntimeError::OnnxArtifactSelectionFailure {
-            alias: alias.to_string(),
-            cause: format!("artifact '{artifact}' was not materialized into the repo snapshot"),
-        })
-    }
-}
-
 fn build_session(path: &Path, options: &LocalOnnxOptions, alias: &str) -> Result<Session> {
-    let mut builder = Session::builder().map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: alias.to_string(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
+    let mut builder =
+        Session::builder(ort_environment()?).map_err(|e| RuntimeError::OnnxLoadFailure {
+            alias: alias.to_string(),
+            path: path.to_path_buf(),
+            cause: e.to_string(),
+        })?;
 
     builder = builder
         .with_optimization_level(options.graph_optimization_level)
@@ -1043,7 +1032,6 @@ fn split_tensor_value(
 mod tests {
     use super::{ModelSource, classify_model_source, select_onnx_artifact};
     use crate::provider::onnx_ep::{OnnxExecutionProvider, default_execution_providers};
-    use hf_hub::api::{RepoInfo, Siblings};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1086,17 +1074,7 @@ mod tests {
     fn select_single_onnx_artifact() {
         let artifact = select_onnx_artifact(
             "raw/onnx",
-            &RepoInfo {
-                siblings: vec![
-                    Siblings {
-                        rfilename: "config.json".to_string(),
-                    },
-                    Siblings {
-                        rfilename: "model.onnx".to_string(),
-                    },
-                ],
-                sha: "abc".to_string(),
-            },
+            &["config.json".to_string(), "model.onnx".to_string()],
             None,
         )
         .unwrap();
@@ -1108,17 +1086,7 @@ mod tests {
     fn reject_ambiguous_onnx_artifact_selection() {
         let err = select_onnx_artifact(
             "raw/onnx",
-            &RepoInfo {
-                siblings: vec![
-                    Siblings {
-                        rfilename: "encoder.onnx".to_string(),
-                    },
-                    Siblings {
-                        rfilename: "decoder.onnx".to_string(),
-                    },
-                ],
-                sha: "abc".to_string(),
-            },
+            &["encoder.onnx".to_string(), "decoder.onnx".to_string()],
             None,
         )
         .unwrap_err();
@@ -1130,12 +1098,7 @@ mod tests {
     fn explicit_artifact_must_exist() {
         let err = select_onnx_artifact(
             "raw/onnx",
-            &RepoInfo {
-                siblings: vec![Siblings {
-                    rfilename: "encoder.onnx".to_string(),
-                }],
-                sha: "abc".to_string(),
-            },
+            &["encoder.onnx".to_string()],
             Some("decoder.onnx"),
         )
         .unwrap_err();

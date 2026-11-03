@@ -1,19 +1,30 @@
 # Multimodal Generation
 
-Uni-Xervo 0.2.0 extends `local/mistralrs` with four pipeline types: text, vision, diffusion, and speech. This guide covers when to use each pipeline, how to configure them, and how to work with the structured message API.
+Generation takes structured `Message` values rather than plain strings, so a
+single turn can mix text and images. This guide covers the message API, the
+vision workflow, and what the `GenerationResult` fields mean in practice.
 
-## When to use each pipeline
+## What is wired today
 
-| Pipeline | Use case | Input | Output |
+| Modality | Task | Provider | Output |
 | --- | --- | --- | --- |
-| `text` | Standard LLM chat and completion (default) | Text messages | `result.text` |
-| `vision` | Image understanding with text prompts | Images + text messages | `result.text` |
-| `diffusion` | Text-to-image generation | Text prompt | `result.images` |
-| `speech` | Text-to-audio synthesis | Text prompt | `result.audio` |
+| Text in → text out | `generate` | every generation provider | `result.text` |
+| Text + images in → text out | `generate` | `remote/llamacpp` (server started with `--mmproj`), `remote/openai`, `remote/gemini`, `remote/cohere` | `result.text` |
+| Page images in → structured document out | `document_extract` | `remote/llamacpp` | `DocExtractResult` |
+| Audio in → text out | `transcribe` | `local/whisper-cpp` | `TranscriptResult` |
+
+!!! warning "Image generation and speech synthesis have no bundled provider"
+    `GenerationResult.images`, `GenerationResult.audio` and
+    `GenerationOptions.width` / `height` are part of the public API but no
+    bundled provider populates or reads them. `local/mistralrs`, which served
+    the diffusion and speech pipelines, was removed in 0.19.0: the published
+    crate was frozen at a release that could not run its own vision pipeline,
+    while pulling in nearly half of the default dependency tree.
+    `llama-server` has no image-generation endpoint. Use a dedicated service
+    for these until a provider lands; the trait surface is unchanged, so one
+    can be added without an API break.
 
 ## Message types
-
-Generation in 0.2.0 uses structured `Message` types instead of plain strings.
 
 ### Core types
 
@@ -39,7 +50,11 @@ let msg = Message {
 ### Content blocks
 
 - `ContentBlock::Text(String)` — text content
-- `ContentBlock::Image(ImageInput)` — image content (vision pipeline)
+- `ContentBlock::Image(ImageInput)` — image content
+
+Blocks keep their order on the wire, which matters: document VLMs are trained
+with the instruction ahead of the page, and some chat models attend
+differently depending on whether the image precedes or follows the question.
 
 ### Image input
 
@@ -50,25 +65,41 @@ let input = ImageInput::Bytes {
     media_type: "image/jpeg".to_string(),
 };
 
-// From URL
+// From URL — passed to the provider verbatim, so the server fetches it
 let input = ImageInput::Url("https://example.com/image.jpg".to_string());
 ```
 
-## Vision workflow
+On OpenAI-compatible endpoints (`remote/llamacpp`, `remote/openai`,
+`remote/azure-openai`) `ImageInput::Bytes` is sent as a
+`data:{media_type};base64,…` URI inside an `image_url` content part.
 
-Process images with text prompts using a vision model.
+## Vision workflow
 
 ### Catalog configuration
 
+Vision is a property of the server process, not of the alias: a
+`llama-server` started with a multimodal projector accepts image parts, one
+started without it does not. So there is no `pipeline` option to set — point
+the alias at a vision-capable server.
+
+```sh
+llama-server -hf ggml-org/SmolVLM-500M-Instruct-GGUF -c 4096 --port 8081
+```
+
+(`-hf` fetches the projector alongside the model; with local files, pass
+`--mmproj` explicitly. A projector costs context — image tokens are added to
+the prompt — so a vision server wants noticeably more `--ctx-size` than the
+same model serving text.)
+
 ```json
 {
-  "alias": "vision/qwen",
+  "alias": "vision/smolvlm",
   "task": "generate",
-  "provider_id": "local/mistralrs",
-  "model_id": "Qwen/Qwen2-VL-2B-Instruct",
+  "provider_id": "remote/llamacpp",
+  "model_id": "local",
   "options": {
-    "pipeline": "vision",
-    "dtype": "bf16"
+    "base_url": "http://127.0.0.1:8081/v1",
+    "request_timeout_secs": 180
   }
 }
 ```
@@ -89,191 +120,59 @@ let message = Message {
     ],
 };
 
-let vision = runtime.generator("vision/qwen").await?;
+let vision = runtime.generator("vision/smolvlm").await?;
 let result = vision.generate(&[message], GenerationOptions::default()).await?;
 println!("{}", result.text);
 ```
 
 A runnable version is at `crates/uni-xervo/examples/vision_describe.rs`
-(`cargo run --example vision_describe --features provider-mistralrs`).
+(`cargo run --example vision_describe --features provider-llamacpp`).
 
-### Smallest vision model
+### Choosing a model
 
-For the lightest footprint, `HuggingFaceTB/SmolVLM-256M-Instruct` (~0.3B,
-Apache-2.0) is the smallest VLM `local/mistralrs` can load. Its Idefics3
-architecture is auto-detected from the model config, so only `pipeline: "vision"`
-is needed — and it runs on CPU.
+`ggml-org/SmolVLM-500M-Instruct-GGUF` is small enough to run comfortably on
+CPU and is the easiest starting point. Caption quality scales with size: step
+up to `SmolVLM-Instruct` (~2.2B) or a Qwen2.5-VL build for richer output.
+Because the model lives in the server process, swapping it is a server restart
+rather than a catalog change.
 
-```json
-{
-  "alias": "vision/smolvlm-256m",
-  "task": "generate",
-  "provider_id": "local/mistralrs",
-  "model_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
-  "options": {
-    "pipeline": "vision",
-    "force_cpu": true,
-    "dtype": "f32"
-  }
-}
+Sending an image to a text-only server fails with a non-retryable error naming
+the missing multimodal support — not a silently dropped image.
+
+!!! note "Reasoning models return the answer separately from the thinking"
+    On a model with a thinking phase, `llama-server` puts the chain of thought
+    in `reasoning_content` and the answer in `content`; only `content` becomes
+    `result.text`. If `max_tokens` runs out *during* thinking, the call
+    succeeds with non-zero token usage but empty text. Raise `max_tokens`.
+
+## Document extraction
+
+Page images in, structured blocks out — a different task from vision
+generation, with its own prompt and parser. See
+[`remote/llamacpp` → document_extract](../reference/providers/llamacpp.md#document_extract)
+and the [tiered PDF extraction guide](pdf-extraction.md).
+
+## Quantized models
+
+Quantization is a server-side concern: `llama-server` loads a GGUF file, so
+the quantization is chosen when the server starts and the catalog neither
+knows nor cares.
+
+```sh
+llama-server -m mistral-7b-instruct-v0.2.Q4_K_M.gguf -c 8192 --port 8081
 ```
 
-Drop `force_cpu`/`dtype` to use a GPU. Caption quality scales with size: the
-256M model is best for short descriptions; step up to `SmolVLM-Instruct` (~2.2B)
-or `Qwen/Qwen2-VL-2B-Instruct` for richer output.
+The same applies to precision and device placement — `--n-gpu-layers` and
+friends are server flags. Nothing in the alias options changes them.
 
-!!! warning "Vision inference is currently blocked upstream"
-    As of `mistralrs-core` 0.8.1, vision-language models **load** through
-    `local/mistralrs` but **fail during inference** — SmolVLM/Idefics3 panics in
-    the Idefics3 forward pass, and Qwen2-VL fails with an out-of-bounds
-    index-select. These are upstream mistral.rs bugs (see issues #1068, #1025,
-    #935, #1108), not configuration problems. The example
-    (`crates/uni-xervo/examples/vision_describe.rs`) shows the correct API and
-    will work once upstream inference is fixed.
+## Sampling options
 
-## Diffusion workflow
+`GenerationOptions` fields are forwarded only when set, so the server's own
+defaults apply otherwise:
 
-Generate images from text prompts using FLUX models.
-
-### Catalog configuration
-
-```json
-{
-  "alias": "image/flux",
-  "task": "generate",
-  "provider_id": "local/mistralrs",
-  "model_id": "black-forest-labs/FLUX.1-schnell",
-  "options": {
-    "pipeline": "diffusion",
-    "diffusion_loader_type": "flux"
-  }
-}
-```
-
-### Rust code
-
-```rust
-let gen = runtime.generator("image/flux").await?;
-let result = gen.generate(
-    &[Message::user("A serene mountain landscape at sunset")],
-    GenerationOptions {
-        width: Some(1024),
-        height: Some(1024),
-        ..Default::default()
-    },
-).await?;
-
-for image in &result.images {
-    std::fs::write("output.png", &image.data)?;
-}
-```
-
-## Speech workflow
-
-Synthesize audio from text using Dia models.
-
-### Catalog configuration
-
-```json
-{
-  "alias": "tts/dia",
-  "task": "generate",
-  "provider_id": "local/mistralrs",
-  "model_id": "nari-labs/Dia-1.6B",
-  "options": {
-    "pipeline": "speech",
-    "speech_loader_type": "dia"
-  }
-}
-```
-
-### Rust code
-
-```rust
-let tts = runtime.generator("tts/dia").await?;
-let result = tts.generate(
-    &[Message::user("[S1] Hello, welcome!")],
-    GenerationOptions::default(),
-).await?;
-
-if let Some(audio) = &result.audio {
-    // audio.pcm_data — raw PCM samples
-    // audio.sample_rate — e.g. 24000
-    // audio.channels — e.g. 1
-}
-```
-
-## GGUF models
-
-Load quantized text models in GGUF format by specifying the filenames.
-
-```json
-{
-  "alias": "generate/gguf",
-  "task": "generate",
-  "provider_id": "local/mistralrs",
-  "model_id": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
-  "options": {
-    "gguf_files": ["mistral-7b-instruct-v0.2.Q4_K_M.gguf"]
-  }
-}
-```
-
-!!! note
-    `gguf_files` is only valid with the `text` pipeline. Vision, diffusion, and speech pipelines do not support GGUF.
-
-## Model precision (dtype)
-
-Control model precision with the `dtype` option. Available on all four pipeline types.
-
-| Value | Description |
-| --- | --- |
-| `auto` | Automatic selection (BF16 on GPU, F32 on CPU) |
-| `f16` | 16-bit floating point |
-| `bf16` | Brain floating point 16 |
-| `f32` | 32-bit floating point |
-
-**Default resolution logic:**
-
-1. Explicit `dtype` value in catalog options, if set
-2. `f32` when running on CPU or without GPU support
-3. `auto` otherwise
-
-### Example
-
-```json
-{
-  "alias": "vision/qwen",
-  "task": "generate",
-  "provider_id": "local/mistralrs",
-  "model_id": "Qwen/Qwen2-VL-2B-Instruct",
-  "options": {
-    "pipeline": "vision",
-    "dtype": "bf16"
-  }
-}
-```
-
-## Migration from 0.1.x
-
-The `generate()` API changed from `&[String]` to `&[Message]`.
-
-**Before (0.1.x):**
-
-```rust
-let result = generator.generate(
-    &["Hello".to_string()],
-    GenerationOptions::default(),
-).await?;
-```
-
-**After (0.2.0):**
-
-```rust
-let result = generator.generate(
-    &[Message::user("Hello")],
-    GenerationOptions::default(),
-).await?;
-```
-
-The `Message::user()` convenience constructor creates a single text message with `MessageRole::User`. For multimodal content, build `Message` structs directly with multiple `ContentBlock` entries.
+| Field | Forwarded as | Notes |
+| --- | --- | --- |
+| `max_tokens` | `max_tokens` | Per-call completion cap |
+| `temperature` | `temperature` | |
+| `top_p` | `top_p` | |
+| `width` / `height` | — | Ignored; no bundled provider generates images |

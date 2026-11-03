@@ -53,7 +53,6 @@ helpers (`max_sim`, `colbert_rerank`, `sparse_dot`) in one `use`.
 | --- | --- | --- |
 | `local/candle` | `embed` | `provider-candle` |
 | `local/onnx` | `raw`, `rerank`, `embed`, `embed_sparse`, `embed_multi_vector`, `embed_hybrid`, `embed_image`, `nlp`, `ocr`, `document_extract` | `provider-onnx` (or `provider-onnx-dynamic`) |
-| `local/mistralrs` | `embed`, `generate` (text, vision, diffusion, speech), `document_extract` | `provider-mistralrs` |
 | `local/whisper-cpp` | `transcribe` | `provider-whisper-cpp` (opt-in, not default) |
 | `remote/openai` | `embed`, `generate` | `provider-openai` |
 | `remote/gemini` | `embed`, `generate`, `embed_multimodal` | `provider-gemini` |
@@ -63,19 +62,19 @@ helpers (`max_sim`, `colbert_rerank`, `sparse_dot`) in one `use`.
 | `remote/voyageai` | `embed`, `rerank` | `provider-voyageai` |
 | `remote/cohere` | `embed`, `rerank`, `generate`, `embed_multimodal` | `provider-cohere` |
 | `remote/azure-openai` | `embed`, `generate` | `provider-azure-openai` |
-| `remote/llamacpp` | `embed` (llama.cpp `llama-server`, tokenizer-aware truncation) | `provider-llamacpp` |
+| `remote/llamacpp` | `embed` (llama.cpp `llama-server`, tokenizer-aware truncation), `generate` (text and vision), `rerank`, `document_extract` | `provider-llamacpp` |
 
 ## Installation
 
-Defaults give you all three local backends and all eight remote API providers on CPU. Two follow-up questions:
+Defaults give you both local backends and all nine remote API providers on CPU. Two follow-up questions:
 
 1. **Want a leaner build?** Pass `default-features = false` and pick what you need.
 2. **Want GPU?** Add `gpu-cuda` (Linux/Windows + NVIDIA) or `gpu-metal` (macOS/iOS).
 
 ```toml
 [dependencies]
-# Defaults: candle + mistralrs + onnx + all 8 remote providers, CPU only.
-uni-xervo = "0.18"
+# Defaults: candle + onnx + all 9 remote providers, CPU only.
+uni-xervo = "0.19"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -83,7 +82,7 @@ tokio = { version = "1", features = ["full"] }
 
 The features split into three independent axes:
 
-- **Providers**: `provider-candle`, `provider-mistralrs`, `provider-onnx` (local) and `provider-{openai, gemini, vertexai, mistral, anthropic, voyageai, cohere, azure-openai, llamacpp}` (remote). All on by default. `provider-whisper-cpp` (local speech-to-text) is opt-in — it builds whisper.cpp's C/C++ source via CMake, so it stays out of the default `cargo build` toolchain requirement.
+- **Providers**: `provider-candle`, `provider-onnx` (local) and `provider-{openai, gemini, vertexai, mistral, anthropic, voyageai, cohere, azure-openai, llamacpp}` (remote). All on by default. `provider-whisper-cpp` (local speech-to-text) is opt-in — it builds whisper.cpp's C/C++ source via CMake, so it stays out of the default `cargo build` toolchain requirement.
 - **ORT linking** (matters only if you use ONNX): `provider-onnx` (default, statically linked CPU bundle, self-contained) or `provider-onnx-dynamic` (load-dynamic, BYO ORT via `ORT_DYLIB_PATH`). Mutually exclusive.
 - **GPU acceleration**: `gpu-cuda` or `gpu-metal`. Off by default. Purely additive — at runtime, ORT registers the GPU EP first and silently falls back to CPU.
 
@@ -93,27 +92,26 @@ To bring your own ORT build (ROCm, OpenVINO, custom CPU/GPU builds, sandboxed CI
 
 ```toml
 # Default — everything except GPU.
-uni-xervo = "0.18"
+uni-xervo = "0.19"
 
 # Add NVIDIA GPU (Linux / Windows).
-uni-xervo = { version = "0.18", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.19", features = ["gpu-cuda"] }
 
 # Add Apple GPU + Neural Engine (macOS / iOS).
-uni-xervo = { version = "0.18", features = ["gpu-metal"] }
+uni-xervo = { version = "0.19", features = ["gpu-metal"] }
 
 # Lean — only candle (no ORT, no remote providers).
-uni-xervo = { version = "0.18", default-features = false, features = ["provider-candle"] }
+uni-xervo = { version = "0.19", default-features = false, features = ["provider-candle"] }
 
 # Remote-only — no native deps.
-uni-xervo = { version = "0.18", default-features = false, features = [
+uni-xervo = { version = "0.19", default-features = false, features = [
     "provider-openai",
     "provider-anthropic",
 ] }
 
 # BYO ONNX Runtime (ROCm, OpenVINO, custom builds, sandboxed CI).
-uni-xervo = { version = "0.18", default-features = false, features = [
+uni-xervo = { version = "0.19", default-features = false, features = [
     "provider-candle",
-    "provider-mistralrs",
     "provider-onnx-dynamic",
 ] }
 # Then at runtime: ORT_DYLIB_PATH=/path/to/libonnxruntime.so ./your-binary
@@ -247,7 +245,7 @@ Default remote credential env vars:
 | `remote/voyageai` | `VOYAGE_API_KEY` | None |
 | `remote/cohere` | `CO_API_KEY` | None |
 | `remote/azure-openai` | `AZURE_OPENAI_API_KEY` | `resource_name` option |
-| `remote/llamacpp` | none (optional `api_key_env`) | `base_url`, `max_input_tokens`, `embedding_dimensions` options |
+| `remote/llamacpp` | none (optional `api_key_env`) | `base_url` option; `max_input_tokens` and `embedding_dimensions` for `embed`; optional `style` for `document_extract` |
 
 ## CLI Prefetch Utility
 
@@ -343,7 +341,7 @@ The script builds stripped release binaries for:
 - `provider-candle`
 - `provider-onnx`
 - `provider-openai`
-- `provider-mistralrs`
+- `provider-llamacpp`
 
 This gives a more useful incremental footprint than looking at debug binaries or the repository's `prefetch` CLI alone.
 

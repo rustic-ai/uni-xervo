@@ -366,32 +366,6 @@
             }
           }
         }
-      },
-      {
-        "if": {
-          "properties": {
-            "provider_id": {
-              "const": "local/mistralrs"
-            }
-          },
-          "required": [
-            "provider_id"
-          ]
-        },
-        "then": {
-          "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/mistralrs.schema.json"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          }
-        }
       }
     ]
   }

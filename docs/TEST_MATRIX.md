@@ -4,6 +4,11 @@ Comprehensive test results for uni-xervo local backends. Remote provider tests (
 
 **Last run**: 2026-03-12 | **Platform**: Linux x86_64 (CPU-only, no GPU) | **Rust**: stable
 
+> **Note**: this is a record of one run, not a live list. The
+> `local/mistralrs` sections below describe tests that were removed in 0.19.0
+> along with the provider; they are kept here because the numbers above were
+> measured with them in place.
+
 ---
 
 ## Summary

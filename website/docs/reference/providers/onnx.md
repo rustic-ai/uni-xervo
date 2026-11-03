@@ -15,11 +15,15 @@ A single ONNX-Runtime-backed provider that dispatches by `task`:
 - **`embed`** — dense text embeddings via `EmbeddingModel` (replaces the retired `local/fastembed` provider as of 0.8.0; the same alias strings still resolve).
 - **`embed_image`** — ViT-style image embedders (SigLIP-2, CLIP, OpenCLIP)
   via `ImageEmbeddingModel`. New in 0.13.0.
-- **`nlp`** — multi-head NLP cascades via `NlpModel`. Reference target:
-  `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` (POS / NER / DEP / SRL
-  / dialog-act CLS in one forward pass). New in 0.13.0; result surface
-  extended in 0.14.0 (merged entities, full dialog-act distribution,
-  word alignment, exposed label vocabularies). See the
+- **`nlp`** — structured NLP via `NlpModel`, serving two generations of the
+  kniv family. `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` is the v1
+  cascade (POS / NER / DEP / SRL / dialog-act CLS in one forward pass);
+  `dragonscale-ai/kniv-v7-xlarge-u-en` and `-d-en` are kniv v7 (eight graphs
+  over word-level windows, adding morphology, lemmas, sentiment,
+  coreference, caller-supplied entity types and relations with polarity,
+  modality, holder and time). New in 0.13.0; result surface extended in
+  0.14.0 (merged entities, full dialog-act distribution, word alignment,
+  exposed label vocabularies) and in 0.19.0 (kniv v7). See the
   [Structured NLP guide](../../guides/nlp.md).
 - **`ocr`** — text recognition (CRNN + CTC) via `OcrModel`, with an
   **optional DBNet detection stage** for full-page OCR. Recognition is new
@@ -33,8 +37,9 @@ A single ONNX-Runtime-backed provider that dispatches by `task`:
   `doc_parse` module) all ship and are unit tested, but `extract()` returns
   `RuntimeError::Unavailable` until an upstream canonical ONNX export of one
   of the three target VLMs ships. The olmOCR-2 path is **live today on
-  [`local/mistralrs`](mistralrs.md#document-extraction-olmocr-2)** (its
-  vision pipeline), which reuses the same `doc_parse` parsers.
+  [`remote/llamacpp`](llamacpp.md#document_extract)** — a GGUF document VLM
+  on a `llama-server` started with `--mmproj`, which reuses the same
+  `doc_parse` parsers.
 
 ## Provider options
 
@@ -44,7 +49,7 @@ Options are validated per task (unknown keys are rejected with a precise `Runtim
 
 - `artifact` (string) — explicit `.onnx` filename within an HF repo (auto-detected if a single match exists).
 - `max_batch_size` (integer)
-- `execution_providers` — array of EP identifiers. Accepted by option validation: `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Other identifiers (e.g. `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"`) are rejected at catalog load with `RuntimeError::Config`. Defaults to a feature-aware list: `["cuda", "cpu"]` under `gpu-cuda`, `["coreml", "cpu"]` under `gpu-metal`, `["cpu"]` otherwise. Vendor EPs are never default — opt in explicitly. Selecting `"cuda"`/`"coreml"` still requires the matching GPU feature (or a `provider-onnx-dynamic` build pointed at a vendor ORT library via `ORT_DYLIB_PATH`). **Per-spec**, so a single catalog can mix GPU and CPU placement on a `gpu-cuda` build (e.g. embedder on `["cpu"]`, reranker on `["cuda", "cpu"]`) — see the [mixed-catalog recipe](../../guides/onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog). For `local/mistralrs` aliases the analogous per-spec switch is [`force_cpu`](mistralrs.md#device-placement) (mistralrs is candle-backed, not ORT-backed, so it doesn't accept this option). If a requested EP fails to initialize (missing cuDNN, wrong CUDA major version, etc.), ORT silently falls through to the next EP in the list — see [GPU setup → verifying the GPU EP actually loaded](../../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) for how to detect this. See `docs/migrations/0.9.0-feature-surface.md` for vendor-build setup.
+- `execution_providers` — array of EP identifiers. Accepted by option validation: `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Other identifiers (e.g. `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"`) are rejected at catalog load with `RuntimeError::Config`. Defaults to a feature-aware list: `["cuda", "cpu"]` under `gpu-cuda`, `["coreml", "cpu"]` under `gpu-metal`, `["cpu"]` otherwise. Vendor EPs are never default — opt in explicitly. Selecting `"cuda"`/`"coreml"` still requires the matching GPU feature (or a `provider-onnx-dynamic` build pointed at a vendor ORT library via `ORT_DYLIB_PATH`). **Per-spec**, so a single catalog can mix GPU and CPU placement on a `gpu-cuda` build (e.g. embedder on `["cpu"]`, reranker on `["cuda", "cpu"]`) — see the [mixed-catalog recipe](../../guides/onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog). No other provider takes a per-spec device option: `local/candle` places from the build features alone, and `remote/llamacpp` runs inference in the server process, where the device is a `llama-server` flag. If a requested EP fails to initialize (missing cuDNN, wrong CUDA major version, etc.), ORT silently falls through to the next EP in the list — see [GPU setup → verifying the GPU EP actually loaded](../../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) for how to detect this. See `docs/migrations/0.9.0-feature-surface.md` for vendor-build setup.
 - `graph_optimization_level` — `"disable" | "basic" | "extended" | "all"`.
 - `inter_op_num_threads`, `intra_op_num_threads` (integers)
 - `cache_dir` (string) — overrides `UNI_CACHE_DIR` and the default `.uni_cache/onnx-…/` location.
@@ -130,9 +135,17 @@ exposed (see `model.available_heads()`). Models without a hybrid preset return a
 
 ### NLP-only keys (`task = nlp`)
 
+Shared by both kniv generations:
+
+- `tokenizer_path` (string, default `"tokenizer.json"`).
+- `generation` (string, `"v1"` or `"v7"`) — pins the generation instead of
+  inferring it. Inference: a repo carrying `onnx/onnx_meta.json` is v7, a repo
+  carrying `onnx/cascade.onnx` is v1.
+
+kniv v1 cascade only:
+
 - `onnx_path` (string, default `"onnx/cascade.onnx"`) — path within the HF
   repo to the cascade ONNX file.
-- `tokenizer_path` (string, default `"tokenizer.json"`).
 - `label_maps_path` (string, default `"label_maps.json"`) — JSON file
   containing the model's per-head id-to-label arrays (`pos`, `ner`,
   `srl`, `cls`, `deprel`). Each entry's position is the model's class
@@ -142,10 +155,36 @@ exposed (see `model.available_heads()`). Models without a hybrid preset return a
   offsets in `NlpToken::{start, end}` stay correct because tokenization
   runs once over the full text.
 
-Canonical default model: `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall`
-(DeBERTa-v3-xsmall, 5 heads, ~75 MB INT8 ONNX). SRL multi-pass
-orchestration (one forward per detected verb via `predicate_idx`) is
-handled provider-side and invisible to callers.
+kniv v7 only:
+
+- `variant` (string, default `""` = fp32) — the precision **fallback chain**
+  for the three encoder graphs. `"int8,fp16"` loads, per graph, the first
+  suffix published for it, else the fp32 file; that resolves to `plain-int8`,
+  `marker-int8` and `label-fp16`, because the label graph publishes no INT8
+  file (it runs once per schema and is cached). Only the files the chain needs
+  are downloaded.
+- `calibration_path` (string, default `"calibration.json"`) — the release's
+  dev-tuned decoding thresholds, readable via `NlpModel::calibration()` and
+  overridable per request.
+- `label_bank_path` (string, default `"label_bank.json"`) — marks the
+  relations whose thresholds were tuned individually; the rest fall back to
+  `unseen_offset`.
+
+The two sets do not overlap, and mixing them is rejected at catalog
+registration — before any download. v7 takes no `max_seq_len`: its window is
+512 words and its subword budget comes from `onnx_meta.json` (1,024 for
+UltraBERT, 512 for DeBERTa).
+
+`graph_optimization_level`, `intra_op_num_threads` and `inter_op_num_threads`
+are honoured on the v7 path. Set `intra_op_num_threads` when the model runs
+alongside an embedder, or ONNX Runtime takes every core.
+
+On GPUs use `"variant": "fp16"`: the INT8 graphs use dynamic per-channel
+quantisation, which CUDA serves through its own CPU fallback.
+
+SRL multi-pass orchestration on the v1 path (one forward per detected verb via
+`predicate_idx`) is handled provider-side and invisible to callers; v7 scores
+every predicate in one batched call.
 
 ### Image-embed-only keys (`task = embed_image`)
 
@@ -281,9 +320,13 @@ By task:
 - **`nlp`** → `runtime.nlp_model(alias)` returns `Arc<dyn NlpModel>`.
   Method: `analyze(requests)` → `Vec<NlpResult>` with populated `tokens`,
   `sentences`, `frames`, `speech_acts`, and merged `entities` per the requested
-  `NlpTasks` bitflag. `NlpModel::label_maps()` exposes the model's per-head
-  label vocabularies. See the [Structured NLP guide](../../guides/nlp.md) for
-  the full result-type reference and a worked example.
+  `NlpTasks` bitflag. A v7 model also fills `windows` with the per-window
+  analysis — typed entities, coreference clusters and facts — and accepts
+  conversation `turns` and an `ExtractionSchema` on the request.
+  `NlpModel::label_maps()` exposes the model's per-head label vocabularies and
+  `NlpModel::calibration()` its decoding thresholds. See the
+  [Structured NLP guide](../../guides/nlp.md) for the full result-type
+  reference and a worked example.
 - **`ocr`** → `runtime.ocr_model(alias)` returns `Arc<dyn OcrModel>`.
   Method: `recognize(images)` → `Vec<OcrResult>`. With `det_onnx_path`
   set, each result holds one block per detected region (pixel bboxes, reading
@@ -291,7 +334,7 @@ By task:
 - **`document_extract`** → `runtime.document_extractor(alias)` returns
   `Arc<dyn DocumentExtractionModel>`. Method: `extract(pages, options)`
   → `Vec<DocExtractResult>` (scaffold on `local/onnx` — returns `Unavailable`;
-  use [`local/mistralrs`](mistralrs.md#document-extraction-olmocr-2) for olmOCR-2).
+  use [`remote/llamacpp`](llamacpp.md#document_extract) for a GGUF document VLM).
 
 ## Example catalog entries
 
@@ -350,11 +393,28 @@ By task:
 }
 ```
 
-### NLP (kniv-deberta canonical default)
+### NLP (kniv v7)
 
 ```json
 {
   "alias": "nlp/default",
+  "task": "nlp",
+  "provider_id": "local/onnx",
+  "model_id": "dragonscale-ai/kniv-v7-xlarge-u-en",
+  "warmup": "background",
+  "options": {
+    "variant": "int8,fp16",
+    "execution_providers": ["cpu"],
+    "intra_op_num_threads": 8
+  }
+}
+```
+
+### NLP (kniv v1 cascade)
+
+```json
+{
+  "alias": "nlp/cascade",
   "task": "nlp",
   "provider_id": "local/onnx",
   "model_id": "dragonscale-ai/kniv-deberta-nlp-base-en-xsmall",
@@ -411,7 +471,7 @@ DBNet detection + English recognizer. Drop `det_onnx_path` for single-stage
 
 `local/onnx` document extraction is gated on an upstream ONNX export. For a
 working VLM document extractor today, use the olmOCR-2 path on
-[`local/mistralrs`](mistralrs.md#document-extraction-olmocr-2).
+[`remote/llamacpp`](llamacpp.md#document_extract).
 
 ```json
 {

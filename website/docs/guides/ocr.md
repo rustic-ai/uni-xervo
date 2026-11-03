@@ -13,7 +13,7 @@ tables, formulas, headings, reading order — reach for the generative
 
 ## When to use OCR vs. document extraction
 
-| | `OcrModel` (`local/onnx`) | `DocumentExtractionModel` (`local/mistralrs`) |
+| | `OcrModel` (`local/onnx`) | `DocumentExtractionModel` (`remote/llamacpp`) |
 |---|---|---|
 | Output | Plain text + bounding boxes | Structured Markdown (tables, formulas, headings) |
 | Determinism | Deterministic; will not invent text | Generative; can hallucinate |

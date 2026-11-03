@@ -18,9 +18,8 @@
 //! callers crop their regions upstream and pass one image per region.
 //! A future v2 may absorb a DBNet-style detector as a sibling `style`.
 
+use crate::hf::HfModelRepo;
 use async_trait::async_trait;
-use hf_hub::api::tokio::ApiBuilder;
-use hf_hub::{Repo, RepoType};
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use serde_json::Value;
@@ -36,7 +35,8 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, parse_execution_providers_option,
+    OnnxExecutionProvider, build_execution_providers, ort_environment,
+    parse_execution_providers_option,
 };
 use crate::traits::{ImageInput, OcrBlock, OcrModel, OcrResult};
 use image::{DynamicImage, GenericImageView};
@@ -649,18 +649,13 @@ async fn download_artifact(
     cache_dir: &Path,
     path: &str,
 ) -> Result<PathBuf> {
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .map_err(|e| RuntimeError::OnnxDownloadFailure {
+    let api_repo = HfModelRepo::open(cache_dir, model_id, revision).map_err(|e| {
+        RuntimeError::OnnxDownloadFailure {
             alias: alias.to_string(),
             cause: e.to_string(),
-        })?;
-    let repo = match revision {
-        Some(rev) => Repo::with_revision(model_id.to_string(), RepoType::Model, rev.to_string()),
-        None => Repo::model(model_id.to_string()),
-    };
-    api.repo(repo)
+        }
+    })?;
+    api_repo
         .get(path)
         .await
         .map_err(|e| RuntimeError::OnnxDownloadFailure {
@@ -677,18 +672,12 @@ async fn download_ocr_artifacts(
     onnx_path: &str,
     char_dict_path: &str,
 ) -> Result<(PathBuf, PathBuf)> {
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .map_err(|e| RuntimeError::OnnxDownloadFailure {
+    let api_repo = HfModelRepo::open(cache_dir, model_id, revision).map_err(|e| {
+        RuntimeError::OnnxDownloadFailure {
             alias: alias.to_string(),
             cause: e.to_string(),
-        })?;
-    let repo = match revision {
-        Some(rev) => Repo::with_revision(model_id.to_string(), RepoType::Model, rev.to_string()),
-        None => Repo::model(model_id.to_string()),
-    };
-    let api_repo = api.repo(repo);
+        }
+    })?;
     let onnx_file =
         api_repo
             .get(onnx_path)
@@ -713,11 +702,12 @@ fn build_session(
     spec: &ModelAliasSpec,
     execution_providers: Option<&[OnnxExecutionProvider]>,
 ) -> Result<Session> {
-    let builder = Session::builder().map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: spec.alias.clone(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
+    let builder =
+        Session::builder(ort_environment()?).map_err(|e| RuntimeError::OnnxLoadFailure {
+            alias: spec.alias.clone(),
+            path: path.to_path_buf(),
+            cause: e.to_string(),
+        })?;
     let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| RuntimeError::OnnxLoadFailure {

@@ -6,7 +6,7 @@
 //! Single backend, multiple tasks. The provider declares
 //! [`ModelTask::Raw`] and [`ModelTask::Rerank`] in [`ProviderCapabilities`]
 //! and dispatches inside [`ModelProvider::load`] — matching the pattern
-//! used by `cohere.rs`, `mistralrs.rs`, etc.
+//! used by `cohere.rs`, `llamacpp/`, etc.
 //!
 //! Task implementations live in private submodules:
 //!
@@ -31,6 +31,7 @@ mod embedding;
 mod image;
 mod image_embed;
 mod nlp;
+mod nlp_v7;
 mod ocr;
 mod presets;
 mod raw;
@@ -129,7 +130,15 @@ impl ModelProvider for LocalOnnxProvider {
                 Ok(Arc::new(embedder) as LoadedModelHandle)
             }
             ModelTask::Nlp => {
-                let model: Arc<dyn NlpModel> = nlp::load_nlp(spec).await?;
+                // Two generations of the kniv NLP family share this task.
+                // The v1 cascade is one graph of 128 subwords; v7 is eight
+                // graphs over word-level windows, with coreference, typed
+                // entities and schema relations. They have no code in
+                // common beyond this dispatch.
+                let model: Arc<dyn NlpModel> = match nlp_v7::detect_generation(spec).await? {
+                    nlp_v7::Generation::V7 => nlp_v7::load_nlp_v7(spec).await?,
+                    nlp_v7::Generation::V1 => nlp::load_nlp(spec).await?,
+                };
                 Ok(Arc::new(model) as LoadedModelHandle)
             }
             ModelTask::EmbedImage => {
