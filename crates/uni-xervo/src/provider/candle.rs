@@ -1,5 +1,6 @@
 use crate::api::{ModelAliasSpec, ModelTask};
 use crate::error::{Result, RuntimeError};
+use crate::hf::HfModelRepo;
 use crate::traits::{
     EmbedResult, EmbeddingModel, LoadedModelHandle, ModelProvider, ProviderCapabilities,
     ProviderHealth,
@@ -12,10 +13,7 @@ use candle_transformers::models::gemma::{Config as GemmaConfig, Model as GemmaMo
 use candle_transformers::models::jina_bert::{
     BertModel as JinaBertModel, Config as JinaBertConfig,
 };
-use hf_hub::{
-    Repo, RepoType,
-    api::tokio::{Api, ApiBuilder},
-};
+use hf_hub::HFClient;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -108,8 +106,8 @@ impl ModelProvider for LocalCandleProvider {
 
     async fn warmup(&self) -> Result<()> {
         tracing::info!("Warming up LocalCandleProvider");
-        // Pre-initialize HF API to warm up network/cache
-        let _ = Api::new().map_err(|e| RuntimeError::Load(e.to_string()))?;
+        // Pre-initialize the HF client to warm up network/cache.
+        let _ = HFClient::new().map_err(|e| RuntimeError::Load(e.to_string()))?;
         Ok(())
     }
 }
@@ -209,19 +207,12 @@ impl CandleEmbeddingModel {
             "Loading Candle embedding model"
         );
 
-        let api = ApiBuilder::new()
-            .with_cache_dir(self.cache_dir.clone())
-            .build()
-            .map_err(|e| RuntimeError::Load(e.to_string()))?;
-        let repo = match &self.revision {
-            Some(rev) => Repo::with_revision(
-                self.model_type.model_id().to_string(),
-                RepoType::Model,
-                rev.clone(),
-            ),
-            None => Repo::model(self.model_type.model_id().to_string()),
-        };
-        let api_repo = api.repo(repo);
+        let api_repo = HfModelRepo::open(
+            &self.cache_dir,
+            self.model_type.model_id(),
+            self.revision.as_deref(),
+        )
+        .map_err(|e| RuntimeError::Load(e.to_string()))?;
 
         let config_path = api_repo
             .get("config.json")

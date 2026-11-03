@@ -1,16 +1,15 @@
 #![cfg(feature = "provider-onnx-dynamic")]
-//! Regression test for the ort 2.0.0-rc.12 load-dynamic OnceLock deadlock
-//! workaround.
+//! Regression test for the load-dynamic missing-dylib preflight.
 //!
 //! Background: when ort fails to load `libonnxruntime` (missing
-//! `ORT_DYLIB_PATH`, wrong path, etc.), its error-construction path
-//! recursively calls `ort::api()` from inside `setup_api`'s `OnceLock`
-//! initializer, deadlocking the thread on the same futex forever
-//! (pykeio/ort#560, fixed upstream in `17ed7277` but not yet released
-//! as of `=2.0.0-rc.12`).
+//! `ORT_DYLIB_PATH`, wrong path, etc.) it panics from inside `setup_api`'s
+//! `OnceLock` initializer, which a caller cannot turn into an error.
+//! Through ort 2.0.0-rc.12 it was worse — the error-construction path called
+//! back into `ort::api()` and deadlocked the thread forever
+//! (pykeio/ort#560, fixed by `17ed7277` and released by the pinned rc.15).
 //!
 //! `provider::onnx_ep::preflight_ort_dylib` runs **before** any ort API
-//! call and converts this deadlock into a clear `RuntimeError::Config`
+//! call and converts either failure mode into a clear `RuntimeError::Config`
 //! that returns in milliseconds.
 //!
 //! This test:

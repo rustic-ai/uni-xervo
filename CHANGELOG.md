@@ -162,25 +162,72 @@ All notable changes to this project are documented in this file.
   against both released encoders: subword alignment, and every tag, head,
   span, entity and fact downstream of it, still match the reference.
 
-  Four dependencies are deliberately held back:
+  The four dependencies this entry originally held back have since moved too —
+  see **Every dependency is now at its latest release** below.
 
-  - **`ort` stays pinned at `=2.0.0-rc.12`** (rc.15 available). rc.15 requires
-    an explicit `&Environment` for every `Session::builder` and moved
-    `ort::execution_providers`, which is a session-lifecycle change across all
-    eight ONNX call sites rather than a version bump. It needs its own change,
-    with every ONNX task re-verified.
-  - **`hf-hub` stays at 0.5** (1.0.0 available). 1.0 is a rewrite —
-    `HFClient` / `HFClientBuilder` / `HFRepository` replace `Api` / `ApiBuilder`
-    / `Repo`, and the `tokio` feature is gone — touching all 11 model-download
-    sites, with cache layout, revision handling and offline behaviour to
-    re-verify against real downloads.
-  - **`candle` stays at 0.10** (0.11.1 available) and **`regex` at 1.12.4**
-    (1.13.1 available). Both were held by `mistralrs` 0.8.1, which required
-    `candle-core ^0.10.2` and capped `regex` below 1.13 through
-    `Inflector → variantly → serde-saphyr`. Removing that provider (see
-    Removed) lifts both caps, and `generic-array`'s `~0.14.7` pin is gone with
-    it — but moving them is dependency work, not provider work, and belongs in
-    its own change rather than tangled with this one.
+- **Every dependency is now at its latest release.** The remaining
+  semver-compatible moves were taken (`regex` 1.13.1 — the cap `mistralrs`
+  imposed through `Inflector → variantly → serde-saphyr`, now lifted — plus
+  `aes` 0.9.4, `cc` 1.11.0, `ureq` 3.5.1 and the `hayro` sub-crates), along
+  with four manifest bumps that each needed source changes or a feature
+  review.
+
+  **`candle` 0.10 → 0.11.1.** No source change at all, and it collapses a
+  duplicate: candle 0.10 pinned `tokenizers` 0.22 while this crate declares
+  0.23, so the default tree compiled `tokenizers` twice. It now builds once.
+
+  **`hayro` 0.8 → 0.9.0** in `uni-xervo-pdf`. No source change; the
+  rasterizer's own tests render a generated PDF and still pass.
+
+  **`ort` `=2.0.0-rc.12` → `=2.0.0-rc.15`.** `Session::builder` now takes an
+  explicit `&Environment` instead of reaching for a hidden global, so there is
+  a process-global `Environment` behind `onnx_ep::ort_environment()` that all
+  seven session sites borrow. Execution providers deliberately stay on the
+  session builder rather than moving to the environment, because EP selection
+  is per alias here. `ort::execution_providers` moved to `ort::ep`, and the
+  vendor EP types (`ROCm`, `DirectML`, `OpenVINO`, `QNN`, `TensorRT`,
+  `WebGPU`) became feature-gated in `ort`, so `provider-onnx-dynamic` now
+  forwards those six `ort` features — they only switch on the registration
+  API, since the kernels come from the library supplied via `ORT_DYLIB_PATH`.
+
+  rc.15 also fixes the re-entrant `OnceLock` deadlock
+  ([pykeio/ort#560](https://github.com/pykeio/ort/issues/560)) that
+  `preflight_ort_dylib` was written to work around: a missing dylib now
+  panics instead of hanging. The preflight stays — a panic from inside a
+  library is still worse than a `Config` error naming the alias and the path
+  — but it is documented as a fast-fail rather than a workaround.
+
+  **`hf-hub` 0.5 → 1.0.0.** A rewrite: `HFClient` / `HFClientBuilder` /
+  `HFRepository` replace `Api` / `ApiBuilder` / `Repo`, repositories are named
+  by separate owner and name rather than one `owner/name` string, the revision
+  is passed per download call rather than baked into the repo handle, and the
+  `tokio` feature is gone (async is the default; `blocking` is now the opt-in).
+  The ten download sites across `local/candle`, `local/onnx` and
+  `local/whisper-cpp` now share one `crate::hf::HfModelRepo` wrapper, which
+  holds the alias's revision so a single repository cannot be read at two
+  revisions by accident.
+
+  `local/onnx`'s `raw` task changed shape rather than just its calls: it used
+  to list a repo, download each file, then reconstruct the snapshot directory
+  from `Cache::pointer_path`. 1.0's `snapshot_download` returns that directory
+  itself, so the reconstruction is gone, and `select_onnx_artifact` now takes
+  the file names instead of the hub's info type — which is what lets it be
+  tested without building a full API response.
+
+  **Existing caches are preserved.** Verified by populating a cache with 0.5,
+  then reading it with 1.0: the blobs were reused byte-for-byte, same inodes,
+  no re-download. Verified too against a cold cache, which re-downloads and
+  rebuilds the same layout.
+
+  hf-hub 1.0 is the one bump here that costs rather than saves: it depends on
+  the Xet stack (`hf-xet`, `xet-client`, `xet-runtime`, `xet-data`,
+  `xet-core-structures`, `reqwest-middleware`) unconditionally, with no feature
+  to opt out, which takes the default tree from 318 crates to 397. Part of that
+  is bought back by dropping `tokenizers`' `http` feature, which exists for
+  `Tokenizer::from_pretrained` — a call this crate never makes, since tokenizers
+  are always loaded from a path a provider downloaded itself — and was quietly
+  pulling a second, older major of `hf-hub` into the graph beside the one in
+  use.
 
 - **`NlpRequest` is now `#[non_exhaustive]`** and has three more fields, so
   struct literals no longer compile. Build one with `NlpRequest::new(text,

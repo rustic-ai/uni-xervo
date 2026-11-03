@@ -27,7 +27,7 @@ use ort::value::{DynTensor, Tensor};
 
 use crate::api::ModelAliasSpec;
 use crate::error::{Result, RuntimeError};
-use crate::provider::onnx_ep::{OnnxExecutionProvider, build_execution_providers};
+use crate::provider::onnx_ep::{OnnxExecutionProvider, build_execution_providers, ort_environment};
 
 /// The graph names a release ships, in the order the pipeline reaches them.
 pub(crate) const GRAPH_NAMES: [&str; 8] = [
@@ -320,7 +320,7 @@ impl Graphs {
             path: path.to_path_buf(),
             cause: e.to_string(),
         };
-        let mut builder = Session::builder().map_err(|e| load_err(&e))?;
+        let mut builder = Session::builder(ort_environment()?).map_err(|e| load_err(&e))?;
         // Unlike the v1 path, the configured optimization level and thread
         // counts are honoured rather than validated and dropped.
         let level = match self.optimization_level.as_deref() {

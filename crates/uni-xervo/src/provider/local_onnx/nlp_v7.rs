@@ -41,9 +41,8 @@ mod text;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::hf::HfModelRepo;
 use async_trait::async_trait;
-use hf_hub::api::tokio::ApiBuilder;
-use hf_hub::{Repo, RepoType};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
@@ -152,18 +151,14 @@ pub(super) async fn load_nlp_v7(spec: &ModelAliasSpec) -> Result<Arc<dyn NlpMode
 
 /// Fetch one file from the model repo.
 async fn fetch(spec: &ModelAliasSpec, cache_dir: &Path, path: &str) -> Result<PathBuf> {
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .map_err(|e| RuntimeError::OnnxDownloadFailure {
-            alias: spec.alias.clone(),
-            cause: e.to_string(),
+    let api_repo =
+        HfModelRepo::open(cache_dir, &spec.model_id, spec.revision.as_deref()).map_err(|e| {
+            RuntimeError::OnnxDownloadFailure {
+                alias: spec.alias.clone(),
+                cause: e.to_string(),
+            }
         })?;
-    let repo = match spec.revision.as_deref() {
-        Some(rev) => Repo::with_revision(spec.model_id.clone(), RepoType::Model, rev.to_string()),
-        None => Repo::model(spec.model_id.clone()),
-    };
-    api.repo(repo)
+    api_repo
         .get(path)
         .await
         .map_err(|e| RuntimeError::OnnxDownloadFailure {

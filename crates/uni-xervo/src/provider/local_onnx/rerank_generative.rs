@@ -39,9 +39,8 @@
 //! [official Qwen3-Reranker model card](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B)
 //! and the [transformers.js usage example](https://huggingface.co/onnx-community/Qwen3-Reranker-0.6B-ONNX).
 
+use crate::hf::HfModelRepo;
 use async_trait::async_trait;
-use hf_hub::api::tokio::ApiBuilder;
-use hf_hub::{Repo, RepoType};
 use ndarray::{Array2, ArrayViewD};
 use ort::session::Session;
 use ort::value::{DynTensor, Tensor};
@@ -469,19 +468,12 @@ async fn download_model_files(
     cache_dir: &Path,
     artifact: &str,
 ) -> Result<(PathBuf, PathBuf)> {
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .map_err(|e| RuntimeError::OnnxDownloadFailure {
+    let api_repo = HfModelRepo::open(cache_dir, model_id, revision).map_err(|e| {
+        RuntimeError::OnnxDownloadFailure {
             alias: alias.to_string(),
             cause: e.to_string(),
-        })?;
-
-    let repo = match revision {
-        Some(rev) => Repo::with_revision(model_id.to_string(), RepoType::Model, rev.to_string()),
-        None => Repo::model(model_id.to_string()),
-    };
-    let api_repo = api.repo(repo);
+        }
+    })?;
 
     let model_path =
         api_repo

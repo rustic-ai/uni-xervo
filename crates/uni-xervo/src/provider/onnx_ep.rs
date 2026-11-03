@@ -47,7 +47,7 @@
 //! Filtering first matters here: `["cuda", "rocm"]` without `gpu-cuda`
 //! narrows to `[rocm]`, which then becomes the strict last entry.
 
-use ort::execution_providers::ExecutionProviderDispatch;
+use ort::ep::ExecutionProviderDispatch;
 
 use ort::ep::CPU;
 #[cfg(feature = "gpu-cuda")]
@@ -58,6 +58,42 @@ use ort::ep::CoreML;
 use ort::ep::{DirectML, OpenVINO, QNN, ROCm, TensorRT, WebGPU};
 
 use crate::error::{Result, RuntimeError};
+
+// ---------------------------------------------------------------------------
+// Process-global ORT environment
+// ---------------------------------------------------------------------------
+
+/// The one [`Environment`](ort::environment::Environment) every session in this
+/// process is built under.
+///
+/// ORT's environment is process-global by nature — it owns the logger, the
+/// telemetry switch and any shared thread pool — and `ort` makes that explicit
+/// as of 2.0.0-rc.13: `Session::builder` takes `&Environment` rather than
+/// reaching for a hidden global. One `OnceLock` here keeps that shape without
+/// threading an environment handle through every loader signature.
+///
+/// Execution providers are deliberately **not** configured on the environment,
+/// even though `EnvironmentBuilder::with_execution_providers` would accept
+/// them: EP selection is per alias in this crate (see this module's header),
+/// so it stays on the session builder where a per-alias list belongs.
+static ORT_ENV: std::sync::OnceLock<ort::environment::Environment> = std::sync::OnceLock::new();
+
+/// Borrow the process-global ORT environment, creating it on first use.
+///
+/// Fails only if ORT itself cannot be initialised — most often a missing or
+/// ABI-mismatched dynamic library on a `provider-onnx-dynamic` build.
+pub(crate) fn ort_environment() -> Result<&'static ort::environment::Environment> {
+    if let Some(env) = ORT_ENV.get() {
+        return Ok(env);
+    }
+    let env = ort::init()
+        .with_name("uni-xervo")
+        .build()
+        .map_err(|e| RuntimeError::Config(format!("failed to initialise ONNX Runtime: {e}")))?;
+    // A racing thread may have won; either handle is equally valid, so keep
+    // whichever landed first and drop ours.
+    Ok(ORT_ENV.get_or_init(|| env))
+}
 
 /// Parsed `execution_providers` entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,7 +524,7 @@ pub(crate) fn parse_execution_providers_option(
 
 /// Default ONNX Runtime dylib filename for the current platform. Mirrors
 /// what ort itself searches for when `ORT_DYLIB_PATH` is unset (see
-/// ort 2.0.0-rc.12 `src/lib.rs:188-194`).
+/// `setup_api` in ort 2.0.0-rc.15 `src/lib.rs`).
 ///
 /// Only present under `provider-onnx-dynamic`. Under `provider-onnx`
 /// (bundled CPU) the lib is statically linked into the binary; there's
@@ -524,18 +560,21 @@ fn default_dylib_name() -> &'static str {
 ///
 /// # Why this exists
 ///
-/// `ort` 2.0.0-rc.12 has a re-entrant `OnceLock` deadlock in its
-/// load-dynamic error path: when `libloading::Library::new()` fails,
-/// the failure is wrapped in `ort::Error::new(...)`, whose constructor
-/// calls back into `ort::api()` to format the status message — which
-/// is exactly the `OnceLock` whose initializer just failed. The thread
-/// blocks on the same futex forever and the panic that `setup_api`
-/// intends to throw never fires.
+/// A missing or unloadable dylib is unrecoverable inside `ort`: its
+/// `setup_api` calls `panic!` from within a `OnceLock` initializer, so the
+/// caller gets an unwind — or, on a `panic = "abort"` profile, no caller at
+/// all — rather than an error it can report. Since this is the single most
+/// likely misconfiguration of a `provider-onnx-dynamic` build, the dylib is
+/// checked here *before* any code touches the ort API, turning that panic
+/// into a `Config` error naming the alias, the path it tried and the fix.
 ///
-/// This was reported as [pykeio/ort#560] and fixed by [`17ed7277`] but
-/// not yet released as of `rc.12`. Until a new ort release ships, we
-/// intercept the missing-dylib case here — *before* any code touches
-/// the ort API — and surface a clear `Config` error instead.
+/// Through `ort` 2.0.0-rc.12 the same path was worse still: the failure was
+/// wrapped in `ort::Error::new(...)`, whose constructor called back into
+/// `ort::api()` — the very `OnceLock` whose initializer had just failed — so
+/// the thread blocked on that futex forever and the intended panic never
+/// fired ([pykeio/ort#560], fixed by [`17ed7277`]). That deadlock is gone as
+/// of the pinned rc.15, which leaves this check as the fast, actionable
+/// failure rather than a workaround.
 ///
 /// # Behavior
 ///
@@ -556,9 +595,10 @@ fn default_dylib_name() -> &'static str {
 ///
 /// # Limitations
 ///
-/// Does **not** catch ABI-version mismatches — those still hit the ort
-/// deadlock if they happen. Mitigation: the pinned `ort = "=2.0.0-rc.12"`
-/// + matched ORT runtime tarball makes version mismatches unlikely.
+/// Does **not** catch ABI-version mismatches: a library that loads but
+/// exports the wrong API version still panics inside ort. Mitigation: the
+/// pinned `ort = "=2.0.0-rc.15"` plus a matched ORT runtime tarball makes
+/// version mismatches unlikely.
 ///
 /// [pykeio/ort#560]: https://github.com/pykeio/ort/issues/560
 /// [`17ed7277`]: https://github.com/pykeio/ort/commit/17ed7277
@@ -729,7 +769,8 @@ mod tests {
                         "expected message to mention provider-onnx-dynamic, got: {msg}"
                     );
                 }
-                other => panic!("expected Config error for {ep:?}, got {other:?}"),
+                Ok(_) => panic!("expected Config error for {ep:?}, got a dispatch list"),
+                Err(other) => panic!("expected Config error for {ep:?}, got {other:?}"),
             }
         }
     }

@@ -33,7 +33,7 @@ device option — it is not ORT-backed, so it doesn't take
 
 ## NVIDIA / Linux runtime requirements
 
-The bundled ONNX Runtime (`ort 2.0.0-rc.12` via pyke) ships pre-built
+The bundled ONNX Runtime (`ort 2.0.0-rc.15` via pyke) ships pre-built
 CUDA EP binaries that link against the **CUDA 12 / cuDNN 9** ABI:
 
 - `libcudnn.so.9`

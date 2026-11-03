@@ -34,7 +34,7 @@ tracing = { workspace = true }
 lopdf = { version = "0.46", optional = true }
 
 # Pure-Rust PDF rasterizer (behind `hayro`); `image` encodes the rendered page.
-hayro = { version = "0.8", optional = true }
+hayro = { version = "0.9", optional = true }
 image = { workspace = true, optional = true }
 
 [dev-dependencies]

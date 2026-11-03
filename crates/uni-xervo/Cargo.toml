@@ -77,6 +77,17 @@ provider-onnx-dynamic = [
     "dep:regex",
     "ort/load-dynamic",
     "ort/api-24",
+    # The vendor EP types are feature-gated in `ort` as of 2.0.0-rc.13. These
+    # only switch on the registration API — the matching kernels come from the
+    # ORT library the user supplies at runtime via `ORT_DYLIB_PATH`, which is
+    # what `load-dynamic` means — so enabling them costs nothing at build time
+    # and is what lets `execution_providers` name them per alias.
+    "ort/directml",
+    "ort/openvino",
+    "ort/qnn",
+    "ort/rocm",
+    "ort/tensorrt",
+    "ort/webgpu",
 ]
 
 # ─── Remote API providers ───────────────────────────────────────────────────
@@ -148,11 +159,15 @@ bitflags = "2"
 futures = "0.3"
 
 # Optional dependencies for providers
-candle-core = { version = "0.10", optional = true }
-candle-nn = { version = "0.10", optional = true }
-candle-transformers = { version = "0.10", optional = true }
-tokenizers = { version = "0.23", default-features = false, features = ["onig", "http"], optional = true }
-hf-hub = { version = "0.5", features = ["tokio"], optional = true }
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+# The `http` feature is deliberately not enabled: it exists for
+# `Tokenizer::from_pretrained`, which this crate never calls — tokenizers are
+# always loaded from a path a provider downloaded itself — and it pulls a
+# second, older major of `hf-hub` into the graph alongside the one we use.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"], optional = true }
+hf-hub = { version = "1.0", optional = true }
 reqwest = { version = "0.13", features = ["json", "rustls"], optional = true }
 image = { workspace = true, optional = true }
 # Used by the kniv v7 NLP word tokenizer, which must reproduce the reference
@@ -165,12 +180,11 @@ dashmap = "6.2"
 # declares only the minimal default-feature-free baseline plus the always-on
 # bits (tls-native for the build-time download path, ndarray for tensor
 # interop, std).
-ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, features = ["tls-native", "ndarray", "std"] }
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["tls-native", "ndarray", "std"] }
 # Used by `provider::onnx_ep::preflight_ort_dylib` (only present under
 # `provider-onnx-dynamic`) to detect missing/unloadable ONNX Runtime libs
-# before the broken error path in ort 2.0.0-rc.12 deadlocks on its own
-# OnceLock (pykeio/ort#560, fixed upstream in 17ed7277 but not yet released).
-# Aligned with ort 2.0.0-rc.12's transitive `libloading = "0.9"` to avoid
+# before ort panics from inside its own OnceLock initializer.
+# Aligned with ort 2.0.0-rc.15's transitive `libloading = "0.9"` to avoid
 # pulling two libloading majors into the dependency graph.
 libloading = { version = "0.9", optional = true }
 # Speech-to-text via whisper.cpp. Pulled in by `provider-whisper-cpp`.
