@@ -29,7 +29,10 @@ use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
-use crate::provider::onnx_ep::{build_execution_providers, parse_execution_providers_option};
+use crate::provider::onnx_ep::{
+    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list,
+    parse_execution_providers_option, replace_session, verify_execution_providers,
+};
 
 /// File layout and tokenization shape needed to load an [`EncoderModel`].
 pub(super) struct EncoderSpec {
@@ -65,6 +68,13 @@ pub(super) struct EncoderModel {
     /// Declared name of the `position_ids` input, if the model has one.
     position_ids_name: Option<String>,
     past_kv_schemas: Vec<InputSchema>,
+}
+
+#[async_trait::async_trait]
+impl EpProbe for EncoderModel {
+    async fn probe(&self) -> Result<()> {
+        self.run(&["probe"]).map(drop)
+    }
 }
 
 /// Result of one encoder forward pass.
@@ -196,7 +206,7 @@ impl EncoderModel {
             .cloned()
             .collect();
 
-        Ok(Self {
+        let model = Self {
             session: Mutex::new(session),
             tokenizer,
             alias: spec.alias.clone(),
@@ -206,7 +216,22 @@ impl EncoderModel {
             token_type_name,
             position_ids_name,
             past_kv_schemas,
-        })
+        };
+        verify_execution_providers(
+            &model,
+            effective_ep_list(execution_providers.as_deref()),
+            &spec.alias,
+            &model_path,
+            |m| {
+                replace_session(
+                    &m.session,
+                    build_session(&model_path, spec, Some(&[OnnxExecutionProvider::Cpu]))?,
+                    &spec.alias,
+                )
+            },
+        )
+        .await?;
+        Ok(model)
     }
 
     /// Encode a batch of texts into padded `[batch, seq]` i64 tensors.

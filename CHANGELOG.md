@@ -4,6 +4,51 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-05
+
+### Fixed
+
+- **ONNX Runtime no longer picks execution providers on its own.** ort's
+  `Session::builder` sets the auto-device policy to `MaxEfficiency`, which on
+  macOS registers the CoreML EP whenever the linked ONNX Runtime carries it.
+  From ort 2.0.0-rc.15 (ORT 1.31, adopted in 0.19.0) the prebuilt
+  `aarch64-apple-darwin` binary always does, with or without `gpu-metal`, so
+  CoreML took nodes on CPU-only builds that no alias had asked for — and an
+  explicit `execution_providers: ["cpu"]` did not keep it out. Decoder exports
+  fed a zero-length KV cache then failed on the first call, among them
+  Qwen3-Reranker and Qwen3-Embedding: `Input (past_key_values.0.key) has a
+  dynamic shape … but the runtime shape … has zero elements. This is not
+  supported by the CoreML EP.` Every session is now built with
+  `AutoDevicePolicy::PreferCPU`, so the per-alias list is again the only thing
+  that decides placement; `gpu-cuda` and `gpu-metal` builds still put the GPU
+  first.
+
+### Changed
+
+- **Accelerated ONNX models are probed at load and fall back to CPU.** ORT's
+  own fallback happens once, at session creation: each node goes to the first
+  EP that *claims* it, and an EP that accepts a node and then fails to execute
+  it is never retried on CPU. So on a `gpu-metal` build, where CoreML heads the
+  default list, the Qwen3 models above still failed on every query. Loaders now
+  run one small real inference right after building the session:
+
+  - a CPU-only list is not probed, so default builds pay nothing;
+  - if the probe passes, the accelerator is kept;
+  - if it fails and the list contains `cpu`, a CPU-only session replaces it, is
+    probed again, and a `warn` names the EPs that failed and why;
+  - if it fails and the list has **no** `cpu`, the load fails with that cause —
+    the same strict contract `error_on_failure()` already gives a CPU-free list
+    — rather than the first query.
+
+  This covers the cross-encoder and generative (`style: "generative"`)
+  rerankers, the dense embedder, and the sparse, multi-vector and hybrid
+  embedders. `active_execution_providers()` reports the list the model runs on
+  after any fallback, and the dense embedder now reports one at all. The raw
+  tensor, image-embedding, OCR and NLP paths are unchanged, since a probe needs
+  a model-specific input. A model that passes the probe can still fail on an
+  input shape the probe did not cover. When a probe fails, ONNX Runtime logs
+  its own error to stderr before the fallback takes over.
+
 ## [0.19.0] - 2026-11-02
 
 ### Added
