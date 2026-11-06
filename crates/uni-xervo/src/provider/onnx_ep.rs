@@ -95,6 +95,27 @@ pub(crate) fn ort_environment() -> Result<&'static ort::environment::Environment
     Ok(ORT_ENV.get_or_init(|| env))
 }
 
+/// Start a session builder under the process-global environment with ORT's
+/// automatic EP selection pinned to [`PreferCPU`](ort::session::builder::AutoDevicePolicy::PreferCPU).
+///
+/// Every ONNX session in this crate must be built through here. `ort`'s
+/// `Session::builder` sets the auto-device policy to `MaxEfficiency`, which on
+/// macOS registers the CoreML EP whenever the linked ONNX Runtime carries it —
+/// and from ort 2.0.0-rc.15 (ORT 1.31) the prebuilt `aarch64-apple-darwin`
+/// binary always does, with or without `gpu-metal`. CoreML then claims nodes
+/// that no alias asked for, and rejects inputs CPU handles fine (zero-length
+/// KV-cache tensors among them), and an explicit `execution_providers: ["cpu"]`
+/// did not keep it out. Pinning `PreferCPU` leaves the per-alias list from
+/// [`build_execution_providers`] as the sole authority over placement: CoreML
+/// runs only when that list names it, which needs `gpu-metal`.
+pub(crate) fn new_session_builder() -> Result<ort::Result<ort::session::builder::SessionBuilder>> {
+    let env = ort_environment()?;
+    Ok(ort::session::Session::builder(env).and_then(|b| {
+        b.with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
+            .map_err(Into::into)
+    }))
+}
+
 /// Parsed `execution_providers` entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OnnxExecutionProvider {

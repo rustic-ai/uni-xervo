@@ -14,7 +14,7 @@ use crate::hf::HfModelRepo;
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, effective_ep_list, ort_environment,
+    OnnxExecutionProvider, build_execution_providers, effective_ep_list, new_session_builder,
     parse_execution_providers_option,
 };
 use crate::traits::{DimSize, RawTensorModel, TensorBatch, TensorDtype, TensorSpec, TensorValue};
@@ -422,12 +422,11 @@ fn select_onnx_artifact(
 }
 
 fn build_session(path: &Path, options: &LocalOnnxOptions, alias: &str) -> Result<Session> {
-    let mut builder =
-        Session::builder(ort_environment()?).map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
+    let mut builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
+        alias: alias.to_string(),
+        path: path.to_path_buf(),
+        cause: e.to_string(),
+    })?;
 
     builder = builder
         .with_optimization_level(options.graph_optimization_level)

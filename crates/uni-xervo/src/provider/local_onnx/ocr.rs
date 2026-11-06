@@ -35,7 +35,7 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, ort_environment,
+    OnnxExecutionProvider, build_execution_providers, new_session_builder,
     parse_execution_providers_option,
 };
 use crate::traits::{ImageInput, OcrBlock, OcrModel, OcrResult};
@@ -702,12 +702,11 @@ fn build_session(
     spec: &ModelAliasSpec,
     execution_providers: Option<&[OnnxExecutionProvider]>,
 ) -> Result<Session> {
-    let builder =
-        Session::builder(ort_environment()?).map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
+    let builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
+        alias: spec.alias.clone(),
+        path: path.to_path_buf(),
+        cause: e.to_string(),
+    })?;
     let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| RuntimeError::OnnxLoadFailure {
