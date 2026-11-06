@@ -57,7 +57,8 @@ use crate::provider::local_onnx::decoder_inputs::{
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    build_execution_providers, effective_ep_list, parse_execution_providers_option,
+    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list, ep_ids,
+    parse_execution_providers_option, replace_session, verify_execution_providers,
 };
 use crate::traits::{RerankerModel, ScoredDoc};
 
@@ -185,7 +186,7 @@ impl OnnxGenerativeReranker {
 
         let input_schema = build_input_schema(&session, &spec.alias)?;
 
-        Ok(Self {
+        let mut model = Self {
             session: Mutex::new(session),
             tokenizer,
             yes_token_id,
@@ -196,7 +197,27 @@ impl OnnxGenerativeReranker {
             alias: spec.alias.clone(),
             model_id: spec.model_id.clone(),
             requested_eps,
-        })
+        };
+        let eps = verify_execution_providers(
+            &model,
+            effective_ep_list(execution_providers.as_deref()),
+            &spec.alias,
+            &model_path,
+            |m| {
+                replace_session(
+                    &m.session,
+                    super::rerank::build_session(
+                        &model_path,
+                        spec,
+                        Some(&[OnnxExecutionProvider::Cpu]),
+                    )?,
+                    &spec.alias,
+                )
+            },
+        )
+        .await?;
+        model.requested_eps = ep_ids(&eps);
+        Ok(model)
     }
 
     /// Build the chat prompt the model was trained to produce a binary
@@ -253,6 +274,13 @@ impl crate::traits::ModelInfo for OnnxGenerativeReranker {
 
     fn active_execution_providers(&self) -> Vec<String> {
         self.requested_eps.clone()
+    }
+}
+
+#[async_trait]
+impl EpProbe for OnnxGenerativeReranker {
+    async fn probe(&self) -> Result<()> {
+        self.rerank("probe", &["probe"]).await.map(drop)
     }
 }
 

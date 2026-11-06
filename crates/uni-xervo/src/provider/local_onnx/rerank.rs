@@ -30,8 +30,9 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, effective_ep_list, new_session_builder,
-    parse_execution_providers_option,
+    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list, ep_ids,
+    new_session_builder, parse_execution_providers_option, replace_session,
+    verify_execution_providers,
 };
 use crate::traits::{RerankerModel, ScoredDoc};
 
@@ -130,7 +131,7 @@ impl OnnxCrossEncoder {
             .iter()
             .any(|i| i.name() == "token_type_ids");
 
-        Ok(Self {
+        let mut model = Self {
             session: Mutex::new(session),
             tokenizer,
             max_seq_len,
@@ -138,7 +139,23 @@ impl OnnxCrossEncoder {
             model_id: spec.model_id.clone(),
             requested_eps,
             expects_token_type_ids,
-        })
+        };
+        let eps = verify_execution_providers(
+            &model,
+            effective_ep_list(execution_providers.as_deref()),
+            &spec.alias,
+            &model_path,
+            |m| {
+                replace_session(
+                    &m.session,
+                    build_session(&model_path, spec, Some(&[OnnxExecutionProvider::Cpu]))?,
+                    &spec.alias,
+                )
+            },
+        )
+        .await?;
+        model.requested_eps = ep_ids(&eps);
+        Ok(model)
     }
 
     /// Tokenize a batch of (query, document) pairs into padded tensors.
@@ -201,6 +218,13 @@ impl crate::traits::ModelInfo for OnnxCrossEncoder {
 
     fn active_execution_providers(&self) -> Vec<String> {
         self.requested_eps.clone()
+    }
+}
+
+#[async_trait]
+impl EpProbe for OnnxCrossEncoder {
+    async fn probe(&self) -> Result<()> {
+        self.rerank("probe", &["probe"]).await.map(drop)
     }
 }
 

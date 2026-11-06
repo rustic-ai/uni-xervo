@@ -116,6 +116,118 @@ pub(crate) fn new_session_builder() -> Result<ort::Result<ort::session::builder:
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Load-time probe and CPU fallback
+// ---------------------------------------------------------------------------
+
+/// One small, real inference that proves a freshly built model runs on the
+/// execution providers its session was built with.
+///
+/// ORT's own fallback happens once, at session creation: each node goes to
+/// the first EP that *claims* it. An accelerator that accepts a node and then
+/// fails to execute it (CoreML on a zero-length KV cache, for one) is never
+/// retried on CPU — the inference call just errors. A probe moves that
+/// failure to load time, where [`verify_execution_providers`] can still fall
+/// back. It catches compile and op-support failures, not every shape: a model
+/// that runs the probe can still fail on an input the probe did not cover.
+#[async_trait::async_trait]
+pub(crate) trait EpProbe: Sync {
+    async fn probe(&self) -> Result<()>;
+}
+
+/// Whether a session built on `eps` needs a probe: only when something other
+/// than CPU could claim nodes. CPU-only builds — the default — pay nothing.
+pub(crate) fn needs_probe(eps: &[OnnxExecutionProvider]) -> bool {
+    eps.iter().any(|ep| *ep != OnnxExecutionProvider::Cpu)
+}
+
+/// Probe `model` and, if its accelerator fails, fall back to CPU.
+///
+/// `eps` is the session's effective list ([`effective_ep_list`]). Returns the
+/// list the model now runs on, for [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers):
+///
+/// - no probe needed (CPU only) → `eps` unchanged;
+/// - probe passes → `eps` unchanged;
+/// - probe fails and `eps` contains `cpu` → `rebuild_on_cpu` swaps in a
+///   CPU-only session, the probe runs again on it, and the result is `[cpu]`.
+///   Logged at `warn`, naming the EPs that failed and why;
+/// - probe fails and `eps` has no `cpu` → a load error. A CPU-free list is
+///   the caller asking for that accelerator or nothing (the same contract as
+///   `error_on_failure()` in [`build_execution_providers`]), and failing here
+///   beats failing on the first query.
+pub(crate) async fn verify_execution_providers<M: EpProbe>(
+    model: &M,
+    eps: Vec<OnnxExecutionProvider>,
+    alias: &str,
+    model_path: &std::path::Path,
+    rebuild_on_cpu: impl FnOnce(&M) -> Result<()> + Send,
+) -> Result<Vec<OnnxExecutionProvider>> {
+    if !needs_probe(&eps) {
+        return Ok(eps);
+    }
+    let Err(probe_err) = model.probe().await else {
+        return Ok(eps);
+    };
+    let failed: Vec<OnnxExecutionProvider> = eps
+        .iter()
+        .copied()
+        .filter(|ep| *ep != OnnxExecutionProvider::Cpu)
+        .collect();
+    if !eps.contains(&OnnxExecutionProvider::Cpu) {
+        return Err(RuntimeError::OnnxLoadFailure {
+            alias: alias.to_string(),
+            path: model_path.to_path_buf(),
+            cause: format!(
+                "load-time probe failed on execution providers [{}] and the list has no \
+                 \"cpu\" entry to fall back to: {probe_err}",
+                join_eps(&eps)
+            ),
+        });
+    }
+    tracing::warn!(
+        alias = %alias,
+        failed = %join_eps(&failed),
+        error = %probe_err,
+        "ONNX model failed its load-time probe on the requested execution providers; \
+         falling back to CPU"
+    );
+    rebuild_on_cpu(model)?;
+    model
+        .probe()
+        .await
+        .map_err(|e| RuntimeError::OnnxLoadFailure {
+            alias: alias.to_string(),
+            path: model_path.to_path_buf(),
+            cause: format!(
+                "load-time probe failed on CPU after [{}] failed: {e}",
+                join_eps(&failed)
+            ),
+        })?;
+    Ok(vec![OnnxExecutionProvider::Cpu])
+}
+
+/// Replace the session behind `slot`, for a [`verify_execution_providers`]
+/// `rebuild_on_cpu` callback.
+pub(crate) fn replace_session(
+    slot: &std::sync::Mutex<ort::session::Session>,
+    session: ort::session::Session,
+    alias: &str,
+) -> Result<()> {
+    let mut guard = slot
+        .lock()
+        .map_err(|e| RuntimeError::OnnxInvocationFailure {
+            alias: alias.to_string(),
+            cause: format!("Session lock poisoned: {e}"),
+        })?;
+    *guard = session;
+    Ok(())
+}
+
+/// EP ids as strings, the shape [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers) reports.
+pub(crate) fn ep_ids(eps: &[OnnxExecutionProvider]) -> Vec<String> {
+    eps.iter().map(|ep| ep.as_str().to_string()).collect()
+}
+
 /// Parsed `execution_providers` entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OnnxExecutionProvider {
@@ -648,6 +760,112 @@ pub(crate) fn preflight_ort_dylib(alias: &str, provider_label: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod probe_fallback {
+        use super::*;
+        use std::path::Path;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        /// Stand-in for a loaded model: its probe fails until "rebuilt on
+        /// CPU" when `accel_broken`, and always when `cpu_broken`.
+        #[derive(Default)]
+        struct FakeModel {
+            accel_broken: bool,
+            cpu_broken: bool,
+            on_cpu: AtomicBool,
+            probes: AtomicUsize,
+            rebuilds: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl EpProbe for FakeModel {
+            async fn probe(&self) -> Result<()> {
+                self.probes.fetch_add(1, Ordering::SeqCst);
+                let on_cpu = self.on_cpu.load(Ordering::SeqCst);
+                if (on_cpu && self.cpu_broken) || (!on_cpu && self.accel_broken) {
+                    return Err(RuntimeError::Config("probe exploded".into()));
+                }
+                Ok(())
+            }
+        }
+
+        async fn verify(
+            model: &FakeModel,
+            eps: Vec<OnnxExecutionProvider>,
+        ) -> Result<Vec<OnnxExecutionProvider>> {
+            verify_execution_providers(model, eps, "embed/test", Path::new("m.onnx"), |m| {
+                m.rebuilds.fetch_add(1, Ordering::SeqCst);
+                m.on_cpu.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+        }
+
+        use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+
+        #[tokio::test]
+        async fn cpu_only_list_skips_the_probe() {
+            let model = FakeModel {
+                accel_broken: true,
+                ..Default::default()
+            };
+            assert_eq!(verify(&model, vec![Cpu]).await.unwrap(), vec![Cpu]);
+            assert_eq!(model.probes.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn working_accelerator_is_kept() {
+            let model = FakeModel::default();
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu]).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
+            assert_eq!(model.probes.load(Ordering::SeqCst), 1);
+            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn failing_accelerator_falls_back_to_cpu() {
+            let model = FakeModel {
+                accel_broken: true,
+                ..Default::default()
+            };
+            assert_eq!(verify(&model, vec![Cuda, Cpu]).await.unwrap(), vec![Cpu]);
+            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 1);
+            // Once on the accelerator, once more on the rebuilt CPU session.
+            assert_eq!(model.probes.load(Ordering::SeqCst), 2);
+        }
+
+        #[tokio::test]
+        async fn cpu_free_list_fails_the_load_instead_of_falling_back() {
+            let model = FakeModel {
+                accel_broken: true,
+                ..Default::default()
+            };
+            let err = verify(&model, vec![CoreMl]).await.unwrap_err();
+            assert!(
+                matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
+                    if cause.contains("no \"cpu\" entry") && cause.contains("probe exploded")),
+                "unexpected error: {err:?}"
+            );
+            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn failure_on_cpu_after_fallback_is_a_load_error() {
+            let model = FakeModel {
+                accel_broken: true,
+                cpu_broken: true,
+                ..Default::default()
+            };
+            let err = verify(&model, vec![CoreMl, Cpu]).await.unwrap_err();
+            assert!(
+                matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
+                    if cause.contains("failed on CPU after [coreml] failed")),
+                "unexpected error: {err:?}"
+            );
+        }
+    }
 
     #[test]
     fn from_str_known_values() {

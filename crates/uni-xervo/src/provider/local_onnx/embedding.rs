@@ -33,8 +33,9 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, new_session_builder,
-    parse_execution_providers_option,
+    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list, ep_ids,
+    new_session_builder, parse_execution_providers_option, replace_session,
+    verify_execution_providers,
 };
 use crate::traits::{EmbedResult, EmbeddingModel};
 
@@ -199,6 +200,9 @@ struct OnnxEmbedder {
     /// these placeholders feed zero-shaped KV tensors per call so the
     /// model performs a clean prefill with no history.
     past_kv_schemas: Vec<super::decoder_inputs::InputSchema>,
+    /// Execution providers the session runs on, after any load-time CPU
+    /// fallback; reported via [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers).
+    active_eps: Vec<String>,
 }
 
 impl OnnxEmbedder {
@@ -263,7 +267,7 @@ impl OnnxEmbedder {
         let (expects_position_ids, past_kv_schemas) =
             inspect_decoder_extras(&session, &spec.alias)?;
 
-        Ok(Self {
+        let mut model = Self {
             session: Mutex::new(session),
             tokenizer,
             alias: spec.alias.clone(),
@@ -276,7 +280,24 @@ impl OnnxEmbedder {
             output_name: cfg.output_name,
             expects_position_ids,
             past_kv_schemas,
-        })
+            active_eps: Vec::new(),
+        };
+        let eps = verify_execution_providers(
+            &model,
+            effective_ep_list(execution_providers.as_deref()),
+            &spec.alias,
+            &model_path,
+            |m| {
+                replace_session(
+                    &m.session,
+                    build_session(&model_path, spec, Some(&[OnnxExecutionProvider::Cpu]))?,
+                    &spec.alias,
+                )
+            },
+        )
+        .await?;
+        model.active_eps = ep_ids(&eps);
+        Ok(model)
     }
 
     /// Encode a batch of texts into padded `[batch, padded]` i64 tensors.
@@ -331,6 +352,17 @@ impl OnnxEmbedder {
 impl crate::traits::ModelInfo for OnnxEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    fn active_execution_providers(&self) -> Vec<String> {
+        self.active_eps.clone()
+    }
+}
+
+#[async_trait]
+impl EpProbe for OnnxEmbedder {
+    async fn probe(&self) -> Result<()> {
+        self.embed(&["probe"]).await.map(drop)
     }
 }
 
