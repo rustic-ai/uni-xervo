@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-13
+
+### Fixed
+
+- **The kniv v7 sentence splitter no longer cuts names at titles and
+  initials.** `split_sentences` ended a sentence at any `.` followed by
+  whitespace and a capital, digit or quote, so `Sen. Robert F. Kennedy spoke
+  today.` became three sentences and the entity step returned `Robert F .` and
+  `Kennedy` as two entities. Porting kniv v7.1.2's guard, a break is now
+  suppressed after a title or month (`Mr`, `Dr`, `Sen`, `Lt`, `St`, `Jan` …
+  `Dec`, `No`, `vs`, …), after a single capital initial (`F.`), and after a
+  dotted acronym (`U.S.`); the tokenizer keeps `U.S.`, `F.`, `Dec.` and `Inc.`
+  whole with their period, as the Penn Treebank and CoNLL conventions do. On
+  CoNLL04 from raw text the fix is worth 1.1 to 3.8 points of end-to-end
+  relation F1 across the six v7 models. One trade-off comes with the guard: a
+  sentence that really does end in a single capital (`I met Mr. T. He was
+  tall.`) is not split, because `T.` reads as an initial.
+- **kniv generation detection reads `onnx/onnx_meta.json`, not just its
+  name.** The probe behind an `Nlp` alias with no explicit `generation` option
+  treated any repo serving that path as v7. The v1 cascade release
+  `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` ships a v1-shaped file of
+  that name, so it was routed to the v7 loader, which rejected `onnx_path` and
+  the other v1 option keys — a config error naming the caller's own option
+  rather than a detection error. Detection now requires the file to carry a v7
+  key (`graphs` or `word_pool`), which costs no extra request since the file is
+  already fetched and cached, and the v1-only-option error points at
+  `"generation": "v1"` for the case where detection is still wrong. Only a file
+  that parses and carries neither key routes a repo to v1; one that cannot be
+  read or parsed stays on the v7 path as before, so a broken v7 release still
+  reports a metadata error naming the file.
+
 ## [0.19.1] - 2026-11-05
 
 ### Fixed

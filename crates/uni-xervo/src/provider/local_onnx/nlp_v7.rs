@@ -63,7 +63,7 @@ use pipeline::{LabelCache, Runner};
 use text::{Unit, Word};
 
 /// Where `onnx_meta.json` lives in a release, which is also how a v7 repo is
-/// told apart from a v1 one.
+/// told apart from a v1 one — by its *contents*, see [`meta_is_v7`].
 pub(super) const META_PATH: &str = "onnx/onnx_meta.json";
 const DEFAULT_TOKENIZER_PATH: &str = "tokenizer.json";
 const DEFAULT_CALIBRATION_PATH: &str = "calibration.json";
@@ -96,12 +96,46 @@ fn local_release_dir(model_id: &str) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
+/// Which generation the `onnx_meta.json` at `path` attests to.
+///
+/// The filename alone does not tell the generations apart: the v1 cascade
+/// release `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` ships an
+/// `onnx/onnx_meta.json` of its own, describing its single `cascade.onnx`
+/// graph. Its keys are `encoder`, `files`, `hidden_dim` and such, while a v7
+/// file always carries `graphs` and `word_pool` (see
+/// [`OnnxMeta::from_value`]); either key is enough to call a file v7.
+///
+/// Only that positive evidence of a v1 shape — a file that parses and has
+/// neither key — routes a repo to the v1 path. A file that cannot be read or
+/// parsed is left on the v7 path, where it was before this check existed, so
+/// a broken v7 release still reports a metadata error naming the file rather
+/// than a download error about a `cascade.onnx` it never had.
+///
+/// Blocking IO in an async fn, as [`OnnxMeta::load`] and the rest of this
+/// module's loading path are: the file is small and already in the cache
+/// directory by the time this runs.
+fn generation_from_meta(path: &Path) -> Generation {
+    let v1_shaped = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|value| {
+            !value.get("graphs").is_some_and(Value::is_object)
+                && !value.get("word_pool").is_some_and(Value::is_string)
+        });
+    if v1_shaped {
+        Generation::V1
+    } else {
+        Generation::V7
+    }
+}
+
 /// Decide which generation `spec` names, without building any session.
 ///
 /// Priority: an explicit `generation` option; then the v7-only option keys;
-/// then the repo's own contents — `onnx/onnx_meta.json` for v7 against
-/// `onnx/cascade.onnx` for v1. The probe costs one cached HTTP request for a
-/// v1 alias and nothing at all for a local directory.
+/// then the repo's own `onnx/onnx_meta.json`, by its contents rather than
+/// its name ([`generation_from_meta`]). The probe costs one cached HTTP
+/// request for a repo and a read for a local directory; the same file is
+/// read again by [`resolve_artifacts`], from the cache.
 pub(super) async fn detect_generation(spec: &ModelAliasSpec) -> Result<Generation> {
     match spec.options.get("generation").and_then(Value::as_str) {
         Some("v1") => return Ok(Generation::V1),
@@ -117,30 +151,40 @@ pub(super) async fn detect_generation(spec: &ModelAliasSpec) -> Result<Generatio
     if V7_ONLY_KEYS.iter().any(|k| spec.options.get(*k).is_some()) {
         return Ok(Generation::V7);
     }
-    if let Some(dir) = local_release_dir(&spec.model_id) {
-        return Ok(if dir.join(META_PATH).is_file() {
-            Generation::V7
-        } else {
-            Generation::V1
-        });
-    }
-
-    // A repo that serves `onnx/onnx_meta.json` is v7. Any failure here —
-    // a 404, or no network — falls back to the v1 path, which then reports
-    // its own download error naming the file it wanted.
-    let cache_dir = resolve_cache_dir("onnx-nlp", &spec.model_id, &spec.options);
-    match fetch(spec, &cache_dir, META_PATH).await {
-        Ok(_) => Ok(Generation::V7),
-        Err(e) => {
-            debug!(
-                alias = %spec.alias,
-                model_id = %spec.model_id,
-                cause = %e,
-                "No kniv v7 metadata in repo; using the v1 cascade path"
-            );
-            Ok(Generation::V1)
+    // Local directory or repo, the decision is the same file's contents.
+    // A fetch failure here — a 404, or no network — falls back to the v1
+    // path, which then reports its own download error naming the file it
+    // wanted.
+    let meta = if let Some(dir) = local_release_dir(&spec.model_id) {
+        Some(dir.join(META_PATH)).filter(|p| p.is_file())
+    } else {
+        let cache_dir = resolve_cache_dir("onnx-nlp", &spec.model_id, &spec.options);
+        match fetch(spec, &cache_dir, META_PATH).await {
+            Ok(path) => Some(path),
+            Err(e) => {
+                debug!(
+                    alias = %spec.alias,
+                    model_id = %spec.model_id,
+                    cause = %e,
+                    "No kniv v7 metadata in repo; using the v1 cascade path"
+                );
+                None
+            }
         }
+    };
+    let Some(meta) = meta else {
+        return Ok(Generation::V1);
+    };
+    let generation = generation_from_meta(&meta);
+    if generation == Generation::V1 {
+        debug!(
+            alias = %spec.alias,
+            model_id = %spec.model_id,
+            path = %meta.display(),
+            "Repo metadata carries no kniv v7 keys; using the v1 cascade path"
+        );
     }
+    Ok(generation)
 }
 
 /// Entry point from [`LocalOnnxProvider::load`](super::LocalOnnxProvider::load)
@@ -274,7 +318,8 @@ impl KnivV7Model {
             if spec.options.get(key).is_some() {
                 return Err(RuntimeError::Config(format!(
                     "Option '{key}' does not apply to the kniv v7 model '{}' on alias '{}'; \
-                     v7 reads its graph set and window size from {META_PATH}",
+                     v7 reads its graph set and window size from {META_PATH}. If this repo is \
+                     a v1 cascade release, pin it with the option \"generation\": \"v1\"",
                     spec.model_id, spec.alias
                 )));
             }
@@ -603,22 +648,79 @@ mod tests {
         }
     }
 
+    /// The shape of a real v7 `onnx_meta.json`, cut down to the two keys
+    /// detection looks at.
+    const V7_META: &[u8] = br#"{"word_pool": "mean", "graphs": {"plain": {}}}"#;
+    /// The `onnx/onnx_meta.json` the v1 cascade release
+    /// `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` ships: the same
+    /// filename, describing one `cascade.onnx` graph.
+    const V1_META: &[u8] = br#"{"encoder": "deberta-v3-xsmall",
+        "files": ["cascade.onnx", "cascade-int8.onnx"],
+        "hidden_dim": 384, "layers": 12, "max_length": 128,
+        "opset_version": 17, "inputs": [], "outputs": [], "validation": {}}"#;
+
+    fn release_dir(meta: Option<&[u8]>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        if let Some(meta) = meta {
+            std::fs::create_dir_all(dir.path().join("onnx")).expect("mkdir");
+            std::fs::write(dir.path().join(META_PATH), meta).expect("write");
+        }
+        dir
+    }
+
     #[tokio::test]
     async fn a_local_directory_is_classified_by_its_contents() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = release_dir(None);
         let s = spec(&dir.path().display().to_string(), serde_json::json!({}));
         assert_eq!(detect_generation(&s).await.unwrap(), Generation::V1);
 
-        std::fs::create_dir_all(dir.path().join("onnx")).expect("mkdir");
-        std::fs::write(dir.path().join(META_PATH), b"{}").expect("write");
+        let dir = release_dir(Some(V7_META));
+        let s = spec(&dir.path().display().to_string(), serde_json::json!({}));
         assert_eq!(detect_generation(&s).await.unwrap(), Generation::V7);
+    }
+
+    /// A v1 cascade release that happens to ship `onnx/onnx_meta.json` is
+    /// still v1: the file's contents decide, not its name.
+    #[tokio::test]
+    async fn a_v1_shaped_meta_file_does_not_make_a_repo_v7() {
+        for meta in [V1_META, b"{}".as_slice()] {
+            let dir = release_dir(Some(meta));
+            let s = spec(&dir.path().display().to_string(), serde_json::json!({}));
+            assert_eq!(
+                detect_generation(&s).await.unwrap(),
+                Generation::V1,
+                "{}",
+                String::from_utf8_lossy(meta)
+            );
+        }
+    }
+
+    /// Metadata that cannot be parsed is a broken release of some kind, not
+    /// evidence of v1: it stays on the v7 path, so the loader's own error
+    /// names the unreadable file instead of a `cascade.onnx` the repo never
+    /// had.
+    #[tokio::test]
+    async fn unparseable_meta_stays_on_the_v7_path() {
+        let dir = release_dir(Some(b"not json at all"));
+        let s = spec(&dir.path().display().to_string(), serde_json::json!({}));
+        assert_eq!(detect_generation(&s).await.unwrap(), Generation::V7);
+    }
+
+    /// A v1-only option on such a repo reaches the v1 loader, so it is never
+    /// rejected as a v7 option (issue #53).
+    #[tokio::test]
+    async fn v1_options_survive_detection_on_a_v1_cascade_repo() {
+        let dir = release_dir(Some(V1_META));
+        let s = spec(
+            &dir.path().display().to_string(),
+            serde_json::json!({"onnx_path": "onnx/cascade-int8.onnx", "label_maps_path": "label_maps.json"}),
+        );
+        assert_eq!(detect_generation(&s).await.unwrap(), Generation::V1);
     }
 
     #[tokio::test]
     async fn v1_only_options_are_rejected_for_a_v7_repo() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join("onnx")).expect("mkdir");
-        std::fs::write(dir.path().join(META_PATH), b"{}").expect("write");
+        let dir = release_dir(Some(V7_META));
         for key in V1_ONLY_KEYS {
             let s = spec(
                 &dir.path().display().to_string(),
@@ -629,6 +731,9 @@ mod tests {
                 Err(e) => e.to_string(),
             };
             assert!(err.contains(key), "{key}: {err}");
+            // The message points at the v1 pin, since a misdetection is one
+            // way to land here (issue #53).
+            assert!(err.contains(r#""generation": "v1""#), "{key}: {err}");
         }
     }
 

@@ -456,12 +456,15 @@ The v1 cascade:
 }
 ```
 
-The generation is inferred from the repo — a repo that carries
-`onnx/onnx_meta.json` is v7 — and `"generation": "v1" | "v7"` pins it
-explicitly. The option sets do not overlap: `onnx_path`, `label_maps_path` and
-`max_seq_len` are v1-only (v7 reads its graph set and window size from
-`onnx_meta.json`), while `variant`, `calibration_path` and `label_bank_path`
-are v7-only. Mixing them is rejected at catalog registration, before anything
+The generation is inferred from the repo — a repo whose
+`onnx/onnx_meta.json` is a v7 metadata file (it carries `graphs` and
+`word_pool`) is v7 — and `"generation": "v1" | "v7"` pins it explicitly. The
+file's contents decide, not its name: some v1 cascade releases ship an
+`onnx/onnx_meta.json` of their own describing their single `cascade.onnx`
+graph, and those are still v1. The option sets do not overlap: `onnx_path`,
+`label_maps_path` and `max_seq_len` are v1-only (v7 reads its graph set and
+window size from `onnx_meta.json`), while `variant`, `calibration_path` and
+`label_bank_path` are v7-only. Mixing them is rejected at catalog registration, before anything
 is downloaded.
 
 `variant` is a *fallback chain*, not a suffix: `"int8,fp16"` means "INT8 if
