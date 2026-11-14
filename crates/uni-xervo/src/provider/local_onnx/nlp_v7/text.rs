@@ -36,13 +36,61 @@ static URLISH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:(?:https?://|www\.)\S+|\S+@\S+\.\w+)$").expect("URLISH regex")
 });
 
+/// Abbreviations a sentence does not end after — titles, months, `No.`,
+/// `vs.` — besides single initials (`D.`) and dotted acronyms (`U.S.`).
+/// Ambiguous ones that often *do* end a sentence (`Inc.`, `etc.`, the state
+/// names) are deliberately absent, and so is `May`, which is an ordinary
+/// word. Ports `_NO_SPLIT`.
+const NO_SPLIT: [&str; 45] = [
+    "Mr", "Mrs", "Ms", "Dr", "Prof", "Gen", "Col", "Lt", "Sgt", "Capt", "Cmdr", "Adm", "Maj",
+    "Rep", "Sen", "Gov", "Pres", "Rev", "Hon", "St", "Mt", "Ft", "Sr", "Jr", "Jan", "Feb", "Mar",
+    "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "No", "Nos", "vs", "Fig",
+    "approx", "Vol", "pp", "Ave", "Blvd",
+];
+
+/// The rest of the reference's `_ABBREV`: company suffixes, `etc.` and the
+/// US state abbreviations. These keep their period as part of the token (the
+/// Penn Treebank and CoNLL convention) but are no bar to a sentence break.
+const ABBREV_EXTRA: [&str; 39] = [
+    "Inc", "Corp", "Co", "Ltd", "Bros", "etc", "Ala", "Ariz", "Ark", "Calif", "Colo", "Conn",
+    "Del", "Fla", "Ga", "Ill", "Ind", "Kan", "Ky", "La", "Md", "Mass", "Mich", "Minn", "Miss",
+    "Mo", "Mont", "Neb", "Nev", "Okla", "Ore", "Pa", "Tenn", "Tex", "Va", "Vt", "Wash", "Wis",
+    "Wyo",
+];
+
+/// `_ABBREV` — [`NO_SPLIT`] plus [`ABBREV_EXTRA`] — longest first, which is
+/// how the reference's `"|".join(sorted(_ABBREV, key=len, reverse=True))`
+/// alternation comes to prefer `Sept` over `Sep`.
+static ABBREV_BY_LEN: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut all: Vec<&'static str> = NO_SPLIT
+        .iter()
+        .chain(ABBREV_EXTRA.iter())
+        .copied()
+        .collect();
+    all.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    all
+});
+
+/// Dotted acronyms kept whole: `U.S.`, `a.m.`, `N.C.` — the reference's
+/// `(?:[A-Za-z]\.){2,}`, the first alternative of `_TOKEN`.
+static ACRONYM_TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:[A-Za-z]\.){2,}").expect("ACRONYM_TOKEN regex"));
+
 /// Numbers (with percents and ordinals), words (hyphenated, internal
-/// apostrophe), ellipsis, single punctuation — in preference order, which
-/// both `re` and `regex` honour (leftmost-first).
+/// apostrophe), ellipsis, single punctuation — the last alternatives of
+/// `_TOKEN`, in preference order, which both `re` and `regex` honour
+/// (leftmost-first). Anchored, because [`next_token`] walks the chunk a
+/// position at a time the way `re.findall` does.
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\d+(?:[.,]\d+)*(?:%|st|nd|rd|th)?|\w+(?:[-']\w+)*|\.\.\.|[^\w\s]")
+    Regex::new(r"^(?:\d+(?:[.,]\d+)*(?:%|st|nd|rd|th)?|\w+(?:[-']\w+)*|\.\.\.|[^\w\s])")
         .expect("TOKEN regex")
 });
+
+/// A word that is itself a dotted acronym shorn of its final period —
+/// `U.S` out of `U.S.`. The reference's
+/// `re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]", w)`.
+static ACRONYM_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:[A-Za-z]\.)+[A-Za-z]$").expect("ACRONYM_WORD regex"));
 
 /// One word of a window, with the byte range it was taken from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,11 +194,38 @@ fn opens_sentence(c: char) -> bool {
     c.is_ascii_uppercase() || c.is_ascii_digit() || matches!(c, '"' | '\'' | '(' | '[')
 }
 
+/// Whether the text up to a candidate break ends in something that is not a
+/// sentence end after all: a title or month (`Sen.`, `Dec.`), a single
+/// capital initial (`F.`), or a dotted acronym (`U.S.`).
+///
+/// Ports `_no_split_after`, whose `_LAST_WORD = (\S+)\.$` picks the last
+/// whitespace-free run before the terminal period — so only a `.` can be
+/// guarded, and a sentence ending in `!` or `?` always breaks.
+fn no_split_after(part: &str) -> bool {
+    let part = part.trim_end_matches(['"', '\'', ')', ']']);
+    // `(\S+)\.$`: a period, preceded by at least one non-space character.
+    let Some(stem) = part.strip_suffix('.') else {
+        return false;
+    };
+    let word = match stem.rsplit_once(char::is_whitespace) {
+        Some((_, last)) => last,
+        None => stem,
+    };
+    if word.is_empty() {
+        return false;
+    }
+    let word = word.trim_start_matches(['"', '\'', '(', '[']);
+    NO_SPLIT.contains(&word)
+        || (word.chars().count() == 1 && word.chars().all(char::is_uppercase))
+        || ACRONYM_WORD.is_match(word)
+}
+
 /// Split a unit into sentences, as `(byte offset, text)` pairs.
 ///
 /// Ports `_SENT_END = (?<=[.!?])["')\]]*\s+(?=[A-Z0-9"'(\[])` used with
-/// `re.split`. The Rust `regex` crate has no look-behind, so this is the
-/// equivalent scan: a boundary sits right after `.`, `!` or `?`, skips any
+/// `re.split`, together with the `_no_split_after` guard the reference
+/// applies at every candidate break. The Rust `regex` crate has no
+/// look-behind, so this is the equivalent scan: a boundary sits right after `.`, `!` or `?`, skips any
 /// closing quotes or brackets, consumes whitespace, and must land on a
 /// character that can open a sentence. The quote run is greedy with
 /// backtracking, which is why `k` counts down.
@@ -186,9 +261,13 @@ pub(crate) fn split_sentences(text: &str) -> Vec<(usize, &str)> {
         }
         match matched {
             // `re.split` cuts at the match start and resumes at its end.
+            // A guarded break is no break: the piece simply runs on, which
+            // for a byte range means leaving `piece_start` where it is.
             Some(ws_end) => {
-                pieces.push((piece_start, chars[i].0));
-                piece_start = chars[ws_end].0;
+                if !no_split_after(&text[piece_start..chars[i].0]) {
+                    pieces.push((piece_start, chars[i].0));
+                    piece_start = chars[ws_end].0;
+                }
                 i = ws_end;
             }
             None => i += 1,
@@ -235,6 +314,45 @@ fn split_clitic(tok: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Byte length of the token starting at `rest`, or `None` if nothing matches
+/// there.
+///
+/// `_TOKEN`'s alternatives in the reference's order, two of which end in a
+/// look-ahead the `regex` crate cannot express, so they are checked by hand:
+/// an abbreviation keeps its period only before the end of the chunk or
+/// `,;:)`, and a single capital initial only before the end of the chunk.
+/// Within a chunk `\s` is unreachable, since `tokenize` splits on
+/// whitespace first; it is accepted here for the sake of the invariant.
+fn next_token(rest: &str) -> Option<usize> {
+    if let Some(m) = ACRONYM_TOKEN.find(rest) {
+        return Some(m.end());
+    }
+    let first = rest.as_bytes().first().copied().unwrap_or(0);
+    for abbrev in ABBREV_BY_LEN.iter().filter(|a| a.as_bytes()[0] == first) {
+        let Some(after_dot) = rest
+            .strip_prefix(*abbrev)
+            .and_then(|tail| tail.strip_prefix('.'))
+        else {
+            continue;
+        };
+        let stops = after_dot
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || matches!(c, ',' | ';' | ':' | ')'));
+        if stops {
+            return Some(abbrev.len() + 1);
+        }
+    }
+    let mut initial = rest.chars();
+    if let (Some(c), Some('.')) = (initial.next(), initial.next())
+        && c.is_ascii_uppercase()
+        && initial.next().is_none_or(char::is_whitespace)
+    {
+        return Some(2);
+    }
+    TOKEN.find(rest).map(|m| m.end())
+}
+
 /// Tokenize one sentence into words with byte offsets.
 ///
 /// `base` is added to every offset, so callers can report positions in the
@@ -250,9 +368,20 @@ pub(crate) fn tokenize(text: &str, base: usize) -> Vec<Word> {
             });
             continue;
         }
-        for m in TOKEN.find_iter(chunk) {
-            let tok = m.as_str();
-            let tok_off = chunk_off + m.start();
+        // `re.findall`'s own scan: try the alternatives at each position in
+        // turn, and step over a character that starts none of them.
+        let mut pos = 0usize;
+        while pos < chunk.len() {
+            // `next_token` cannot return 0 — every alternative needs at
+            // least one character — but the loop advances on its own rather
+            // than trusting that, since a zero-length match would hang it.
+            let Some(len) = next_token(&chunk[pos..]).filter(|n| *n > 0) else {
+                pos += chunk[pos..].chars().next().map(char::len_utf8).unwrap_or(1);
+                continue;
+            };
+            let tok = &chunk[pos..pos + len];
+            let tok_off = chunk_off + pos;
+            pos += len;
             match split_clitic(tok) {
                 Some((cut, end)) => {
                     out.push(Word {
@@ -385,6 +514,31 @@ mod tests {
     }
 
     #[test]
+    fn offsets_survive_abbreviations_and_multibyte_text() {
+        // Every new token shape — acronym, abbreviation, initial — plus a
+        // multibyte neighbour, since `next_token` does its own byte
+        // arithmetic over the chunk.
+        for text in [
+            "Sen. Robert F. Kennedy met Acme Inc. in the U.S. at 9 a.m.",
+            "Jos\u{e9} saw Dr. Garc\u{ed}a — Lt. Col. \u{d8}sterg\u{e5}rd — on Dec. 13.",
+            "caf\u{e9}s, na\u{ef}ve r\u{e9}sum\u{e9}s... really?!",
+        ] {
+            let got = tokenize(text, 0);
+            assert!(!got.is_empty(), "{text:?}");
+            for w in &got {
+                assert_eq!(text.get(w.start..w.end), Some(w.text.as_str()), "{text:?}");
+            }
+            // The words tile the input in order, with only whitespace and
+            // unmatched characters between them.
+            let mut prev_end = 0usize;
+            for w in &got {
+                assert!(w.start >= prev_end, "{text:?} overlap at {:?}", w.text);
+                prev_end = w.end;
+            }
+        }
+    }
+
+    #[test]
     fn sentences_split_after_terminals_and_closing_quotes() {
         let got: Vec<&str> = split_sentences("One. Two! Three?")
             .into_iter()
@@ -413,6 +567,101 @@ mod tests {
             .map(|(_, s)| s)
             .collect();
         assert_eq!(got, ["e.g. this one"]);
+    }
+
+    fn sentences(text: &str) -> Vec<&str> {
+        split_sentences(text).into_iter().map(|(_, s)| s).collect()
+    }
+
+    #[test]
+    fn titles_initials_and_acronyms_do_not_end_a_sentence() {
+        // Each of these is one sentence, not several (issue #54).
+        assert_eq!(
+            sentences("Sen. Robert F. Kennedy spoke today."),
+            ["Sen. Robert F. Kennedy spoke today."]
+        );
+        assert_eq!(
+            sentences("Dr. Smith met J. K. Rowling."),
+            ["Dr. Smith met J. K. Rowling."]
+        );
+        assert_eq!(
+            sentences("He joined the U.S. Army in 1990."),
+            ["He joined the U.S. Army in 1990."]
+        );
+        assert_eq!(
+            sentences("It was Dec. 13 when Lt. Col. Smith arrived."),
+            ["It was Dec. 13 when Lt. Col. Smith arrived."]
+        );
+        assert_eq!(
+            sentences("Mr. and Mrs. Lee met Prof. Chan at St. Mary hospital."),
+            ["Mr. and Mrs. Lee met Prof. Chan at St. Mary hospital."]
+        );
+        assert_eq!(
+            sentences("Gov. Brown signed it on Jan. 5 in Washington, D.C. after a vote."),
+            ["Gov. Brown signed it on Jan. 5 in Washington, D.C. after a vote."]
+        );
+        assert_eq!(
+            sentences("The case was Roe vs. Wade."),
+            ["The case was Roe vs. Wade."]
+        );
+        assert_eq!(
+            sentences("Michael D. Papagiannis wrote No. 7."),
+            ["Michael D. Papagiannis wrote No. 7."]
+        );
+    }
+
+    #[test]
+    fn real_sentence_ends_still_split() {
+        assert_eq!(
+            sentences("The vote was 5 to 4. Justice Kennedy wrote it."),
+            ["The vote was 5 to 4.", "Justice Kennedy wrote it."]
+        );
+        // `!` and `?` are never guarded: `_LAST_WORD` only looks at a period.
+        assert_eq!(
+            sentences("Is it done? Yes! It is."),
+            ["Is it done?", "Yes!", "It is."]
+        );
+        // An ordinary word that happens to end in a period is no abbreviation.
+        assert_eq!(
+            sentences("She left. He stayed."),
+            ["She left.", "He stayed."]
+        );
+        // `May` is a word before it is a month, so it is not in `NO_SPLIT`.
+        assert_eq!(
+            sentences("It happened in May. Then it stopped."),
+            ["It happened in May.", "Then it stopped."]
+        );
+    }
+
+    #[test]
+    fn guarded_sentences_keep_their_offsets() {
+        let text = "Sen. Robert F. Kennedy spoke. Dr. Smith agreed.";
+        let got = split_sentences(text);
+        assert_eq!(got.len(), 2);
+        for (off, s) in got {
+            assert_eq!(&text[off..off + s.len()], s);
+        }
+    }
+
+    #[test]
+    fn abbreviations_initials_and_acronyms_tokenize_whole() {
+        assert_eq!(
+            words("Sen. Robert F. Kennedy"),
+            ["Sen.", "Robert", "F.", "Kennedy"]
+        );
+        assert_eq!(words("the U.S. Army"), ["the", "U.S.", "Army"]);
+        assert_eq!(words("Dec. 13"), ["Dec.", "13"]);
+        assert_eq!(words("Acme Inc. filed"), ["Acme", "Inc.", "filed"]);
+        assert_eq!(words("e.g. this"), ["e.g.", "this"]);
+        assert_eq!(words("at 9 a.m. sharp"), ["at", "9", "a.m.", "sharp"]);
+        // The longest abbreviation wins, as the length-sorted alternation does.
+        assert_eq!(words("Sept. 1"), ["Sept.", "1"]);
+        // An abbreviation's period survives a following comma or paren.
+        assert_eq!(words("Acme Corp., Ltd."), ["Acme", "Corp.", ",", "Ltd."]);
+        // Not followed by the end of the chunk or `,;:)`: the period splits off.
+        assert_eq!(words("Dec.13"), ["Dec", ".", "13"]);
+        // A lone capital is an initial only at the end of its chunk.
+        assert_eq!(words("F.Kennedy"), ["F", ".", "Kennedy"]);
     }
 
     #[test]

@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The kniv v7 sentence splitter no longer cuts names at titles and
+  initials.** `split_sentences` ended a sentence at any `.` followed by
+  whitespace and a capital, digit or quote, so `Sen. Robert F. Kennedy spoke
+  today.` became three sentences and the entity step returned `Robert F .` and
+  `Kennedy` as two entities. Porting kniv v7.1.2's guard, a break is now
+  suppressed after a title or month (`Mr`, `Dr`, `Sen`, `Lt`, `St`, `Jan` …
+  `Dec`, `No`, `vs`, …), after a single capital initial (`F.`), and after a
+  dotted acronym (`U.S.`); the tokenizer keeps `U.S.`, `F.`, `Dec.` and `Inc.`
+  whole with their period, as the Penn Treebank and CoNLL conventions do. On
+  CoNLL04 from raw text the fix is worth 1.1 to 3.8 points of end-to-end
+  relation F1 across the six v7 models. One trade-off comes with the guard: a
+  sentence that really does end in a single capital (`I met Mr. T. He was
+  tall.`) is not split, because `T.` reads as an initial.
+
 ## [0.19.1] - 2026-11-05
 
 ### Fixed
