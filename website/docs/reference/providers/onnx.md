@@ -139,8 +139,12 @@ Shared by both kniv generations:
 
 - `tokenizer_path` (string, default `"tokenizer.json"`).
 - `generation` (string, `"v1"` or `"v7"`) — pins the generation instead of
-  inferring it. Inference: a repo carrying `onnx/onnx_meta.json` is v7, a repo
-  carrying `onnx/cascade.onnx` is v1.
+  inferring it. Inference: a repo is v1 when it serves no
+  `onnx/onnx_meta.json`, or serves one that parses and carries neither of the
+  v7 keys `graphs` and `word_pool`; otherwise it is v7. The contents decide
+  rather than the filename, because some v1 cascade releases —
+  `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` among them — ship an
+  `onnx/onnx_meta.json` describing their single `cascade.onnx` graph.
 
 kniv v1 cascade only:
 
