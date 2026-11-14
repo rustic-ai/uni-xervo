@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-13
+
 ### Fixed
 
 - **The kniv v7 sentence splitter no longer cuts names at titles and
