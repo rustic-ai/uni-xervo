@@ -405,9 +405,12 @@ async fn http_400_exceed_context_maps_to_inference_error() {
     assert!(matches!(err, RuntimeError::InferenceError(_)), "{err:?}");
 }
 
+/// Predicate checking that an error has the expected variant.
+type ErrorCheck = fn(&RuntimeError) -> bool;
+
 #[tokio::test]
 async fn other_http_errors_map_like_remote_providers() {
-    let cases: Vec<(u16, Value, fn(&RuntimeError) -> bool)> = vec![
+    let cases: Vec<(u16, Value, ErrorCheck)> = vec![
         (500, llama_error(500, "boom", "server_error"), |e| {
             matches!(e, RuntimeError::Unavailable)
         }),

@@ -174,7 +174,7 @@ mod tests {
             step += 1;
             // Always emit token id == step so we can verify the running
             // list contents from outside.
-            let token = step as usize;
+            let token = step;
             let mut logits = vec![0.0; 5];
             logits[token.min(4)] = 1.0;
             Ok(logits)
