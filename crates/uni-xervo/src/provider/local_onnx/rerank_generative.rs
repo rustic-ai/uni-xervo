@@ -17,7 +17,7 @@
 //!    token ids.
 //! 4. Score = `softmax([yes, no])[0]` — a probability in `[0, 1]`.
 //!    (The cross-encoder path returns raw logits in an unbounded range;
-//!     callers can still mix the two via descending-score sort.)
+//!    callers can still mix the two via descending-score sort.)
 //!
 //! ## ONNX input handling
 //!

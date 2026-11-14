@@ -664,7 +664,7 @@ async fn test_vertexai_remote_embedding() {
         let embeddings = model.embed(&texts).await.expect("Embedding failed");
 
         assert_eq!(embeddings.vectors.len(), 2);
-        assert!(embeddings.vectors[0].len() > 0);
+        assert!(!embeddings.vectors[0].is_empty());
 
         println!("✓ Vertex AI remote embedding test passed");
     }

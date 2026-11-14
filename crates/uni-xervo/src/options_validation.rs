@@ -853,13 +853,13 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         )?;
         require_positive_u64(provider_id, map, "image_size")?;
         require_positive_u64(provider_id, map, "dimensions")?;
-        if let Some(value) = map.get("normalize") {
-            if !value.is_boolean() {
-                return Err(RuntimeError::Config(format!(
-                    "Option 'normalize' for provider '{}' must be a boolean",
-                    provider_id
-                )));
-            }
+        if let Some(value) = map.get("normalize")
+            && !value.is_boolean()
+        {
+            return Err(RuntimeError::Config(format!(
+                "Option 'normalize' for provider '{}' must be a boolean",
+                provider_id
+            )));
         }
         if let Some(value) = map.get("normalization") {
             let s = value.as_str().unwrap_or("");
