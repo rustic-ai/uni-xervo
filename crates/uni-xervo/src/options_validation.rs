@@ -708,6 +708,8 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
                 "image_width",
                 "normalization",
                 "blank_class",
+                "use_space_char",
+                "max_image_width",
                 "output_name",
                 // Optional DBNet detection stage.
                 "det_onnx_path",
@@ -816,6 +818,16 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         )?;
         require_positive_u64(provider_id, map, "image_height")?;
         require_positive_u64(provider_id, map, "image_width")?;
+        require_positive_u64(provider_id, map, "max_image_width")?;
+        require_non_negative_u64(provider_id, map, "blank_class")?;
+        if let Some(value) = map.get("use_space_char")
+            && !value.is_boolean()
+        {
+            return Err(RuntimeError::Config(format!(
+                "Option 'use_space_char' for provider '{}' must be a boolean",
+                provider_id
+            )));
+        }
         if let Some(value) = map.get("normalization") {
             let s = value.as_str().unwrap_or("");
             if !matches!(s, "siglip" | "imagenet") {

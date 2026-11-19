@@ -214,10 +214,24 @@ Recognition (always required):
 - `onnx_path` (string, required) — recognizer (CRNN/CTC) `.onnx` within the repo.
 - `char_dict_path` (string, required) — character dictionary file within
   the HF repo, one entry per line. Class 0 is the CTC blank by default.
-- `image_height` (integer, default 48), `image_width` (integer, default 320).
+- `image_height` (integer, default 48) — the height every text line is
+  resized to.
+- `image_width` (integer, default 320) — the narrowest a batch of lines is.
+  Each line keeps its aspect ratio (`ceil(image_height × w / h)` wide) and is
+  right-padded, so a long line is never squeezed into fewer CTC time steps
+  than it has characters. If the graph fixes its input width, lines are fitted
+  to that width instead, still keeping their aspect ratio.
+- `max_image_width` (integer ≥ `image_width`, default 3200) — the widest a
+  line is resized to.
 - `normalization` (`"siglip"` | `"imagenet"`, default `"imagenet"`). PP-OCR
   recognizers expect `"siglip"` (i.e. `(x/255 − 0.5)/0.5`).
-- `blank_class` (integer, default 0).
+- `blank_class` (integer, default 0) — the CTC blank's class index.
+- `use_space_char` (boolean, optional) — whether the recognizer has a space
+  class after the last dictionary entry, as PaddleOCR models trained with
+  `use_space_char=True` do (the space is not a line in the dictionary file).
+  Unset, it is detected from the model's class count: blank + dictionary + 1
+  means a space class, blank + dictionary means none. Any other count is a
+  configuration error, since the dictionary does not match the model.
 - `output_name` (string, optional).
 
 Optional detection stage (DBNet) — present `det_onnx_path` to enable two-stage

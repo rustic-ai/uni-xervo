@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **OCR keeps the spaces between words.** PaddleOCR recognizers trained with
+  `use_space_char=True` output blank + dictionary + space classes, with the
+  space past the end of the dictionary file. The decoder found no dictionary
+  entry for that last class and dropped it, so `Pump Station Maintenance Log`
+  came back as `PumpStationMaintenanceLog`. The space class is now detected
+  from the model's class count, or set with the new `use_space_char` option.
+  A class count that fits neither layout is now a configuration error naming
+  both counts, instead of silently decoding the wrong characters. A
+  `blank_class` other than 0 now maps the classes on either side of it
+  correctly. (#68)
+- **OCR reads long lines in full.** Every text line was stretched to a fixed
+  `image_height` × `image_width` (48 × 320), so a long line had fewer CTC time
+  steps than characters: `The north pump was replaced on March 12.` came back
+  as `Thenoa.`. Lines now keep their aspect ratio and are right-padded, as
+  PaddleOCR does, up to the new `max_image_width` option (default 3200);
+  `image_width` becomes the narrowest a batch is. Lines are recognized six at
+  a time, grouped by aspect ratio, instead of one session run per line. A
+  recognizer whose graph fixes its input width gets lines fitted to that
+  width, and one whose fixed height differs from `image_height` fails at load.
+  (#69)
+
 ## [0.19.2] - 2026-11-13
 
 ### Fixed

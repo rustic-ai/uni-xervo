@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use tracing::info;
 
 use super::det;
-use super::image::{Normalization, fill_chw, preprocess_batch_hw, preprocess_det};
+use super::image::{Normalization, aspect_width, pack_text_lines, preprocess_det};
 use crate::api::ModelAliasSpec;
 use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
@@ -69,9 +69,18 @@ struct OcrConfig {
     image_width: u32,
     normalization: Normalization,
     blank_class: usize,
+    use_space_char: Option<bool>,
+    max_image_width: u32,
     output_name: Option<String>,
     detector: Option<DetConfig>,
 }
+
+/// Default cap on a text line's resized width (`max_image_width`).
+const DEFAULT_MAX_IMAGE_WIDTH: u32 = 3200;
+
+/// Text lines recognized per session run, grouped by similar aspect ratio so
+/// little of each batch is padding. PaddleOCR's `rec_batch_num` default.
+const REC_BATCH_SIZE: usize = 6;
 
 impl OcrConfig {
     fn resolve(spec: &ModelAliasSpec) -> Result<Self> {
@@ -117,6 +126,18 @@ impl OcrConfig {
             }
         };
         let blank_class = opts.get("blank_class").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let use_space_char = opts.get("use_space_char").and_then(Value::as_bool);
+        let max_image_width = opts
+            .get("max_image_width")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_MAX_IMAGE_WIDTH, |v| v as u32);
+        if max_image_width < image_width {
+            return Err(RuntimeError::Config(format!(
+                "OCR model '{}' has max_image_width={max_image_width} below \
+                 image_width={image_width}",
+                spec.alias
+            )));
+        }
         let output_name = get_str("output_name");
 
         // Optional detection stage — enabled by `det_onnx_path`.
@@ -162,10 +183,79 @@ impl OcrConfig {
             image_width,
             normalization,
             blank_class,
+            use_space_char,
+            max_image_width,
             output_name,
             detector,
         })
     }
+}
+
+/// Whether the recognizer has a trailing space class past the dictionary.
+///
+/// PaddleOCR recognizers trained with `use_space_char=True` output
+/// `1 + dict_len + 1` classes: the CTC blank, the dictionary entries, and a
+/// space as the last class, which is not a line in the dictionary file.
+/// `use_space_char` unset means detect it from the class count. A count that
+/// fits neither layout is an error, since decoding would map classes to the
+/// wrong characters.
+fn resolve_space_class(
+    alias: &str,
+    dict_len: usize,
+    n_classes: usize,
+    use_space_char: Option<bool>,
+) -> Result<bool> {
+    let non_blank = n_classes.saturating_sub(1);
+    let has_space = match use_space_char {
+        Some(flag) => flag,
+        None => non_blank == dict_len + 1,
+    };
+    let expected = dict_len + usize::from(has_space);
+    if non_blank != expected {
+        let hint = match use_space_char {
+            Some(true) => " (use_space_char=true)",
+            Some(false) => " (use_space_char=false)",
+            None => "",
+        };
+        return Err(RuntimeError::Config(format!(
+            "OCR model '{alias}' outputs {n_classes} classes, but its dictionary has \
+             {dict_len} entries{hint}: expected {} classes (blank + dictionary) or {} \
+             (blank + dictionary + space). Check that char_dict_path matches the \
+             recognition model.",
+            dict_len + 1,
+            dict_len + 2,
+        )));
+    }
+    Ok(has_space)
+}
+
+/// Fixed `(height, width)` of the recognizer's `[N, 3, H, W]` input, where
+/// the graph fixes them (`None` for a dynamic dimension).
+fn rec_input_dims(session: &Session) -> (Option<u32>, Option<u32>) {
+    let dim = |i: usize| {
+        session
+            .inputs()
+            .first()
+            .and_then(|input| input.dtype().tensor_shape())
+            .filter(|shape| shape.len() == 4)
+            .and_then(|shape| u32::try_from(shape[i]).ok())
+            .filter(|&d| d > 0)
+    };
+    (dim(2), dim(3))
+}
+
+/// The recognizer output's class count, when the graph fixes it.
+fn rec_output_classes(session: &Session, output_name: Option<&str>) -> Option<usize> {
+    let outputs = session.outputs();
+    let output = match output_name {
+        Some(name) => outputs.iter().find(|o| o.name() == name),
+        None => outputs.first(),
+    }?;
+    let shape = output.dtype().tensor_shape()?;
+    shape
+        .last()
+        .and_then(|&d| usize::try_from(d).ok())
+        .filter(|&d| d > 0)
 }
 
 /// A loaded DBNet-style text detector (the optional first OCR stage).
@@ -184,9 +274,14 @@ struct OnnxOcrModel {
     model_id: String,
     chars: Vec<String>,
     image_height: u32,
-    image_width: u32,
+    /// Narrowest batch width; shorter lines are right-padded up to it.
+    min_width: u32,
+    /// Widest a line is resized to. Equals `min_width` when the graph fixes
+    /// its input width.
+    max_width: u32,
     normalization: Normalization,
     blank_class: usize,
+    use_space_char: Option<bool>,
     output_name: Option<String>,
     /// When present, `recognize()` runs detect → crop → recognize → order.
     detector: Option<Detector>,
@@ -224,6 +319,27 @@ impl OnnxOcrModel {
         let chars = read_char_dict(&char_dict_path)?;
         let session = build_session(&model_path, spec, execution_providers.as_deref())?;
 
+        // Catch a dictionary that doesn't match the model at load, when the
+        // graph fixes its class count; otherwise each run checks it.
+        if let Some(n_classes) = rec_output_classes(&session, cfg.output_name.as_deref()) {
+            resolve_space_class(&spec.alias, chars.len(), n_classes, cfg.use_space_char)?;
+        }
+        let (fixed_h, fixed_w) = rec_input_dims(&session);
+        if let Some(h) = fixed_h
+            && h != cfg.image_height
+        {
+            return Err(RuntimeError::Config(format!(
+                "OCR model '{}' takes input height {h}, but image_height is {}",
+                spec.alias, cfg.image_height
+            )));
+        }
+        // A graph with a fixed input width can't take wider lines: resize to
+        // it with the aspect ratio kept, padding on the right.
+        let (min_width, max_width) = match fixed_w {
+            Some(w) => (w, w),
+            None => (cfg.image_width, cfg.max_image_width),
+        };
+
         let detector = match &cfg.detector {
             Some(dc) => {
                 info!(alias = %spec.alias, det_onnx = %dc.onnx_path, "Loading ONNX text detector");
@@ -254,9 +370,11 @@ impl OnnxOcrModel {
             model_id: spec.model_id.clone(),
             chars,
             image_height: cfg.image_height,
-            image_width: cfg.image_width,
+            min_width,
+            max_width,
             normalization: cfg.normalization,
             blank_class: cfg.blank_class,
+            use_space_char: cfg.use_space_char,
             output_name: cfg.output_name,
             detector,
         })
@@ -287,13 +405,12 @@ impl OnnxOcrModel {
     /// Whole-image recognition: one block per input image (the prior behavior,
     /// used when no detector is configured).
     fn recognize_whole_image(&self, images: &[ImageInput]) -> Result<Vec<OcrResult>> {
-        let tensor = preprocess_batch_hw(
-            images,
-            self.image_height,
-            self.image_width,
-            self.normalization,
-        )?;
-        let decoded = self.run_recognition(tensor)?;
+        let decoded_images = images
+            .iter()
+            .map(|input| decode_image(input, &self.alias))
+            .collect::<Result<Vec<_>>>()?;
+        let lines: Vec<&DynamicImage> = decoded_images.iter().collect();
+        let decoded = self.recognize_lines(&lines)?;
         Ok(decoded
             .into_iter()
             .map(|(text, confidence)| OcrResult {
@@ -343,26 +460,63 @@ impl OnnxOcrModel {
             let mean_h = boxes.iter().map(det::DetBox::height).sum::<f32>() / boxes.len() as f32;
             det::sort_reading_order(&mut boxes, mean_h * 0.5);
 
-            let mut items = Vec::with_capacity(boxes.len());
+            let mut kept = Vec::with_capacity(boxes.len());
+            let mut crops = Vec::with_capacity(boxes.len());
             for b in &boxes {
                 let bw = (b.x1 - b.x0).floor() as u32;
                 let bh = (b.y1 - b.y0).floor() as u32;
                 if bw == 0 || bh == 0 {
                     continue; // degenerate region — never crop a 0-size box
                 }
-                let crop = img.crop_imm(b.x0 as u32, b.y0 as u32, bw, bh);
-                let tensor = fill_chw(
-                    &crop,
-                    self.image_height,
-                    self.image_width,
-                    self.normalization,
-                );
-                let (text, confidence) = self.run_recognition(tensor)?.pop().unwrap_or_default();
-                items.push((*b, text, confidence));
+                crops.push(img.crop_imm(b.x0 as u32, b.y0 as u32, bw, bh));
+                kept.push(*b);
             }
+            let lines: Vec<&DynamicImage> = crops.iter().collect();
+            let decoded = self.recognize_lines(&lines)?;
+            let items = kept
+                .into_iter()
+                .zip(decoded)
+                .map(|(b, (text, confidence))| (b, text, confidence))
+                .collect();
             results.push(assemble_ocr_result(items));
         }
         Ok(results)
+    }
+
+    /// Recognize text-line images, returning `(text, confidence)` in input
+    /// order.
+    ///
+    /// Lines are sorted by aspect ratio and run [`REC_BATCH_SIZE`] at a time,
+    /// each batch as wide as its widest line (within `min_width..=max_width`),
+    /// so every line keeps its aspect ratio and short lines in a batch are
+    /// right-padded rather than stretched.
+    fn recognize_lines(&self, lines: &[&DynamicImage]) -> Result<Vec<(String, f32)>> {
+        let mut order: Vec<usize> = (0..lines.len()).collect();
+        let ratio = |i: usize| {
+            let (w, h) = lines[i].dimensions();
+            f64::from(w) / f64::from(h.max(1))
+        };
+        order.sort_by(|&a, &b| ratio(a).total_cmp(&ratio(b)));
+
+        let mut out = vec![(String::new(), 0.0f32); lines.len()];
+        for chunk in order.chunks(REC_BATCH_SIZE) {
+            let batch: Vec<&DynamicImage> = chunk.iter().map(|&i| lines[i]).collect();
+            let width = batch
+                .iter()
+                .map(|img| {
+                    let (w, h) = img.dimensions();
+                    aspect_width(w, h, self.image_height, self.max_width)
+                })
+                .max()
+                .unwrap_or(self.min_width)
+                .max(self.min_width);
+            let tensor = pack_text_lines(&batch, self.image_height, width, self.normalization);
+            let decoded = self.run_recognition(tensor)?;
+            for (&i, result) in chunk.iter().zip(decoded) {
+                out[i] = result;
+            }
+        }
+        Ok(out)
     }
 
     /// Run the recognition session on a preprocessed batch, CTC-decoding each
@@ -427,54 +581,83 @@ impl OnnxOcrModel {
             });
         }
 
+        let has_space = resolve_space_class(
+            &self.alias,
+            self.chars.len(),
+            n_classes,
+            self.use_space_char,
+        )?;
+
         let mut out = Vec::with_capacity(batch);
         for b in 0..batch {
-            out.push(self.decode_ctc(arr3.slice(ndarray::s![b, .., ..])));
+            out.push(decode_ctc(
+                arr3.slice(ndarray::s![b, .., ..]),
+                &self.chars,
+                self.blank_class,
+                has_space,
+            ));
         }
         Ok(out)
     }
+}
 
-    /// CTC greedy-decode one `[time, classes]` slice into `(text, mean_conf)`.
-    fn decode_ctc(&self, slice: ndarray::ArrayView2<f32>) -> (String, f32) {
-        let mut prev_class: Option<usize> = None;
-        let mut text = String::new();
-        let mut total_conf = 0.0f64;
-        let mut emitted = 0usize;
-        for t in 0..slice.shape()[0] {
-            let row = slice.row(t);
-            let class_id = row
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+/// CTC greedy-decode one `[time, classes]` slice into `(text, mean_conf)`.
+///
+/// Classes other than `blank_class` map, in order, to the dictionary entries
+/// and then, when `has_space`, to a trailing space.
+fn decode_ctc(
+    slice: ndarray::ArrayView2<f32>,
+    chars: &[String],
+    blank_class: usize,
+    has_space: bool,
+) -> (String, f32) {
+    let mut prev_class: Option<usize> = None;
+    let mut text = String::new();
+    let mut total_conf = 0.0f64;
+    let mut emitted = 0usize;
+    for t in 0..slice.shape()[0] {
+        let row = slice.row(t);
+        let class_id = row
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
 
-            if class_id == self.blank_class {
-                prev_class = None;
-                continue;
-            }
-            if prev_class == Some(class_id) {
-                continue;
-            }
-            prev_class = Some(class_id);
-
-            // Index 0 is blank by convention; chars are typically 1-indexed
-            // against the dictionary file. Offset by 1.
-            let char_idx = class_id.saturating_sub(self.blank_class + 1);
-            if let Some(c) = self.chars.get(char_idx) {
-                text.push_str(c);
-                total_conf += class_confidence(&row.to_vec(), class_id) as f64;
-                emitted += 1;
-            }
+        if class_id == blank_class {
+            prev_class = None;
+            continue;
         }
-        let avg_conf = if emitted > 0 {
-            (total_conf / emitted as f64) as f32
-        } else {
-            0.0
-        };
-        (text, avg_conf)
-    }
+        if prev_class == Some(class_id) {
+            continue;
+        }
+        prev_class = Some(class_id);
 
+        // Skip over the blank: classes below it map straight to the
+        // dictionary, classes above it are shifted down by one.
+        let char_idx = if class_id < blank_class {
+            class_id
+        } else {
+            class_id - 1
+        };
+        let token = match chars.get(char_idx) {
+            Some(c) => c.as_str(),
+            None if has_space && char_idx == chars.len() => " ",
+            None => continue,
+        };
+        text.push_str(token);
+        total_conf += class_confidence(&row.to_vec(), class_id) as f64;
+        emitted += 1;
+    }
+    let avg_conf = if emitted > 0 {
+        (total_conf / emitted as f64) as f32
+    } else {
+        0.0
+    };
+    (text, avg_conf)
+}
+
+impl OnnxOcrModel {
     /// Run the detector session and return the `[H, W]` probability map.
     ///
     /// Accepts the common DBNet output ranks ([1,1,H,W], [1,H,W], [H,W]) and
@@ -861,6 +1044,98 @@ mod tests {
         assert_eq!(r.blocks[1].text, "world");
         assert_eq!(r.blocks[0].bbox, [0.0, 0.0, 10.0, 10.0]);
         assert_eq!(r.plain_text, "hello\nworld");
+    }
+
+    /// A `[time, classes]` slice whose argmax per row is `classes_by_step[t]`.
+    fn one_hot(classes_by_step: &[usize], n_classes: usize) -> ndarray::Array2<f32> {
+        let mut a = ndarray::Array2::<f32>::zeros((classes_by_step.len(), n_classes));
+        for (t, &c) in classes_by_step.iter().enumerate() {
+            a[[t, c]] = 1.0;
+        }
+        a
+    }
+
+    fn dict(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn decode_maps_trailing_class_to_space() {
+        // PaddleOCR layout: blank, a, b, then the space class past the dict.
+        let chars = dict(&["a", "b"]);
+        let slice = one_hot(&[1, 0, 3, 3, 2], 4);
+        let (text, conf) = decode_ctc(slice.view(), &chars, 0, true);
+        assert_eq!(text, "a b");
+        assert!((conf - 1.0).abs() < 1e-6);
+        // Without a space class the extra index is dropped, as before.
+        let (text, _) = decode_ctc(slice.view(), &chars, 0, false);
+        assert_eq!(text, "ab");
+    }
+
+    #[test]
+    fn decode_collapses_repeats_and_honours_blank() {
+        let chars = dict(&["a", "b"]);
+        // a a <blank> a b b -> "aab"
+        let slice = one_hot(&[1, 1, 0, 1, 2, 2], 3);
+        assert_eq!(decode_ctc(slice.view(), &chars, 0, false).0, "aab");
+    }
+
+    #[test]
+    fn decode_handles_blank_as_last_class() {
+        // Layout: a, b, blank. Classes below the blank map straight through.
+        let chars = dict(&["a", "b"]);
+        let slice = one_hot(&[0, 2, 1, 2, 0], 3);
+        assert_eq!(decode_ctc(slice.view(), &chars, 2, false).0, "aba");
+    }
+
+    #[test]
+    fn space_class_is_detected_from_class_count() {
+        // blank + 436 + space = 438: the PP-OCRv5 English layout.
+        assert!(resolve_space_class("a", 436, 438, None).unwrap());
+        // blank + 436 = 437: no space class.
+        assert!(!resolve_space_class("a", 436, 437, None).unwrap());
+        // Anything else is a dictionary/model mismatch.
+        assert!(matches!(
+            resolve_space_class("a", 436, 500, None),
+            Err(RuntimeError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_space_char_must_match_class_count() {
+        assert!(resolve_space_class("a", 436, 438, Some(true)).unwrap());
+        assert!(!resolve_space_class("a", 436, 437, Some(false)).unwrap());
+        assert!(resolve_space_class("a", 436, 437, Some(true)).is_err());
+        assert!(resolve_space_class("a", 436, 438, Some(false)).is_err());
+    }
+
+    #[test]
+    fn config_reads_space_char_and_width_cap() {
+        let cfg = OcrConfig::resolve(&ocr_spec(serde_json::json!({
+            "onnx_path": "rec.onnx",
+            "char_dict_path": "dict.txt"
+        })))
+        .unwrap();
+        assert_eq!(cfg.use_space_char, None, "unset means auto-detect");
+        assert_eq!(cfg.max_image_width, DEFAULT_MAX_IMAGE_WIDTH);
+
+        let cfg = OcrConfig::resolve(&ocr_spec(serde_json::json!({
+            "onnx_path": "rec.onnx",
+            "char_dict_path": "dict.txt",
+            "use_space_char": false,
+            "max_image_width": 1000
+        })))
+        .unwrap();
+        assert_eq!(cfg.use_space_char, Some(false));
+        assert_eq!(cfg.max_image_width, 1000);
+
+        let err = OcrConfig::resolve(&ocr_spec(serde_json::json!({
+            "onnx_path": "rec.onnx",
+            "char_dict_path": "dict.txt",
+            "image_width": 320,
+            "max_image_width": 100
+        })));
+        assert!(matches!(err, Err(RuntimeError::Config(_))));
     }
 
     #[test]

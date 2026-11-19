@@ -80,3 +80,51 @@ async fn ocr_alias_rejects_zero_image_height() {
         .await;
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn ocr_alias_accepts_space_char_and_max_width() {
+    let opts = serde_json::json!({
+        "onnx_path": "model.onnx",
+        "char_dict_path": "char_dict.txt",
+        "use_space_char": true,
+        "max_image_width": 2000
+    });
+    let result = ModelRuntime::builder()
+        .register_provider(LocalOnnxProvider::new())
+        .catalog(vec![ocr_spec("ocr/test", "some/repo", opts)])
+        .build()
+        .await;
+    assert!(
+        result.is_ok(),
+        "valid options should pass validation: err={}",
+        result.err().map(|e| e.to_string()).unwrap_or_default()
+    );
+}
+
+#[tokio::test]
+async fn ocr_alias_rejects_bad_space_char_and_max_width() {
+    for opts in [
+        serde_json::json!({
+            "onnx_path": "model.onnx",
+            "char_dict_path": "char_dict.txt",
+            "use_space_char": "yes"
+        }),
+        serde_json::json!({
+            "onnx_path": "model.onnx",
+            "char_dict_path": "char_dict.txt",
+            "max_image_width": 0
+        }),
+        serde_json::json!({
+            "onnx_path": "model.onnx",
+            "char_dict_path": "char_dict.txt",
+            "blank_class": -1
+        }),
+    ] {
+        let result = ModelRuntime::builder()
+            .register_provider(LocalOnnxProvider::new())
+            .catalog(vec![ocr_spec("ocr/bad", "some/repo", opts.clone())])
+            .build()
+            .await;
+        assert!(result.is_err(), "should reject {opts}");
+    }
+}
