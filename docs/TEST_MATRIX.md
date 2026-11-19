@@ -14,21 +14,21 @@ add a platform, run `scripts/acceptance.sh <target>` there and copy its
 
 | Platform | Target | Date | Commit | Suites passed | Failed | Skipped |
 |---|---|---|---|---|---|---|
-| macOS arm64 (Apple Silicon) | `cpu` | 2026-11-19 | `a76262a` | 11 | 0 | 1 (whisper.cpp: no cmake) |
-| macOS arm64 (Apple Silicon) | `coreml` | 2026-11-19 | `d837a30` + the accelerator check | 12 | 0 | 1 (whisper.cpp: no cmake) |
+| macOS arm64 (Apple M2 Max) | `cpu` | 2026-11-19 | `0313805` | 11 | **2** (kniv v7 UltraBERT goldens) | 1 (whisper.cpp: no cmake) |
+| macOS arm64 (Apple M2 Max) | `coreml` | 2026-11-19 | `0313805` | 11 | **3** (kniv v7 UltraBERT goldens; Qwen3 on CPU) | 1 (whisper.cpp: no cmake) |
 | Linux x86_64 (Intel Core Ultra 9 185H) | `cpu` | 2026-11-19 | `c371778` + the fixes below | 14 | 0 | 0 |
 | Linux x86_64 + NVIDIA RTX 4070 Laptop (8 GB) | `cuda` | 2026-11-19 | `c371778` + the fixes below | 15 | 0 | 0 |
 
-The first `coreml` run, at `a76262a`, failed `multi-vector` (3 of 6) and
-`ocr` (1 of 3); see [Known issues](#known-issues) for what was wrong and how
-the accelerator check fixed it.
+The macOS failures are findings, not regressions: see
+[macOS arm64](#macos-arm64) under Known issues. The first `coreml` run, at
+`a76262a`, failed `multi-vector` (3 of 6) and `ocr` (1 of 3); the accelerator
+check fixed both.
 
-The macOS runs used Rust 1.100.0, the Linux runs Rust 1.99.1; all used the
+The macOS runs used Rust 1.100.0 and macOS's own `/bin/bash` 3.2.57 for
+`scripts/acceptance.sh`; the Linux runs Rust 1.99.1 and bash 5. All used the
 `ort` 2.0.0-rc.15 ONNX Runtime binding, with the models listed under
-[Models](#models). The macOS runs predate three suite changes: the kniv v7
-suites now run the golden comparisons on the xlarge releases (they ran the
-model-agnostic tests on the tiny release), accelerator targets check every
-model runs on the accelerator, and they run tests one at a time.
+[Models](#models), and `ORT_DYLIB_PATH` naming the ONNX Runtime 1.31.1
+wheel's library (`libonnxruntime.1.31.1.dylib` on macOS).
 
 The first Linux `cuda` runs passed every suite while several models ran on
 CPU; see [Linux / CUDA](#linux--cuda-gpu-cuda) under Known issues for why,
@@ -38,43 +38,50 @@ and the matrix changes that make that a failure.
 
 | Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
 |---|---|---|---|---|
-| `onnx-models` (BGE small/large, Qwen3 embedding, rerankers, kniv v1 NLP, …) | pass | 11 / 0 / 0 | 4 s | 10.1 GiB |
+| `onnx-models` | pass | 11 / 0 / 0 | 6 s | 9.7 GiB |
 | `onnx-hf-download` | pass | 2 / 0 / 0 | 2 s | 0.9 GiB |
-| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.2 GiB |
-| `sparse` (SPLADE v1/v2, BGE-M3 lexical) | pass | 4 / 0 / 0 | 2 s | 2.3 GiB |
-| `multi-vector` (ColBERT family, BGE-M3 ColBERT) | pass | 6 / 0 / 0 | 2 s | 2.0 GiB |
-| `hybrid-bge-m3` (widths, parity with per-task models) | pass | 3 / 0 / 0 | 5 s | 7.3 GiB |
-| `ocr` (PP-OCRv5 detection + recognition) | pass | 3 / 0 / 0 | 2 s | 0.5 GiB |
-| `pdf-to-ocr` | pass | 1 / 0 / 0 | 2 s | 0.9 GiB |
-| `nlp-kniv-v7` (kniv-v7-tiny-en, model-agnostic tests) | pass | 2 / 0 / 0 | 4 s | 0.2 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.3 GiB |
+| `sparse` | pass | 4 / 0 / 0 | 2 s | 2.3 GiB |
+| `multi-vector` | pass | 6 / 0 / 0 | 2 s | 2.3 GiB |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 7 s | 3.3 GiB |
+| `ocr` | pass | 3 / 0 / 0 | 2 s | 0.5 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 3 s | 0.9 GiB |
+| `nlp-kniv-v7` (UltraBERT goldens, tolerant: 2.65% differ) | **fail** | 3 / 1 / 0 | 51 s | 4.6 GiB |
+| `nlp-kniv-v7-deberta` (DeBERTa goldens, tolerant: 0.41% differ) | pass | 4 / 0 / 0 | 76 s | 10.1 GiB |
+| `nlp-kniv-v7-exact` (tolerant off linux-x86_64: 2.65% differ) | **fail** | 0 / 1 / 0 | 7 s | 3.6 GiB |
 | `ep-reporting` | pass | 7 / 0 / 0 | 0 s | 0.1 GiB |
-| `ep-skip-dynamic` (real ORT 1.30 library) | pass | 2 / 0 / 0 | 1 s | 0.1 GiB |
-| `whisper` | skipped: `whisper-rs-sys` needs cmake, not installed | | | |
+| `ep-skip-dynamic` (ONNX Runtime 1.31.1 wheel library) | pass | 2 / 0 / 0 | 0 s | 0.1 GiB |
+| `whisper` | skipped: cmake not on PATH | | | |
 
 ## macOS arm64, `coreml`
 
 `local/onnx` built with `gpu-metal`, so every session's default provider list
-is `["coreml", "cpu"]`.
+is `["coreml", "cpu"]`. Of the 37 model loads in the accelerator-checked
+suites, 31 reported `["coreml", "cpu"]` and 6 `["cpu"]`: the OCR alias and
+the three ModernBERT ColBERT models, which are allowed, and the two Qwen3
+models, which are not (see [Known issues](#macos-arm64)).
 
 | Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
 |---|---|---|---|---|
-| `onnx-models` | pass | 11 / 0 / 0 | 27 s | 16.3 GiB |
-| `onnx-hf-download` | pass | 2 / 0 / 0 | 15 s | 2.1 GiB |
-| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.7 GiB |
-| `sparse` | pass | 4 / 0 / 0 | 7 s | 9.8 GiB |
-| `multi-vector` (ModernBERT models fall back to CPU) | pass | 6 / 0 / 0 | 7 s | 12.0 GiB |
-| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 36 s | 17.5 GiB |
-| `ocr` (detector on CoreML, recognizer on CPU) | pass | 3 / 0 / 0 | 8 s | 1.5 GiB |
-| `pdf-to-ocr` | pass | 1 / 0 / 0 | 2 s | 0.9 GiB |
-| `nlp-kniv-v7` | pass | 2 / 0 / 0 | 4 s | 0.2 GiB |
+| `onnx-models` (Qwen3 embedding and reranker on CPU) | **fail** | 9 / 2 / 0 | 43 s | 11.1 GiB |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 3 s | 1.4 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 3 s | 0.6 GiB |
+| `sparse` | pass | 4 / 0 / 0 | 13 s | 10.4 GiB |
+| `multi-vector` (ModernBERT models on CPU, allowed) | pass | 6 / 0 / 0 | 15 s | 10.4 GiB |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 38 s | 13.9 GiB |
+| `ocr` (detector on CoreML, recognizer on CPU, allowed) | pass | 3 / 0 / 0 | 8 s | 1.9 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 1 s | 0.9 GiB |
+| `nlp-kniv-v7` (2.65% differ) | **fail** | 3 / 1 / 0 | 17 s | 3.6 GiB |
+| `nlp-kniv-v7-deberta` (0.41% differ) | pass | 4 / 0 / 0 | 26 s | 6.6 GiB |
+| `nlp-kniv-v7-exact` (tolerant: 2.65% differ) | **fail** | 0 / 1 / 0 | 6 s | 3.5 GiB |
 | `ep-reporting` (reports `["coreml", "cpu"]`) | pass | 9 / 0 / 0 | 1 s | 0.1 GiB |
-| `ep-skip-dynamic` | pass | 2 / 0 / 0 | 1 s | 0.1 GiB |
-| `coreml-inference` (embed and rerank on CoreML only) | pass | 2 / 0 / 0 | 2 s | 1.1 GiB |
-| `whisper` | skipped: no cmake | | | |
+| `ep-skip-dynamic` | pass | 2 / 0 / 0 | 0 s | 0.1 GiB |
+| `coreml-inference` (embed and rerank on CoreML only) | pass | 2 / 0 / 0 | 3 s | 0.8 GiB |
+| `whisper` | skipped: cmake not on PATH | | | |
 
-Times exclude the build. Peak RSS is for the whole test binary, whose tests
-run in parallel and each load their own models, so it is an upper bound on
-any one model, not a per-model figure.
+Times exclude the build. On `cpu`, peak RSS is for the whole test binary,
+whose tests run in parallel, so it is an upper bound on any one model; on
+`coreml` the tests run one at a time, which is why its times are longer.
 
 ## Linux x86_64, `cpu`
 
@@ -158,11 +165,12 @@ tolerance:
 
 | Model | Relative error | Result |
 |---|---|---|
-| BGE small and large, Qwen3, the rerankers, SPLADE, answerai ColBERT | 1e-7 to 6e-6 | stays on CoreML |
+| BGE small and large, the BERT rerankers, SPLADE, answerai ColBERT | 1e-7 to 6e-6 | stays on CoreML |
 | BGE-M3 (dense, sparse, ColBERT) | 0 | stays on CoreML |
 | PP-OCRv5 detector | 0.052 | stays on CoreML |
 | PP-OCRv5 recognizer | 0.66 | falls back to CPU |
 | ModernBERT ColBERT | probe errors | falls back to CPU |
+| Qwen3 0.6B embedding and reranker | probe errors (see below) | falls back to CPU |
 
 With that split, OCR reads the fixture correctly at about 160 ms a page,
 against 430 ms with both stages on CPU.
@@ -171,6 +179,35 @@ Switching CoreML to the ML Program format was tried and not adopted: neither
 PP-OCR model builds on it, and BERT-family models (BGE small, the MiniLM
 reranker, SPLADE) abort the whole process inside Metal (`'mps.matmul' op
 contracting dimensions differ`). A crash cannot be caught or fallen back from.
+
+### macOS arm64
+
+Found by the `0313805` runs, the first with the accelerator assertions and
+the kniv v7 golden suites on a Mac:
+
+- **Qwen3 0.6B embedding and reranker run on CPU under `gpu-metal`.** Both
+  fail the load-time probe on CoreML and fall back:
+
+  ```
+  WARN uni_xervo::provider::onnx_ep: ONNX model failed its load-time probe on the requested execution providers; falling back to CPU alias=embed/qwen3-06b failed=coreml error=... coreml_execution_provider.cc:226 operator() Input (past_key_values.0.key) has a dynamic shape ({-1,8,-1,128}) but the runtime shape ({2,8,0,128}) has zero elements. This is not supported by the CoreML EP.
+  ```
+
+  `rerank/qwen3-06b` gives the same error. The decoder is fed an empty
+  (length-0) KV cache, which the CoreML provider rejects. The earlier
+  `coreml` runs passed only because the matrix did not yet check where models
+  ran. Not added to the allow list.
+- **kniv v7 UltraBERT goldens: 22 of 830 decisions differ (2.65%)**, over the
+  2% budget, on the bundled build and on the 1.31.1 arm64 wheel alike, and
+  on `cpu` and `coreml` alike (kniv v7 pins `["cpu"]`). Linux measured 0.24%
+  on the bundled build. 19 of the 22 are fact-margin values; the other three
+  are near-tie decisions in `clitics-and-urls` (a sentiment, an extra
+  `ARGM-ADV` argument, an extra `visit` entity) and one argument label in
+  `negation-and-plans`. No token or sentence structure differs.
+- **kniv v7 DeBERTa goldens: 3 of 734 decisions differ (0.41%)**, within
+  budget: two extra facts (`4-created by->0`, `0-plans to->5`) and one
+  margin.
+- **Exact mode is tolerant on macOS,** as expected: the goldens' library hash
+  is the linux-x86_64 wheel's.
 
 ### Linux / CUDA (`gpu-cuda`)
 
@@ -198,7 +235,7 @@ the exact and tolerant modes described in
 
 ## Models
 
-The Hugging Face revisions both runs resolved (from the model cache). Set an
+The Hugging Face revisions the runs resolved (from the model cache). Set an
 alias's `revision` to one of these to reproduce a run.
 
 | Repository | Commit | Snapshot size |
@@ -211,8 +248,8 @@ alias's `revision` to one of these to reproduce a run.
 | `cross-encoder/ms-marco-MiniLM-L6-v2` | `233902d25c440f23af6f7d6e94d2946bac0bee0a` | 87 MB |
 | `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` | `68af00aef58ef6dc4bb695612f2fd68d1f03fa27` | 294 MB |
 | `dragonscale-ai/kniv-v7-tiny-en` | `c6335931a9c911faaa6939a6b765e0c17d260a81` | 119 MB |
-| `dragonscale-ai/kniv-v7-xlarge-u-en` (Linux runs; pinned by the goldens) | `2733fe0d660f433b0e0d164e8f1f6ea58574954d` | 1.9 GB |
-| `dragonscale-ai/kniv-v7-xlarge-d-en` (Linux runs; pinned by the goldens) | `5545dfe5641872dae072f1c4d091422e033d1613` | 3.5 GB |
+| `dragonscale-ai/kniv-v7-xlarge-u-en` (pinned by the goldens) | `2733fe0d660f433b0e0d164e8f1f6ea58574954d` | 1.9 GB |
+| `dragonscale-ai/kniv-v7-xlarge-d-en` (pinned by the goldens) | `5545dfe5641872dae072f1c4d091422e033d1613` | 3.5 GB |
 | `lightonai/GTE-ModernColBERT-v1` | `25f6f7bb8237b7ae25ae1d9b805ce17c0d1cc639` | 573 MB |
 | `mixedbread-ai/mxbai-edge-colbert-v0-17m` | `592c6417c1c6687572043408ed1ae5196bce16b1` | 68 MB |
 | `mixedbread-ai/mxbai-edge-colbert-v0-32m` | `bb13a29ec9b1e7edd4ba8f7a0776c48b55cbad66` | 129 MB |
@@ -226,8 +263,6 @@ alias's `revision` to one of these to reproduce a run.
 
 ## Not covered
 
-- **macOS with the current suites:** the macOS runs above predate the kniv
-  v7 golden suites and the accelerator check; rerun `cpu` and `coreml` there.
 - **Exact kniv v7 goldens off linux-x86_64:** the goldens were generated on
   linux-x86_64, so elsewhere the comparison is tolerant.
 - **whisper.cpp on macOS:** needs cmake to build (`brew install cmake`).
