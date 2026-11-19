@@ -29,6 +29,14 @@ new wording. `graph_optimization_level` and the thread-count options
 now take effect for every `local/onnx` task, so an alias that set them and was
 silently ignored will now run with them. No function signature changed.
 
+On `gpu-cuda` and `gpu-metal` builds, each accelerated `local/onnx` session
+is now checked against CPU at load (`accelerator_check`, below). A model
+whose accelerator output disagrees now loads on CPU and reports `["cpu"]`
+instead of returning wrong results; one with no `cpu` in its
+`execution_providers` fails to load instead. Loading an accelerated
+session costs one extra CPU session build and one forward pass. Set
+`"accelerator_check": "probe"` on an alias to get 0.19's behaviour back.
+
 ### Added
 
 - **A reproducible acceptance matrix for the local backends (#63).**
