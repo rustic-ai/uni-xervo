@@ -91,8 +91,11 @@ EXPENSIVE_TESTS=1 KNIV_V7_FIXTURE_TAG=deberta-int8 cargo test --features provide
 
 # Exact, on the goldens' own library.
 pip install 'onnxruntime==1.31.1'
+# The wheel's library: libonnxruntime.so.<version> on Linux,
+# libonnxruntime.<version>.dylib on macOS.
 EXPENSIVE_TESTS=1 ORT_DYLIB_PATH=$(python -c "import onnxruntime, pathlib; \
-  print(next((pathlib.Path(onnxruntime.__file__).parent / 'capi').glob('libonnxruntime.so.*')))") \
+  capi = pathlib.Path(onnxruntime.__file__).parent / 'capi'; \
+  print(next(p for p in sorted(capi.iterdir()) if p.name.startswith('libonnxruntime.')))") \
   cargo test --no-default-features --features provider-onnx-dynamic \
   --test local_onnx_nlp_v7_golden_expensive_test
 ```

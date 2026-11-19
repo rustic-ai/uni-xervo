@@ -68,11 +68,13 @@ esac
 # model they load runs on it (tests/common/accelerator.rs). The allow list is
 # the models that fall back by design: CoreML computes PP-OCR's recognizer
 # wrongly (OCR then reports the stages' common list, cpu) and cannot run
-# ModernBERT ColBERT, and the load-time check moves both to CPU.
+# ModernBERT, the architecture of all three ModernBERT ColBERT models the
+# multi-vector suite loads (GTE-ModernColBERT, mxbai-edge-colbert 17m and
+# 32m), and the load-time check moves them to CPU.
 if [[ "$TARGET" != "cpu" ]]; then
   export UNI_XERVO_EXPECT_EP="$TARGET"
   if [[ "$TARGET" == "coreml" ]]; then
-    export UNI_XERVO_EXPECT_EP_ALLOW_CPU="${UNI_XERVO_EXPECT_EP_ALLOW_CPU:-ocr/ppocr-en,embed_mv/gte}"
+    export UNI_XERVO_EXPECT_EP_ALLOW_CPU="${UNI_XERVO_EXPECT_EP_ALLOW_CPU:-ocr/ppocr-en,embed_mv/gte,embed_mv/mxbai17,embed_mv/mxbai32}"
   fi
 fi
 
