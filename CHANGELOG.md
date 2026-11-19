@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-19
+
+### Upgrading from 0.19
+
+Catalog validation is stricter, so a catalog that built under 0.19 can now
+fail when the runtime is built. Each of these was a misconfiguration that
+0.19 accepted and then failed on, or got wrong, later:
+
+- a task the bundled provider does not support (`remote/anthropic` with
+  `embed`), which used to fail on first use;
+- a value that used to go unchecked: `local/onnx` rerank `max_seq_len`, the
+  `embed_hybrid` keys, OCR `det_*` keys without `det_onnx_path`, and an OCR
+  `blank_class` that is not a non-negative integer;
+- an OCR recognizer whose class count does not match its dictionary, which
+  used to decode silently to the wrong text, now fails at load;
+- a model `revision` that is a path (`../x`).
+
+Error messages for an unsupported task and for a key that belongs to another
+task have new wording. `graph_optimization_level` and the thread-count options
+now take effect for every `local/onnx` task, so an alias that set them and was
+silently ignored will now run with them. No public signature changed.
+
 ### Added
 
 - **`uni_xervo::schemas` publishes the catalog rules for configuration

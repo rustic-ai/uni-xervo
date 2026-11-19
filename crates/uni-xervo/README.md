@@ -74,7 +74,7 @@ Defaults give you both local backends and all nine remote API providers on CPU. 
 ```toml
 [dependencies]
 # Defaults: candle + onnx + all 9 remote providers, CPU only.
-uni-xervo = "0.19"
+uni-xervo = "0.20"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -92,25 +92,25 @@ To bring your own ORT build (ROCm, OpenVINO, custom CPU/GPU builds, sandboxed CI
 
 ```toml
 # Default — everything except GPU.
-uni-xervo = "0.19"
+uni-xervo = "0.20"
 
 # Add NVIDIA GPU (Linux / Windows).
-uni-xervo = { version = "0.19", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.20", features = ["gpu-cuda"] }
 
 # Add Apple GPU + Neural Engine (macOS / iOS).
-uni-xervo = { version = "0.19", features = ["gpu-metal"] }
+uni-xervo = { version = "0.20", features = ["gpu-metal"] }
 
 # Lean — only candle (no ORT, no remote providers).
-uni-xervo = { version = "0.19", default-features = false, features = ["provider-candle"] }
+uni-xervo = { version = "0.20", default-features = false, features = ["provider-candle"] }
 
 # Remote-only — no native deps.
-uni-xervo = { version = "0.19", default-features = false, features = [
+uni-xervo = { version = "0.20", default-features = false, features = [
     "provider-openai",
     "provider-anthropic",
 ] }
 
 # BYO ONNX Runtime (ROCm, OpenVINO, custom builds, sandboxed CI).
-uni-xervo = { version = "0.19", default-features = false, features = [
+uni-xervo = { version = "0.20", default-features = false, features = [
     "provider-candle",
     "provider-onnx-dynamic",
 ] }
