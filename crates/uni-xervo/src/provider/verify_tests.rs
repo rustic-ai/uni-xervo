@@ -385,3 +385,239 @@ async fn local_providers_have_nothing_to_verify() {
         Ok(VerifyOutcome::NotApplicable)
     );
 }
+
+// --- through ModelRuntime -------------------------------------------------
+
+mod runtime {
+    use super::*;
+    use crate::error::RuntimeError;
+    use crate::inspect::VerificationStatus;
+    use crate::runtime::ModelRuntime;
+    use crate::traits::ProviderHealth;
+    use std::time::{Duration, Instant};
+
+    fn anthropic_spec(alias: &str, model: &str, env: &str) -> ModelAliasSpec {
+        ModelAliasSpec {
+            alias: alias.to_string(),
+            task: ModelTask::Generate,
+            provider_id: "remote/anthropic".to_string(),
+            model_id: model.to_string(),
+            revision: None,
+            warmup: WarmupPolicy::Lazy,
+            required: false,
+            timeout: None,
+            load_timeout: Some(1),
+            retry: None,
+            options: json!({ "api_key_env": env }),
+        }
+    }
+
+    fn set_key(env: &str) {
+        // SAFETY: each test uses its own variable name.
+        unsafe { std::env::set_var(env, SECRET) };
+    }
+
+    async fn runtime_with(url: &str, specs: Vec<ModelAliasSpec>) -> std::sync::Arc<ModelRuntime> {
+        ModelRuntime::builder()
+            .register_provider(RemoteAnthropicProvider::with_endpoint_override(url))
+            .register_provider(crate::mock::MockProvider::embed_only())
+            .catalog(specs)
+            .build()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_hung_endpoint_times_out_within_the_load_timeout_naming_the_alias() {
+        set_key("UNI_XERVO_RT_HANG");
+        let stub = StubServer::start(&[("GET", "/v1/models/claude-x", Reply::Hang)]).await;
+        let rt = runtime_with(
+            &stub.url(),
+            vec![anthropic_spec("chat/a", "claude-x", "UNI_XERVO_RT_HANG")],
+        )
+        .await;
+        let started = Instant::now();
+        let (alias, result) = rt.verify(&["chat/a"]).await.pop().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(alias, "chat/a");
+        match result.unwrap_err() {
+            RuntimeError::Verification { alias, kind, .. } => {
+                assert_eq!(alias, "chat/a");
+                assert_eq!(kind, VerifyErrorKind::Timeout);
+            }
+            other => panic!("expected Verification, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_endpoint_fails_fast_naming_the_alias() {
+        set_key("UNI_XERVO_RT_DOWN");
+        let url = unreachable_url().await;
+        let rt = runtime_with(
+            &url,
+            vec![anthropic_spec("chat/down", "claude-x", "UNI_XERVO_RT_DOWN")],
+        )
+        .await;
+        let err = rt
+            .verify(&["chat/down"])
+            .await
+            .pop()
+            .unwrap()
+            .1
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("chat/down"), "{message}");
+        assert!(matches!(
+            err,
+            RuntimeError::Verification {
+                kind: VerifyErrorKind::Unreachable,
+                ..
+            }
+        ));
+        assert!(err.is_retryable(), "unreachable is worth retrying");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_key_is_unauthorized_and_not_echoed() {
+        set_key("UNI_XERVO_RT_BADKEY");
+        let stub = StubServer::start(&[("GET", "/v1/models/claude-x", Reply::Status(401))]).await;
+        let rt = runtime_with(
+            &stub.url(),
+            vec![anthropic_spec("chat/a", "claude-x", "UNI_XERVO_RT_BADKEY")],
+        )
+        .await;
+        let err = rt.verify(&["chat/a"]).await.pop().unwrap().1.unwrap_err();
+        assert!(matches!(
+            err,
+            RuntimeError::Verification {
+                kind: VerifyErrorKind::Unauthorized,
+                ..
+            }
+        ));
+        assert!(!err.to_string().contains(SECRET));
+        assert!(!format!("{err:?}").contains(SECRET));
+    }
+
+    /// Nothing contacts the endpoint until verify is asked for: not build
+    /// (even with eager warmup), not prefetch, not health.
+    #[tokio::test]
+    async fn no_traffic_unless_verification_is_requested() {
+        set_key("UNI_XERVO_RT_QUIET");
+        let stub = StubServer::start(&[("GET", "/v1/models/claude-x", Reply::Status(200))]).await;
+        let mut spec = anthropic_spec("chat/a", "claude-x", "UNI_XERVO_RT_QUIET");
+        spec.warmup = WarmupPolicy::Eager;
+        let rt = runtime_with(&stub.url(), vec![spec]).await;
+        rt.prefetch_all().await.unwrap();
+        let health = rt.provider_health("remote/anthropic").await.unwrap();
+        assert!(matches!(health, ProviderHealth::Healthy));
+        assert!(
+            rt.aliases()
+                .await
+                .iter()
+                .all(|s| s.verification == VerificationStatus::NotRequested)
+        );
+        assert!(
+            stub.seen().is_empty(),
+            "contacted without verify: {:?}",
+            stub.seen()
+        );
+
+        let results = rt.verify_all().await;
+        assert!(results[0].1.is_ok());
+        assert_eq!(stub.seen().len(), 1, "verify sends exactly one request");
+    }
+
+    #[tokio::test]
+    async fn verification_is_recorded_and_folded_into_health() {
+        set_key("UNI_XERVO_RT_MIXED");
+        let stub = StubServer::start(&[
+            ("GET", "/v1/models/good", Reply::Status(200)),
+            ("GET", "/v1/models/bad", Reply::Status(404)),
+        ])
+        .await;
+        let rt = runtime_with(
+            &stub.url(),
+            vec![
+                anthropic_spec("chat/good", "good", "UNI_XERVO_RT_MIXED"),
+                anthropic_spec("chat/bad", "bad", "UNI_XERVO_RT_MIXED"),
+                crate::mock::make_spec("embed/local", ModelTask::Embed, "mock/embed", "m"),
+            ],
+        )
+        .await;
+
+        let results = rt.verify(&["chat/bad", "embed/local", "chat/good"]).await;
+        let names: Vec<&str> = results.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(
+            names,
+            ["chat/bad", "embed/local", "chat/good"],
+            "input order"
+        );
+        assert!(results[0].1.is_err());
+        assert_eq!(
+            results[1].1.as_ref().unwrap(),
+            &VerifyOutcome::NotApplicable
+        );
+        assert_eq!(results[2].1.as_ref().unwrap(), &VerifyOutcome::Verified);
+
+        let snap = |alias: &str, snaps: &[crate::inspect::AliasSnapshot]| {
+            snaps
+                .iter()
+                .find(|s| s.alias == alias)
+                .unwrap()
+                .verification
+                .clone()
+        };
+        let snaps = rt.aliases().await;
+        assert!(matches!(
+            snap("chat/good", &snaps),
+            VerificationStatus::Verified { .. }
+        ));
+        assert!(matches!(
+            snap("chat/bad", &snaps),
+            VerificationStatus::Failed {
+                kind: VerifyErrorKind::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            snap("embed/local", &snaps),
+            VerificationStatus::NotApplicable { .. }
+        ));
+
+        match rt.provider_health("remote/anthropic").await.unwrap() {
+            ProviderHealth::Degraded(why) => assert!(why.contains("1 of 2"), "{why}"),
+            other => panic!("expected Degraded, got {other:?}"),
+        }
+        // Local providers' health is untouched by NotApplicable results.
+        assert!(matches!(
+            rt.provider_health("mock/embed").await.unwrap(),
+            ProviderHealth::Healthy
+        ));
+        assert!(rt.provider_health("remote/none").await.is_none());
+
+        // Once every verified alias fails, the provider is Unhealthy.
+        rt.verify(&["chat/bad"]).await;
+        let stub_all_bad = StubServer::start(&[]).await;
+        let rt2 = runtime_with(
+            &stub_all_bad.url(),
+            vec![anthropic_spec("chat/x", "x", "UNI_XERVO_RT_MIXED")],
+        )
+        .await;
+        rt2.verify_all().await;
+        assert!(matches!(
+            rt2.provider_health("remote/anthropic").await.unwrap(),
+            ProviderHealth::Unhealthy(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_alias_is_reported_not_verified() {
+        let rt = runtime_with("http://127.0.0.1:9", vec![]).await;
+        let (_, result) = rt.verify(&["chat/missing"]).await.pop().unwrap();
+        assert!(matches!(result, Err(RuntimeError::AliasNotFound { .. })));
+    }
+}

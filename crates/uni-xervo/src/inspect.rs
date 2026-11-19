@@ -31,6 +31,9 @@ pub struct AliasSnapshot {
     pub warmup: WarmupPolicy,
     pub required: bool,
     pub state: LoadState,
+    /// The last [`ModelRuntime::verify`](crate::runtime::ModelRuntime::verify)
+    /// of this alias.
+    pub verification: VerificationStatus,
     /// The execution providers the loaded model runs on (see
     /// [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers));
     /// `None` until it is loaded. Empty for a remote model.

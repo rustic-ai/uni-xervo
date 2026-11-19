@@ -32,6 +32,7 @@ impl Default for RemoteAzureOpenAIProvider {
 impl RemoteAzureOpenAIProvider {
     /// A provider whose verification requests go to `url` (a test stub).
     #[cfg(test)]
+    #[allow(dead_code)] // Used by `verify_tests`, which needs every provider.
     pub(crate) fn with_endpoint_override(url: &str) -> Self {
         let provider = Self::new();
         provider.base.set_endpoint_override(url);
@@ -206,8 +207,7 @@ impl ModelProvider for RemoteAzureOpenAIProvider {
         verify_send_empty_body(
             self.base
                 .client
-                .post(&url)
-                .query(&[("api-version", api_version)])
+                .post(format!("{url}?api-version={api_version}"))
                 .header("api-key", key),
             &crate::inspect::redact_url(&url),
         )

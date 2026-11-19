@@ -2402,3 +2402,148 @@ async fn test_llamacpp_document_extract() {
         eprintln!("Skipping - provider-llamacpp feature not enabled");
     }
 }
+
+/// `ModelRuntime::verify` against the real services (rustic-ai/uni-xervo#66):
+/// for each provider whose key is set, its real key verifies and a bogus key
+/// is reported as Unauthorized without being echoed. Providers whose key is
+/// unset are skipped.
+#[tokio::test]
+#[ignore]
+#[allow(clippy::vec_init_then_push)] // Each push is feature-gated.
+async fn test_verify_against_real_providers() {
+    require_expensive_tests!();
+    use uni_xervo::error::RuntimeError;
+    use uni_xervo::inspect::{VerifyErrorKind, VerifyOutcome};
+
+    const BOGUS: &str = "uni-xervo-bogus-key-0123456789";
+    // SAFETY: this test is the only reader of this variable.
+    unsafe { env::set_var("UNI_XERVO_BOGUS_KEY", BOGUS) };
+
+    // (provider id, key env, task, model)
+    let mut cases: Vec<(&str, &str, ModelTask, &str)> = Vec::new();
+    #[cfg(feature = "provider-openai")]
+    cases.push((
+        "remote/openai",
+        "OPENAI_API_KEY",
+        ModelTask::Generate,
+        "gpt-4o-mini",
+    ));
+    #[cfg(feature = "provider-anthropic")]
+    cases.push((
+        "remote/anthropic",
+        "ANTHROPIC_API_KEY",
+        ModelTask::Generate,
+        "claude-3-5-haiku-latest",
+    ));
+    #[cfg(feature = "provider-mistral")]
+    cases.push((
+        "remote/mistral",
+        "MISTRAL_API_KEY",
+        ModelTask::Generate,
+        "mistral-small-latest",
+    ));
+    #[cfg(feature = "provider-gemini")]
+    cases.push((
+        "remote/gemini",
+        "GEMINI_API_KEY",
+        ModelTask::Embed,
+        "text-embedding-004",
+    ));
+    #[cfg(feature = "provider-cohere")]
+    cases.push((
+        "remote/cohere",
+        "CO_API_KEY",
+        ModelTask::Embed,
+        "embed-english-v3.0",
+    ));
+    #[cfg(feature = "provider-voyageai")]
+    cases.push((
+        "remote/voyageai",
+        "VOYAGE_API_KEY",
+        ModelTask::Embed,
+        "voyage-3",
+    ));
+
+    let mut builder = ModelRuntime::builder();
+    #[cfg(feature = "provider-openai")]
+    {
+        builder = builder.register_provider(uni_xervo::provider::RemoteOpenAIProvider::new());
+    }
+    #[cfg(feature = "provider-anthropic")]
+    {
+        builder = builder.register_provider(uni_xervo::provider::RemoteAnthropicProvider::new());
+    }
+    #[cfg(feature = "provider-mistral")]
+    {
+        builder = builder.register_provider(uni_xervo::provider::RemoteMistralProvider::new());
+    }
+    #[cfg(feature = "provider-gemini")]
+    {
+        builder = builder.register_provider(uni_xervo::provider::RemoteGeminiProvider::new());
+    }
+    #[cfg(feature = "provider-cohere")]
+    {
+        builder = builder.register_provider(uni_xervo::provider::RemoteCohereProvider::new());
+    }
+    #[cfg(feature = "provider-voyageai")]
+    {
+        builder = builder.register_provider(uni_xervo::provider::RemoteVoyageAIProvider::new());
+    }
+
+    let mut catalog = Vec::new();
+    let mut checked = Vec::new();
+    for (provider, key_env, task, model) in &cases {
+        if !has_api_key(key_env) {
+            eprintln!("Skipping {provider} - {key_env} not set");
+            continue;
+        }
+        let name = provider.trim_start_matches("remote/");
+        for (suffix, env_name) in [("real", *key_env), ("bogus", "UNI_XERVO_BOGUS_KEY")] {
+            catalog.push(ModelAliasSpec {
+                alias: format!("verify/{name}-{suffix}"),
+                task: *task,
+                provider_id: provider.to_string(),
+                model_id: model.to_string(),
+                revision: None,
+                warmup: WarmupPolicy::Lazy,
+                required: false,
+                timeout: None,
+                load_timeout: None,
+                retry: None,
+                options: serde_json::json!({ "api_key_env": env_name }),
+            });
+        }
+        checked.push(name.to_string());
+    }
+    if checked.is_empty() {
+        eprintln!("Skipping - no provider keys set");
+        return;
+    }
+    let runtime = builder
+        .catalog(catalog)
+        .build()
+        .await
+        .expect("build runtime");
+    for (alias, result) in runtime.verify_all().await {
+        if alias.ends_with("-real") {
+            assert_eq!(result.unwrap(), VerifyOutcome::Verified, "{alias}");
+        } else {
+            let err = result.expect_err(&alias);
+            assert!(
+                matches!(
+                    err,
+                    RuntimeError::Verification {
+                        kind: VerifyErrorKind::Unauthorized,
+                        ..
+                    }
+                ),
+                "{alias}: {err}"
+            );
+            assert!(
+                !err.to_string().contains(BOGUS),
+                "{alias} echoes the key: {err}"
+            );
+        }
+    }
+    eprintln!("verified: {checked:?}");
+}

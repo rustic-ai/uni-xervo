@@ -259,7 +259,7 @@ pub(crate) async fn verify_send_empty_body(
     request: reqwest::RequestBuilder,
     display_url: &str,
 ) -> std::result::Result<VerifyOutcome, VerifyFailure> {
-    verify_send_inner(request.json(&json!({})), display_url, true).await
+    verify_send_inner(request.json(&serde_json::json!({})), display_url, true).await
 }
 
 async fn verify_send_inner(

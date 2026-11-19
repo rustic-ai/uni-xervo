@@ -31,6 +31,7 @@ impl Default for RemoteMistralProvider {
 impl RemoteMistralProvider {
     /// A provider whose verification requests go to `url` (a test stub).
     #[cfg(test)]
+    #[allow(dead_code)] // Used by `verify_tests`, which needs every provider.
     pub(crate) fn with_endpoint_override(url: &str) -> Self {
         let provider = Self::new();
         provider.base.set_endpoint_override(url);

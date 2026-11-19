@@ -4,7 +4,10 @@ mod hybrid_adapter;
 
 use crate::api::{ModelAliasSpec, ModelRuntimeKey};
 use crate::error::{Result, RuntimeError};
-use crate::inspect::{AliasSnapshot, LoadState, ProviderSnapshot, redact_url};
+use crate::inspect::{
+    AliasSnapshot, LoadState, ProviderSnapshot, VerificationStatus, VerifyErrorKind, VerifyFailure,
+    VerifyOutcome, redact_url,
+};
 use crate::options_validation::{normalize_whole_floats, validate_provider_options};
 use crate::reliability::{
     InstrumentedAudioEmbeddingModel, InstrumentedDocumentExtractionModel,
@@ -17,8 +20,8 @@ use crate::reliability::{
 use crate::traits::{
     AudioEmbeddingModel, DocumentExtractionModel, EmbeddingModel, GeneratorModel,
     HybridEmbeddingModel, ImageEmbeddingModel, LoadedModelHandle, ModelInfo, ModelProvider,
-    MultiVectorEmbeddingModel, MultimodalEmbeddingModel, NlpModel, OcrModel, RawTensorModel,
-    RerankerModel, SparseEmbeddingModel, TranscriptionModel,
+    MultiVectorEmbeddingModel, MultimodalEmbeddingModel, NlpModel, OcrModel, ProviderHealth,
+    RawTensorModel, RerankerModel, SparseEmbeddingModel, TranscriptionModel,
 };
 use dashmap::DashMap;
 use std::any::Any;
@@ -60,6 +63,11 @@ struct HandleCache {
 /// Default load timeout applied when [`ModelAliasSpec::load_timeout`] is `None`.
 const DEFAULT_LOAD_TIMEOUT_SECS: u64 = 600;
 
+/// Longest [`ModelRuntime::verify`] waits for one alias. A reachability
+/// check that takes longer is a failure, so it stays well under the load
+/// timeout; an alias with a shorter `load_timeout` uses that.
+const MAX_VERIFY_TIMEOUT_SECS: u64 = 30;
+
 /// The central runtime that owns registered providers and a catalog of model
 /// aliases.
 ///
@@ -76,6 +84,8 @@ pub struct ModelRuntime {
     registry: Arc<ModelRegistry>,
     catalog: RwLock<HashMap<String, ModelAliasSpec>>,
     handle_cache: HandleCache,
+    /// Each alias's last [`verify`](Self::verify) result.
+    verifications: RwLock<HashMap<String, VerificationStatus>>,
 }
 
 /// Internal registry that caches loaded model instances and coordinates
@@ -285,6 +295,121 @@ impl ModelRuntime {
         providers
     }
 
+    /// Check that each of `aliases` can reach its endpoint with a valid
+    /// credential, by one cheap authenticated request per remote alias.
+    ///
+    /// Opt-in: nothing else in the runtime contacts a remote provider before
+    /// the first request, so `build`, `prefetch` and `health()` stay offline.
+    /// Loads no model. Aliases are checked concurrently and reported in the
+    /// order given, and each result is kept for
+    /// [`aliases`](Self::aliases) and [`provider_health`](Self::provider_health).
+    ///
+    /// A local alias returns [`VerifyOutcome::NotApplicable`]. A failure is a
+    /// [`RuntimeError::Verification`] naming the alias, whose message never
+    /// contains a credential. Each check waits at most the alias's
+    /// `load_timeout`, capped at 30 seconds.
+    pub async fn verify(&self, aliases: &[&str]) -> Vec<(String, Result<VerifyOutcome>)> {
+        let results = futures::future::join_all(aliases.iter().map(|a| self.verify_one(a))).await;
+        aliases
+            .iter()
+            .map(|a| (*a).to_string())
+            .zip(results)
+            .collect()
+    }
+
+    /// [`verify`](Self::verify) every alias in the catalog, in alias order.
+    pub async fn verify_all(&self) -> Vec<(String, Result<VerifyOutcome>)> {
+        let aliases = self.alias_names().await;
+        let refs: Vec<&str> = aliases.iter().map(String::as_str).collect();
+        self.verify(&refs).await
+    }
+
+    async fn verify_one(&self, alias: &str) -> Result<VerifyOutcome> {
+        let spec = self.lookup_spec(alias).await?;
+        let provider = self.providers.get(&spec.provider_id).ok_or_else(|| {
+            RuntimeError::ProviderNotFound(format!("Provider '{}' not found", spec.provider_id))
+        })?;
+        let wait = std::time::Duration::from_secs(
+            spec.load_timeout
+                .map_or(MAX_VERIFY_TIMEOUT_SECS, |t| t.min(MAX_VERIFY_TIMEOUT_SECS)),
+        );
+        let outcome = match tokio::time::timeout(wait, provider.verify(&spec)).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(VerifyFailure::new(
+                VerifyErrorKind::Timeout,
+                format!("no answer within {}s", wait.as_secs()),
+            )),
+        };
+        let at = std::time::SystemTime::now();
+        let status = match &outcome {
+            Ok(VerifyOutcome::Verified) => VerificationStatus::Verified { at },
+            Ok(_) => VerificationStatus::NotApplicable { at },
+            Err(f) => VerificationStatus::Failed {
+                kind: f.kind,
+                detail: f.detail.clone(),
+                at,
+            },
+        };
+        self.verifications
+            .write()
+            .await
+            .insert(alias.to_string(), status);
+        outcome.map_err(|f| {
+            tracing::warn!(
+                alias = %alias,
+                provider = %spec.provider_id,
+                kind = %f.kind,
+                detail = %f.detail,
+                "Alias verification failed"
+            );
+            RuntimeError::Verification {
+                alias: alias.to_string(),
+                provider_id: spec.provider_id.clone(),
+                kind: f.kind,
+                detail: f.detail,
+            }
+        })
+    }
+
+    /// A provider's health, folding in the last [`verify`](Self::verify) of
+    /// its aliases; `None` if no such provider is registered.
+    ///
+    /// Until one of its aliases has been verified this is exactly
+    /// [`ModelProvider::health`]. After that, if some verified aliases failed
+    /// it reads `Degraded`, and if all did, `Unhealthy`, each naming how many.
+    pub async fn provider_health(&self, provider_id: &str) -> Option<ProviderHealth> {
+        let provider = self.providers.get(provider_id)?;
+        let own = provider.health().await;
+        let aliases: Vec<String> = self
+            .catalog
+            .read()
+            .await
+            .values()
+            .filter(|spec| spec.provider_id == provider_id)
+            .map(|spec| spec.alias.clone())
+            .collect();
+        let (checked, failed) = {
+            let verifications = self.verifications.read().await;
+            aliases
+                .iter()
+                .filter_map(|alias| verifications.get(alias))
+                .fold((0usize, 0usize), |(checked, failed), status| match status {
+                    VerificationStatus::Verified { .. } => (checked + 1, failed),
+                    VerificationStatus::Failed { .. } => (checked + 1, failed + 1),
+                    _ => (checked, failed),
+                })
+        };
+        Some(if failed == 0 {
+            own
+        } else if failed == checked {
+            ProviderHealth::Unhealthy(format!(
+                "all {checked} verified aliases failed verification"
+            ))
+        } else {
+            ProviderHealth::Degraded(format!("{failed} of {checked} aliases failed verification"))
+        })
+    }
+
     async fn alias_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.catalog.read().await.keys().cloned().collect();
         names.sort();
@@ -310,6 +435,17 @@ impl ModelRuntime {
         let loading: std::collections::HashSet<&ModelRuntimeKey> = {
             let locks = self.registry.loader_locks.lock().await;
             keys.iter().filter(|key| locks.contains_key(*key)).collect()
+        };
+        let verifications: HashMap<String, VerificationStatus> = {
+            let verifications = self.verifications.read().await;
+            specs
+                .iter()
+                .filter_map(|spec| {
+                    verifications
+                        .get(&spec.alias)
+                        .map(|v| (spec.alias.clone(), v.clone()))
+                })
+                .collect()
         };
         let failures: HashMap<&ModelRuntimeKey, LoadFailure> = {
             let failures = self
@@ -355,6 +491,10 @@ impl ModelRuntime {
                     warmup: spec.warmup,
                     required: spec.required,
                     state,
+                    verification: verifications
+                        .get(&spec.alias)
+                        .cloned()
+                        .unwrap_or(VerificationStatus::NotRequested),
                     execution_providers,
                     // Redact again: a third-party provider's `describe` is
                     // not trusted to have.
@@ -1272,6 +1412,7 @@ impl ModelRuntimeBuilder {
             registry: Arc::new(ModelRegistry::default()),
             catalog: RwLock::new(catalog_map),
             handle_cache: HandleCache::default(),
+            verifications: RwLock::new(HashMap::new()),
         });
 
         // Provider Warmup Phase

@@ -42,3 +42,7 @@ A load timeout returns `RuntimeError::Timeout`.
 - `runtime.prefetch(&["embed/default", "generate/chat"]).await` warms selected aliases.
 
 These methods are useful at service startup to avoid first-request cold starts.
+Both stop at the first failure; `prefetch_report` and `prefetch_all_report`
+keep going and return a result per alias. To see what has loaded without
+loading anything, or to check that remote aliases can reach their endpoint,
+see [Startup Readiness](../guides/readiness.md).

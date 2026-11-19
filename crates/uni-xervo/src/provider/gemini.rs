@@ -26,6 +26,7 @@ pub struct RemoteGeminiProvider {
 impl RemoteGeminiProvider {
     /// A provider whose verification requests go to `url` (a test stub).
     #[cfg(test)]
+    #[allow(dead_code)] // Used by `verify_tests`, which needs every provider.
     pub(crate) fn with_endpoint_override(url: &str) -> Self {
         let provider = Self::new();
         provider.base.set_endpoint_override(url);
@@ -162,10 +163,10 @@ impl ModelProvider for RemoteGeminiProvider {
             self.base.root("https://generativelanguage.googleapis.com"),
             spec.model_id
         );
-        // The key rides in the query, so it is added here and never appears
-        // in `url`, which is what errors show.
+        // The key rides in the query, so it is added only to the URL sent,
+        // never to `url`, which is what errors show.
         verify_send(
-            self.base.client.get(&url).query(&[("key", key)]),
+            self.base.client.get(format!("{url}?key={key}")),
             &crate::inspect::redact_url(&url),
         )
         .await
