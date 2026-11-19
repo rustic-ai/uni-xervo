@@ -29,14 +29,18 @@
 //! keep this crate's downloads correct while that is unfixed upstream:
 //!
 //! - every download holds an exclusive per-repository lock file in the
-//!   cache, so loads from processes using this crate never interleave;
+//!   cache, so loads from processes using this crate never interleave. The
+//!   wait is bounded, and a cache where the lock cannot be taken (read-only,
+//!   or a filesystem without file locks) is used unlocked, as before; a
+//!   pinned commit whose file is already cached needs no lock at all;
 //! - a ref that does not hold a commit hash is removed before downloading,
 //!   so `hf-hub` resolves the revision afresh instead of reusing it;
 //! - a returned path outside `snapshots/<commit>/` is retried once, which
 //!   covers a writer that does not take the lock (another `hf-hub` client).
 
-use std::fs::File;
+use std::fs::{File, TryLockError};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use hf_hub::repository::{ModelInfo, RepoTypeModel};
 use hf_hub::{HFClientBuilder, HFError, HFRepository, HFResult, split_id};
@@ -44,6 +48,11 @@ use tracing::warn;
 
 /// The revision `hf-hub` downloads when none is given.
 const DEFAULT_REVISION: &str = "main";
+
+/// How long a download waits for another process's lock before going ahead
+/// without it. Long enough for a cached load or a modest download to finish;
+/// a holder stuck mid-download no longer stalls everyone else indefinitely.
+const LOCK_WAIT: Duration = Duration::from_secs(60);
 
 /// One model repository at one revision, cached under `cache_dir`.
 pub(crate) struct HfModelRepo {
@@ -53,6 +62,8 @@ pub(crate) struct HfModelRepo {
     repo_dir: PathBuf,
     /// Lock file serializing this crate's downloads of the repository.
     lock_path: PathBuf,
+    /// How long to wait for another holder; [`LOCK_WAIT`] outside tests.
+    lock_wait: Duration,
 }
 
 /// Held for the length of one download; dropping it releases the lock.
@@ -73,6 +84,13 @@ impl HfModelRepo {
         let client = HFClientBuilder::new()
             .cache_dir(cache_dir.to_path_buf())
             .build()?;
+        if let Some(rev) = revision
+            && !is_safe_revision(rev)
+        {
+            return Err(HFError::InvalidParameter(format!(
+                "revision '{rev}' must be a branch, tag or commit, not a path"
+            )));
+        }
         let (owner, name) = split_id(model_id);
         let repo = client.model(owner, name);
         let folder = repo_folder_name(&repo.repo_path());
@@ -84,26 +102,68 @@ impl HfModelRepo {
                 .join(".locks")
                 .join(&folder)
                 .join("uni-xervo.lock"),
+            lock_wait: LOCK_WAIT,
         })
     }
 
-    /// Take the repository's download lock, waiting for any other holder.
-    async fn lock(&self) -> HFResult<RepoLock> {
-        let path = self.lock_path.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+    /// Take the repository's download lock, waiting up to [`LOCK_WAIT`] for
+    /// another holder.
+    ///
+    /// `None` means go ahead unlocked, as this crate did before it locked at
+    /// all: the cache is read-only, the filesystem has no file locks, or the
+    /// holder did not finish in time. The other guards still apply. Polls
+    /// with `try_lock` rather than blocking a thread in `lock`, so a load
+    /// cancelled by its timeout leaves nothing waiting behind it.
+    async fn lock(&self) -> Option<RepoLock> {
+        let file = match self.open_lock_file() {
+            Ok(file) => file,
+            Err(e) => {
+                warn!(
+                    path = %self.lock_path.display(),
+                    error = %e,
+                    "Cannot create the Hugging Face cache lock; downloading unlocked"
+                );
+                return None;
             }
-            let file = File::options()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&path)?;
-            file.lock()?;
-            Ok(RepoLock { _file: file })
-        })
-        .await
-        .map_err(|e| HFError::Other(format!("cache lock task failed: {e}")))?
+        };
+        let started = Instant::now();
+        let mut pause = Duration::from_millis(20);
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Some(RepoLock { _file: file }),
+                Err(TryLockError::WouldBlock) if started.elapsed() < self.lock_wait => {
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(Duration::from_millis(500));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    warn!(
+                        path = %self.lock_path.display(),
+                        waited_secs = self.lock_wait.as_secs(),
+                        "Another process still holds the Hugging Face cache lock; downloading unlocked"
+                    );
+                    return None;
+                }
+                Err(TryLockError::Error(e)) => {
+                    warn!(
+                        path = %self.lock_path.display(),
+                        error = %e,
+                        "Cannot take the Hugging Face cache lock; downloading unlocked"
+                    );
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn open_lock_file(&self) -> std::io::Result<File> {
+        if let Some(parent) = self.lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&self.lock_path)
     }
 
     /// Remove `refs/<revision>` if it holds anything but a commit hash, so the
@@ -144,7 +204,7 @@ impl HfModelRepo {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = HFResult<PathBuf>>,
     {
-        let _lock = self.lock().await?;
+        let _lock = self.lock().await;
         let mut path = PathBuf::new();
         for attempt in 0..2 {
             self.discard_invalid_ref();
@@ -159,9 +219,14 @@ impl HfModelRepo {
                 );
             }
         }
+        let cause = if is_snapshot_path_unchecked(&self.repo_dir, &path, depth) {
+            "which does not exist: its blob is missing, so delete that snapshot \
+             entry (or the repository's cache folder) to download it again"
+        } else {
+            "which is not under snapshots/<commit>/: the cache's refs may be corrupt"
+        };
         Err(HFError::Other(format!(
-            "Hugging Face cache resolved {what} to '{}', which is not a file under \
-             snapshots/<commit>/; the cache's refs may be corrupt",
+            "Hugging Face cache resolved {what} to '{}', {cause}",
             path.display()
         )))
     }
@@ -171,6 +236,17 @@ impl HfModelRepo {
     /// Idempotent: an unchanged cached copy is reused without a network
     /// round trip.
     pub(crate) async fn get(&self, filename: &str) -> HFResult<PathBuf> {
+        // A pinned commit already in the cache is read as is: hf-hub returns
+        // it without touching the network or writing, so it needs no lock
+        // and works on a read-only cache.
+        if let Some(rev) = self.revision.as_deref()
+            && is_commit_hash(rev)
+        {
+            let cached = self.repo_dir.join("snapshots").join(rev).join(filename);
+            if is_snapshot_path(&self.repo_dir, &cached, SnapshotDepth::File) {
+                return Ok(cached);
+            }
+        }
         self.locked_download(&format!("'{filename}'"), SnapshotDepth::File, || {
             self.repo
                 .download_file()
@@ -236,9 +312,23 @@ fn is_commit_hash(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Whether a revision is safe to join onto `refs/`: no absolute path, `..`
+/// or empty component, which no branch, tag or commit contains.
+fn is_safe_revision(revision: &str) -> bool {
+    !revision.is_empty()
+        && Path::new(revision)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+}
+
 /// Whether `path` exists and sits under `<repo_dir>/snapshots/<commit>/`:
 /// strictly inside it for a file, the commit folder itself for a snapshot.
 fn is_snapshot_path(repo_dir: &Path, path: &Path, depth: SnapshotDepth) -> bool {
+    is_snapshot_path_unchecked(repo_dir, path, depth) && path.exists()
+}
+
+/// [`is_snapshot_path`] without the existence check.
+fn is_snapshot_path_unchecked(repo_dir: &Path, path: &Path, depth: SnapshotDepth) -> bool {
     let Ok(rest) = path.strip_prefix(repo_dir.join("snapshots")) else {
         return false;
     };
@@ -251,7 +341,7 @@ fn is_snapshot_path(repo_dir: &Path, path: &Path, depth: SnapshotDepth) -> bool 
         SnapshotDepth::File => parts.next().is_some(),
         SnapshotDepth::Dir => parts.next().is_none(),
     };
-    commit_ok && depth_ok && path.exists()
+    commit_ok && depth_ok
 }
 
 #[cfg(test)]
@@ -353,6 +443,89 @@ mod tests {
             &repo_dir.join("snapshots"),
             SnapshotDepth::Dir
         ));
+    }
+
+    #[test]
+    fn revisions_that_are_paths_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../../etc", "/abs", "a/../b", "./main", ""] {
+            assert!(
+                HfModelRepo::open(dir.path(), "owner/name", Some(bad)).is_err(),
+                "{bad:?} accepted"
+            );
+        }
+        for good in ["main", "v1.0", "refs/pr/1", HASH] {
+            assert!(HfModelRepo::open(dir.path(), "owner/name", Some(good)).is_ok());
+        }
+    }
+
+    /// A pinned commit already cached loads from a read-only cache: no lock
+    /// file is created and nothing is written.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pinned_cached_file_loads_from_read_only_cache() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let snap = cache.join("models--owner--name/snapshots").join(HASH);
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("tokenizer.json"), "{}").unwrap();
+        let read_only = |mode| {
+            for d in [
+                cache.clone(),
+                cache.join("models--owner--name"),
+                cache.join("models--owner--name/snapshots"),
+                snap.clone(),
+            ] {
+                std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+        };
+        read_only(0o555);
+
+        let r = repo(&cache, Some(HASH));
+        let got = r.get("tokenizer.json").await;
+        read_only(0o755); // let tempdir clean up
+        assert_eq!(got.unwrap(), snap.join("tokenizer.json"));
+        assert!(!cache.join(".locks").exists(), "no lock taken");
+    }
+
+    /// A cache where the lock file cannot be created is used unlocked.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unlockable_cache_downloads_unlocked() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let r = repo(dir.path(), None);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let lock = r.lock().await;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(lock.is_none());
+    }
+
+    /// A holder that never lets go stalls others only for `lock_wait`.
+    #[tokio::test]
+    async fn lock_wait_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = repo(dir.path(), None);
+        r.lock_wait = Duration::from_millis(200);
+        let _held = r.lock().await.expect("first lock");
+        let started = Instant::now();
+        assert!(r.lock().await.is_none(), "second waiter gives up");
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(200), "waited {waited:?}");
+        assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+    }
+
+    #[test]
+    fn dangling_snapshot_entry_is_told_apart_from_a_hashless_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("models--owner--name");
+        let file = SnapshotDepth::File;
+        let dangling = repo_dir.join("snapshots").join(HASH).join("gone.json");
+        assert!(is_snapshot_path_unchecked(&repo_dir, &dangling, file));
+        assert!(!is_snapshot_path(&repo_dir, &dangling, file));
+        let hashless = repo_dir.join("snapshots/gone.json");
+        assert!(!is_snapshot_path_unchecked(&repo_dir, &hashless, file));
     }
 
     #[tokio::test]
