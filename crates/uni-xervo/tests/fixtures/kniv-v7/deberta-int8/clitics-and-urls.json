@@ -46,6 +46,11 @@
      8
     ],
     [
+     "PERCENT",
+     9,
+     10
+    ],
+    [
      "ORDINAL",
      12,
      13
@@ -258,7 +263,7 @@
     },
     {
      "deprel": "punct",
-     "head": 16,
+     "head": 8,
      "lemma": "?",
      "morph": "_",
      "pos": "PUNCT"

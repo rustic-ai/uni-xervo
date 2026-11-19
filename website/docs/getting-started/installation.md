@@ -42,7 +42,7 @@ uni-xervo = { version = "0.20", features = ["gpu-metal"] }
 
 **Run-time** requirements:
 
-- `gpu-cuda` binaries dynamically link against **CUDA 12 / cuDNN 9** at run time. On Linux you typically need to point `LD_LIBRARY_PATH` at a directory containing `libcudnn.so.9` and `libcublas.so.12`. See the [GPU setup guide](../guides/gpu-setup.md) for cuDNN install recipes (system packages or `pip install nvidia-cudnn-cu12`) and the silent-fallback troubleshooting matrix.
+- `gpu-cuda` binaries dynamically link against **CUDA 13 / cuDNN 9** at run time (an R580 or later driver). On Linux you typically need to point `LD_LIBRARY_PATH` at directories containing `libcublas.so.13` and the CUDA 13 build of `libcudnn.so.9`. See the [GPU setup guide](../guides/gpu-setup.md) for install recipes (system packages or `pip install nvidia-cudnn-cu13`) and the silent-fallback troubleshooting matrix.
 - `gpu-metal` has no extra runtime install — CoreML and Metal kernels are bundled.
 
 For ORT-backed providers, CUDA builds default `execution_providers` to `["cuda", "cpu"]` and Metal builds default to `["coreml", "cpu"]` unless you override per alias. **Verifying your GPU build:** because ORT silently falls back to CPU when the CUDA EP fails to register, always confirm with [`active_execution_providers()` or `nvidia-smi`](../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) before assuming your model is on GPU.

@@ -1,5 +1,8 @@
 #![cfg(feature = "provider-onnx")]
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use hf_hub::{HFClientBuilder, split_id};
 use ndarray::{Array2, Ix2, Ix3};
 use serde::Deserialize;
@@ -169,6 +172,7 @@ fn argmax(values: impl IntoIterator<Item = f32>) -> usize {
 #[tokio::test]
 #[ignore]
 async fn test_local_onnx_hf_sequence_classification_e2e() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let spec = make_spec(
@@ -180,6 +184,7 @@ async fn test_local_onnx_hf_sequence_classification_e2e() {
         .raw_tensor_model("raw/sequence-classify")
         .await
         .expect("failed to resolve onnx runner");
+    accelerator::expect_accelerator("raw/sequence-classify", &*runner);
     let tokenizer = tokenizer_for_spec(&spec).await;
     let config = config_for_spec(&spec).await;
 
@@ -221,6 +226,7 @@ async fn test_local_onnx_hf_sequence_classification_e2e() {
 #[tokio::test]
 #[ignore]
 async fn test_local_onnx_hf_ner_e2e() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let spec = make_spec("raw/ner", "protectai/bert-base-NER-onnx");
@@ -229,6 +235,7 @@ async fn test_local_onnx_hf_ner_e2e() {
         .raw_tensor_model("raw/ner")
         .await
         .expect("failed to resolve onnx runner");
+    accelerator::expect_accelerator("raw/ner", &*runner);
     let tokenizer = tokenizer_for_spec(&spec).await;
     let config = config_for_spec(&spec).await;
 

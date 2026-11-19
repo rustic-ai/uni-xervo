@@ -8,9 +8,11 @@ the reference on fixed inputs. This script produces those comparisons.
 
 Usage:
 
+    hf download dragonscale-ai/kniv-v7-xlarge-u-en --revision REV --exclude model.pt
+    pip install 'onnxruntime==1.31.1' numpy tokenizers
     python scripts/gen-kniv-v7-goldens.py \
-        --model /path/to/kniv-v7-xlarge-u-en \
-        --runtime /path/to/kniv-nlp-models \
+        --model ~/.cache/huggingface/hub/models--dragonscale-ai--kniv-v7-xlarge-u-en/snapshots/REV \
+        --repo dragonscale-ai/kniv-v7-xlarge-u-en --revision REV \
         --variant int8 \
         --out crates/uni-xervo/tests/fixtures/kniv-v7/ultrabert-int8
 
@@ -18,11 +20,26 @@ One file per case is written into `--out`, whose basename is the tag the
 Rust test selects with `KNIV_V7_FIXTURE_TAG`. Each tag pins one encoder at
 one precision: quantisation moves scores, so an INT8 run is compared against
 INT8 goldens, never against fp32 ones.
+
+`provenance.json` records what produced the files: the model repository and
+revision (the Rust test loads that revision), the ONNX Runtime version, a
+SHA-256 of the exact `libonnxruntime` that ran, and the platform. INT8
+results depend on the ONNX Runtime build: two builds can round some shapes
+differently and flip a decision that sits near a tie. The Rust test therefore
+requires an exact match only when it runs on the same library (through
+`provider-onnx-dynamic` with `ORT_DYLIB_PATH` naming it), and otherwise allows
+a small mismatch budget.
+
+Sessions run on one intra-op thread (`--threads`) by default: INT8 graphs
+reduce in an order that depends on the thread partitioning, which moves fact
+margins by up to 5e-3, so the Rust test's exact mode pins the same count.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
 import sys
 from pathlib import Path
 
@@ -114,15 +131,72 @@ SCHEMAS = {
 }
 
 
+def ort_library() -> Path:
+    """The `libonnxruntime` shared library the installed wheel loads."""
+    import onnxruntime
+
+    def is_runtime(name: str) -> bool:
+        if "providers" in name:
+            return False
+        return (
+            name.startswith("libonnxruntime.so")  # Linux
+            or (name.startswith("libonnxruntime.") and name.endswith(".dylib"))  # macOS
+            or name == "onnxruntime.dll"  # Windows
+        )
+
+    capi = Path(onnxruntime.__file__).parent / "capi"
+    libs = sorted(p for p in capi.iterdir() if is_runtime(p.name))
+    if not libs:
+        raise SystemExit(f"no ONNX Runtime library under {capi}")
+    return libs[-1]
+
+
+def pin_threads(threads: int) -> None:
+    """Make every ONNX Runtime session this process creates use `threads`."""
+    import onnxruntime as ort
+
+    original = ort.InferenceSession
+
+    def session(path, sess_options=None, providers=None, **kw):
+        opts = sess_options or ort.SessionOptions()
+        opts.intra_op_num_threads = threads
+        opts.inter_op_num_threads = 1
+        return original(path, sess_options=opts, providers=providers, **kw)
+
+    ort.InferenceSession = session
+
+
+def provenance(args: argparse.Namespace) -> dict:
+    import onnxruntime
+
+    lib = ort_library()
+    return {
+        "repo": args.repo,
+        "revision": args.revision,
+        "variant": args.variant or "fp32",
+        "onnxruntime": onnxruntime.__version__,
+        "onnxruntime_library": lib.name,
+        "onnxruntime_library_sha256": hashlib.sha256(lib.read_bytes()).hexdigest(),
+        "platform": f"{sys.platform}-{platform.machine()}",
+        "intra_op_threads": args.threads,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="a kniv v7 release directory")
-    ap.add_argument("--runtime", required=True, help="the repo holding kniv_v7/")
+    ap.add_argument("--model", required=True, help="a kniv v7 release directory (an HF snapshot)")
+    ap.add_argument("--repo", required=True, help="the Hugging Face repository --model is a snapshot of")
+    ap.add_argument("--revision", required=True, help="the full commit --model is a snapshot of")
+    ap.add_argument("--runtime", help="the directory holding kniv_v7/ (default: --model, which ships it)")
     ap.add_argument("--variant", default="int8", help='"", "fp16" or "int8" (shorthand for int8,fp16)')
+    ap.add_argument("--threads", type=int, default=1, help="intra-op threads per session (default 1, for a fixed reduction order)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    sys.path.insert(0, args.runtime)
+    if len(args.revision) != 40:
+        raise SystemExit("--revision must be a full 40-character commit")
+    pin_threads(args.threads)
+    sys.path.insert(0, args.runtime or args.model)
     from kniv_v7 import Kniv  # noqa: E402
 
     variant = {"int8": "int8,fp16", "": None}.get(args.variant, args.variant)
@@ -150,6 +224,9 @@ def main() -> int:
         path = out_dir / f"{case['name']}.json"
         path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
         print(f"wrote {path}")
+    path = out_dir / "provenance.json"
+    path.write_text(json.dumps(provenance(args), indent=1, sort_keys=True) + "\n")
+    print(f"wrote {path}")
     return 0
 
 

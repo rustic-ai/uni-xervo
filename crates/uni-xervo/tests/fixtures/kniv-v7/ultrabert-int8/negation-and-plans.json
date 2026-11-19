@@ -98,7 +98,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 0.05,
+     "margin": 0.087,
      "modality": "asserted",
      "polarity": "negative",
      "relation": "member of",
@@ -210,7 +210,7 @@
        11
       ],
       [
-       "ARG2",
+       "ARG1",
        13,
        14
       ]

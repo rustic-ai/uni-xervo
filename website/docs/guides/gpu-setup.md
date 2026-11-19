@@ -33,30 +33,39 @@ device option — it is not ORT-backed, so it doesn't take
 
 ## NVIDIA / Linux runtime requirements
 
-The bundled ONNX Runtime (`ort 2.0.0-rc.15` via pyke) ships pre-built
-CUDA EP binaries that link against the **CUDA 12 / cuDNN 9** ABI:
+The bundled ONNX Runtime (`ort 2.0.0-rc.15` via pyke, ONNX Runtime
+1.31) ships one pre-built CUDA EP, built for **CUDA 13 / cuDNN 9**.
+`libonnxruntime_providers_cuda.so` links:
 
-- `libcudnn.so.9`
-- `libcublas.so.12`, `libcublasLt.so.12`
-- `libcudart.so.12`, `libnvrtc.so.12`
+- `libcublas.so.13`, `libcublasLt.so.13`
+- `libcudart.so.13`, `libcurand.so.10`
 
-The dynamic loader resolves these by SONAME, so you need *any* CUDA
-12 install plus cuDNN 9 reachable on `LD_LIBRARY_PATH`. Two recipes:
+and loads `libcudnn.so.9` at runtime, the first time a model needs it.
+The dynamic loader resolves these by SONAME, so you need a CUDA 13
+runtime plus a **cuDNN 9 built for CUDA 13**, both reachable on
+`LD_LIBRARY_PATH`. A CUDA 12 install does not satisfy this. NVIDIA
+ships cuDNN 9 once per CUDA major version; use the CUDA 13 build. There
+is no CUDA 12 build of the bundled runtime to choose instead: `ort-sys`
+rc.15 downloads only CUDA 13 artifacts. To run on CUDA 12, use
+`provider-onnx-dynamic` with an ONNX Runtime built for CUDA 12 (see
+[below](#provider-onnx-dynamic-byo-ort)).
+
+Two recipes:
 
 ### System packages
 
-Install the CUDA 12 toolkit (any 12.x — 12.4, 12.6, 12.8 all work)
-and cuDNN 9 from the NVIDIA repos. Then:
+Install the CUDA 13 toolkit and the cuDNN 9 package for CUDA 13 from
+the NVIDIA repos (on Debian / Ubuntu, `libcudnn9-cuda-13`). Then:
 
 ```sh
-export LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-13.0/targets/x86_64-linux/lib:$LD_LIBRARY_PATH
 ```
 
-Adjust the path to wherever your distribution puts the CUDA 12
-runtime. On Fedora / RHEL the directory is typically
-`/usr/local/cuda-12.x/targets/x86_64-linux/lib`; on Debian / Ubuntu
-it's often `/usr/lib/x86_64-linux-gnu/` once the `nvidia-cuda-toolkit`
-and `libcudnn9-cuda-12` packages are installed.
+Adjust the path to wherever your distribution puts the CUDA 13
+runtime and cuDNN. On Fedora / RHEL that is typically
+`/usr/local/cuda-13.x/targets/x86_64-linux/lib`. The toolkit's
+`/usr/local/cuda/lib64` holds cuBLAS and the runtime but not cuDNN,
+which installs separately.
 
 ### Pip wheels (no root, easy in CI)
 
@@ -64,33 +73,46 @@ Pip-distributed NVIDIA wheels work just as well and don't need
 sudo:
 
 ```sh
-pip install nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-runtime-cu12
+pip install nvidia-cudnn-cu13 nvidia-cublas nvidia-cuda-runtime
 
-CUDNN_DIR=$(python -c "import nvidia.cudnn, os; print(os.path.dirname(nvidia.cudnn.__file__))")/lib
-CUBLAS_DIR=$(python -c "import nvidia.cublas, os; print(os.path.dirname(nvidia.cublas.__file__))")/lib
-CUDART_DIR=$(python -c "import nvidia.cuda_runtime, os; print(os.path.dirname(nvidia.cuda_runtime.__file__))")/lib
-
-export LD_LIBRARY_PATH=$CUDNN_DIR:$CUBLAS_DIR:$CUDART_DIR:$LD_LIBRARY_PATH
+# The wheels are namespace packages (no __file__), so ask for __path__.
+CUDNN_DIR=$(python -c "import nvidia.cudnn; print(nvidia.cudnn.__path__[0])")/lib
+CUDA_DIR=$(python -c "import nvidia.cu13; print(nvidia.cu13.__path__[0])")/lib
+export LD_LIBRARY_PATH=$CUDNN_DIR:$CUDA_DIR:$LD_LIBRARY_PATH
 ```
 
-This is also the easiest way to pin a specific CUDA 12 toolkit
-inside a container or venv without touching `/usr/local`.
+The CUDA 13 cuBLAS and runtime wheels install into `nvidia/cu13/lib`;
+the cuDNN wheel into `nvidia/cudnn/lib`. With a CUDA 13 toolkit already
+installed, the cuDNN wheel is the only part you need.
 
-### About newer CUDA toolkits on the system
+### What a missing library looks like
 
-A CUDA 13 install in `/usr/local/cuda` (and on the default
-`ldconfig` search path) is harmless on its own — `libcublas.so.13`
-has a different SONAME and won't be picked up when ORT asks for
-`libcublas.so.12`. The failure mode is the *absence* of CUDA 12
-libs, not the presence of CUDA 13 ones. The symptom is a silent
-fallback to CPU; see [Verifying the GPU EP actually loaded](#verifying-the-gpu-ep-actually-loaded)
+Nothing fails at startup. The CUDA libraries are opened when a session
+is created, so a missing CUDA 13 runtime makes the CUDA EP fail to
+register, and a missing cuDNN fails only the models with nodes that need
+it (attention, convolution). In both cases the load-time check moves the
+model to CPU and inference keeps working. The first sign is ONNX
+Runtime's own log line, for example:
+
+```text
+[E:onnxruntime:...] cuDNN is unavailable or disabled for CUDA Execution Provider:
+dlopen failed for libcudnn.so: libcudnn.so: cannot open shared object file
+```
+
+See [Verifying the GPU EP actually loaded](#verifying-the-gpu-ep-actually-loaded)
 below.
 
 ### Driver compatibility
 
-The kernel-mode NVIDIA driver only needs to be new enough for the
-CUDA 12 user-mode runtime — driver 525 or later. `nvidia-smi` shows
-the driver version at the top.
+CUDA 13 needs an R580 or later NVIDIA driver (580.65.06 for CUDA 13.0
+on Linux x86_64). `nvidia-smi` shows the driver version at the top.
+
+### GPU memory
+
+A model whose session cannot get GPU memory at creation also falls back
+to CPU, through the same path. Loading several large models at once (for
+example from tests running in parallel) can exhaust an 8 GB card, where
+each loads fine alone.
 
 ## Apple / macOS runtime requirements
 
@@ -137,27 +159,36 @@ intrusiveness:
 
 `active_execution_providers()` lives on the `ModelInfo` supertrait, so
 every typed handle (`RerankerModel`, `RawTensorModel`, `EmbeddingModel`, …)
-exposes it. It returns the EPs the ONNX session was *built with*, in priority
-order (empty for remote / non-ONNX models):
+exposes it. For a `local/onnx` model it returns the EPs the model runs on
+after loading, in priority order (empty for remote / non-ONNX models):
 
 ```rust
 let model = runtime.reranker("rerank/bge").await?;
 println!("active EPs: {:?}", model.active_execution_providers());
-// ["cuda", "cpu"] on a gpu-cuda build; ["cpu"] without it, because an
-// unbacked `cuda` entry is dropped at build time rather than rejected.
+// ["cuda", "cpu"] when CUDA took the model; ["cpu"] when it fell back.
 ```
 
-This is the requested list minus anything this binary cannot construct, so it
-does catch build *misconfiguration*: if you asked for `["cuda", "cpu"]` and
-see `["cpu"]`, the binary lacks `gpu-cuda`.
+It reflects every way a model ends up on CPU:
 
-It still is not what ORT finally **attached**. An EP listed here can fail to
-register at runtime — no device, no driver — and be skipped silently, so a
-CUDA init that fails on a `gpu-cuda` build still shows `["cuda", "cpu"]`.
-Use checks 2 and 3 to prove the GPU EP actually loaded.
+- the binary lacks `gpu-cuda`, so the `cuda` entry is dropped at build time;
+- the CUDA EP failed to register (no device, driver or CUDA 13 runtime) and
+  was skipped;
+- the session could not be created on CUDA (GPU memory exhausted, say) and
+  was rebuilt on CPU;
+- the load-time check failed or disagreed with CPU (a missing cuDNN fails
+  attention nodes here) and moved the model to CPU.
 
-Source: `src/traits.rs` (the `ModelInfo` supertrait); the `local/onnx`
-override is in `src/provider/local_onnx/rerank.rs:202`.
+So the first entry being `cuda` is the check to make. Two limits: a
+`raw` or `nlp` model is not probed at load, so a CUDA failure that only
+shows at inference leaves it reporting `cuda`; and an OCR alias reports the
+providers common to its two stages. Checks 2 and 3 confirm from outside.
+
+`scripts/acceptance.sh cuda` and `coreml` make this check after every load
+(`tests/common/accelerator.rs`), so a run where a model fell back fails.
+
+Source: `src/traits.rs` (the `ModelInfo` supertrait) and
+`src/provider/onnx_ep.rs` (`register_execution_providers`,
+`verify_execution_providers`).
 
 ### 2. Out-of-band — `nvidia-smi`
 
@@ -198,8 +229,9 @@ for the BYO setup.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Inference works but VRAM stays at idle baseline | CUDA EP failed to register; ORT silently fell back to CPU | Watch `nvidia-smi` or `RUST_LOG=ort=warn` (the EP-registration signal — `active_execution_providers()` only reports the *requested* list). Install cuDNN 9 + CUDA 12 runtime and add it to `LD_LIBRARY_PATH`. |
-| `error while loading shared libraries: libcudnn.so.9` at process start | cuDNN 9 not on `LD_LIBRARY_PATH` | Run one of the install recipes above. |
-| `error while loading shared libraries: libcublas.so.12` | CUDA 12 runtime missing (only CUDA 13+ installed) | Install `nvidia-cuda-runtime-cu12` (pip) or the CUDA 12 toolkit (system). |
+| Inference works but VRAM stays at idle baseline | The model fell back to CPU | `active_execution_providers()` shows `["cpu"]`; ONNX Runtime's `E:onnxruntime` log lines give the reason. Install the CUDA 13 runtime and cuDNN 9 for CUDA 13 and add them to `LD_LIBRARY_PATH`. |
+| `E:onnxruntime` log line `cuDNN is unavailable ... dlopen failed for libcudnn.so`; attention and convolution models report `["cpu"]` | cuDNN 9 for CUDA 13 not on `LD_LIBRARY_PATH` | Run one of the install recipes above. |
+| The model reports `["cpu"]`; with a CPU-free list (`["cuda"]`) the load fails with `execution provider "cuda" failed to register ... Failed to load library .../libonnxruntime_providers_cuda.so` | CUDA 13 runtime (`libcublas.so.13`, `libcudart.so.13`) not found, for example only CUDA 12 installed | Install the CUDA 13 toolkit, or the `nvidia-cublas` and `nvidia-cuda-runtime` wheels. |
+| `E:onnxruntime` log line `Failed to allocate memory` at session creation | GPU memory exhausted, often by several models loading at once | Load fewer models concurrently, or use a card with more memory. |
 | Build error mentioning `nvcc` or `CUDA_COMPUTE_CAP` | Build-time CUDA toolkit missing | Install the CUDA toolkit. Set `CUDA_COMPUTE_CAP=89` (Ada / RTX 40-series), `86` (Ampere), `80` (A100), or whichever matches your GPU. |
 | `build.rs` panics on a non-Apple host with `gpu-metal` enabled | `gpu-metal` only builds on Apple targets | Remove the feature, or build on macOS / iOS. |

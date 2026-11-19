@@ -16,6 +16,9 @@
 
 #![cfg(feature = "provider-onnx")]
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use std::env;
 use std::sync::Arc;
 
@@ -64,6 +67,7 @@ async fn splade_runtime() -> Arc<ModelRuntime> {
 #[tokio::test]
 #[ignore]
 async fn splade_produces_nonzero_sparse_terms() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = splade_runtime().await;
@@ -71,6 +75,7 @@ async fn splade_produces_nonzero_sparse_terms() {
         .sparse_embedder("embed_sparse/splade")
         .await
         .expect("load sparse model");
+    accelerator::expect_accelerator("embed_sparse/splade", &*model);
 
     let result = model
         .embed(&["how to bake sourdough bread", "the moon orbits the earth"])
@@ -96,6 +101,7 @@ async fn splade_produces_nonzero_sparse_terms() {
 #[tokio::test]
 #[ignore]
 async fn splade_top_k_caps_term_count() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let spec = ModelAliasSpec {
@@ -122,6 +128,7 @@ async fn splade_top_k_caps_term_count() {
         .sparse_embedder("embed_sparse/splade-topk")
         .await
         .expect("load");
+    accelerator::expect_accelerator("embed_sparse/splade-topk", &*model);
     let result = model
         .embed(&["a fairly long sentence with many distinct content words"])
         .await
@@ -157,12 +164,14 @@ async fn sparse_runtime_for(alias: &str, model_id: &str) -> Arc<ModelRuntime> {
 #[tokio::test]
 #[ignore]
 async fn splade_v2_produces_nonzero_sparse_terms() {
+    accelerator::log_warnings();
     require_expensive_tests!();
     let runtime = sparse_runtime_for("embed_sparse/splade2", "prithivida/Splade_PP_en_v2").await;
     let model = runtime
         .sparse_embedder("embed_sparse/splade2")
         .await
         .expect("load SPLADE++ v2");
+    accelerator::expect_accelerator("embed_sparse/splade2", &*model);
     let result = model
         .embed(&["how do tides work", "the capital of france is paris"])
         .await
@@ -184,12 +193,14 @@ async fn splade_v2_produces_nonzero_sparse_terms() {
 #[tokio::test]
 #[ignore]
 async fn bge_m3_sparse_produces_lexical_terms() {
+    accelerator::log_warnings();
     require_expensive_tests!();
     let runtime = sparse_runtime_for("embed_sparse/bgem3", "aapot/bge-m3-onnx").await;
     let model = runtime
         .sparse_embedder("embed_sparse/bgem3")
         .await
         .expect("load BGE-M3 sparse");
+    accelerator::expect_accelerator("embed_sparse/bgem3", &*model);
     let result = model
         .embed(&["climate change and renewable energy"])
         .await

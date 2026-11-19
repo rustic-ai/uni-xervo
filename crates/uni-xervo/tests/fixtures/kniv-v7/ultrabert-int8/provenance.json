@@ -1,0 +1,10 @@
+{
+ "intra_op_threads": 1,
+ "onnxruntime": "1.31.1",
+ "onnxruntime_library": "libonnxruntime.so.1.31.1",
+ "onnxruntime_library_sha256": "fc44112fbe06d7d689c57e11d3862031f64711007e4ee020f8eed5185fd2c1d3",
+ "platform": "linux-x86_64",
+ "repo": "dragonscale-ai/kniv-v7-xlarge-u-en",
+ "revision": "2733fe0d660f433b0e0d164e8f1f6ea58574954d",
+ "variant": "int8"
+}

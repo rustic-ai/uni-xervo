@@ -98,7 +98,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 3.733,
+     "margin": 3.681,
      "modality": "planned",
      "polarity": "positive",
      "relation": "employer",
@@ -108,21 +108,11 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 0.544,
+     "margin": 0.548,
      "modality": "planned",
      "polarity": "positive",
      "relation": "educated at",
      "tail": 4,
-     "time": 3
-    },
-    {
-     "head": 5,
-     "holder": 0,
-     "margin": 0.246,
-     "modality": "asserted",
-     "polarity": "positive",
-     "relation": "occurred at",
-     "tail": 3,
      "time": 3
     }
    ],
@@ -201,7 +191,7 @@
        3
       ],
       [
-       "ARGM-LOC",
+       "ARG2",
        4,
        6
       ],

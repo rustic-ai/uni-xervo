@@ -23,6 +23,9 @@
 
 #![cfg(feature = "provider-onnx")]
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use std::env;
 
 use uni_xervo::api::{ModelAliasSpec, ModelTask, WarmupPolicy};
@@ -92,6 +95,7 @@ async fn ocr_runtime() -> std::sync::Arc<ModelRuntime> {
 #[tokio::test]
 #[ignore]
 async fn ppocr_detects_and_recognizes_text_lines() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ocr_runtime().await;
@@ -99,6 +103,7 @@ async fn ppocr_detects_and_recognizes_text_lines() {
         .ocr_model("ocr/ppocr-en")
         .await
         .expect("load ocr model");
+    accelerator::expect_accelerator("ocr/ppocr-en", &*ocr);
 
     let input = ImageInput::Bytes {
         data: image_bytes("text_lines.png"),
@@ -149,6 +154,7 @@ async fn ppocr_detects_and_recognizes_text_lines() {
 #[tokio::test]
 #[ignore]
 async fn ppocr_blank_image_yields_empty_result() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ocr_runtime().await;
@@ -156,6 +162,7 @@ async fn ppocr_blank_image_yields_empty_result() {
         .ocr_model("ocr/ppocr-en")
         .await
         .expect("load ocr model");
+    accelerator::expect_accelerator("ocr/ppocr-en", &*ocr);
 
     let input = ImageInput::Bytes {
         data: image_bytes("blank.png"),
@@ -179,6 +186,7 @@ async fn ppocr_blank_image_yields_empty_result() {
 #[tokio::test]
 #[ignore]
 async fn ppocr_reads_long_lines_with_spaces() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ocr_runtime().await;
@@ -186,6 +194,7 @@ async fn ppocr_reads_long_lines_with_spaces() {
         .ocr_model("ocr/ppocr-en")
         .await
         .expect("load ocr model");
+    accelerator::expect_accelerator("ocr/ppocr-en", &*ocr);
 
     let input = ImageInput::Bytes {
         data: image_bytes("maintenance_log.png"),

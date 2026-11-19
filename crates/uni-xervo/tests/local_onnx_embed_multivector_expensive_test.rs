@@ -17,6 +17,9 @@
 
 #![cfg(feature = "provider-onnx")]
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use std::env;
 use std::sync::Arc;
 
@@ -66,6 +69,7 @@ async fn colbert_runtime() -> Arc<ModelRuntime> {
 #[tokio::test]
 #[ignore]
 async fn colbert_emits_per_token_vectors() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = colbert_runtime().await;
@@ -73,6 +77,7 @@ async fn colbert_emits_per_token_vectors() {
         .multi_vector_embedder("embed_mv/colbert")
         .await
         .expect("load multi-vector model");
+    accelerator::expect_accelerator("embed_mv/colbert", &*model);
 
     let result = model.embed(&["how do tides work"]).await.expect("embed");
 
@@ -94,6 +99,7 @@ async fn colbert_emits_per_token_vectors() {
 #[tokio::test]
 #[ignore]
 async fn colbert_maxsim_ranks_relevant_above_irrelevant() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = colbert_runtime().await;
@@ -101,6 +107,7 @@ async fn colbert_maxsim_ranks_relevant_above_irrelevant() {
         .multi_vector_embedder("embed_mv/colbert")
         .await
         .expect("load");
+    accelerator::expect_accelerator("embed_mv/colbert", &*model);
 
     let result = model
         .embed(&[
@@ -160,6 +167,7 @@ async fn assert_colbert_model(alias: &str, model_id: &str, expected_dim: u32) {
         .multi_vector_embedder(alias)
         .await
         .unwrap_or_else(|e| panic!("load {model_id}: {e:?}"));
+    accelerator::expect_accelerator(alias, &*model);
     assert_eq!(model.dimensions(), expected_dim);
 
     let result = model
@@ -186,6 +194,7 @@ async fn assert_colbert_model(alias: &str, model_id: &str, expected_dim: u32) {
 #[tokio::test]
 #[ignore]
 async fn gte_moderncolbert_works() {
+    accelerator::log_warnings();
     require_expensive_tests!();
     assert_colbert_model("embed_mv/gte", "lightonai/GTE-ModernColBERT-v1", 128).await;
 }
@@ -193,6 +202,7 @@ async fn gte_moderncolbert_works() {
 #[tokio::test]
 #[ignore]
 async fn mxbai_edge_colbert_17m_works() {
+    accelerator::log_warnings();
     require_expensive_tests!();
     assert_colbert_model(
         "embed_mv/mxbai17",
@@ -205,6 +215,7 @@ async fn mxbai_edge_colbert_17m_works() {
 #[tokio::test]
 #[ignore]
 async fn mxbai_edge_colbert_32m_works() {
+    accelerator::log_warnings();
     require_expensive_tests!();
     assert_colbert_model(
         "embed_mv/mxbai32",
@@ -217,6 +228,7 @@ async fn mxbai_edge_colbert_32m_works() {
 #[tokio::test]
 #[ignore]
 async fn bge_m3_colbert_works() {
+    accelerator::log_warnings();
     require_expensive_tests!();
     assert_colbert_model("embed_mv/bgem3", "aapot/bge-m3-onnx", 1024).await;
 }

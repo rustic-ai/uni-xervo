@@ -87,7 +87,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 3.725,
+     "margin": 3.668,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "visited",
@@ -97,7 +97,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 3.587,
+     "margin": 3.779,
      "modality": "planned",
      "polarity": "positive",
      "relation": "employer",
@@ -107,7 +107,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 2.503,
+     "margin": 2.162,
      "modality": "planned",
      "polarity": "positive",
      "relation": "visited",
@@ -117,7 +117,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 0.765,
+     "margin": 1.2,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "educated at",
@@ -127,7 +127,7 @@
     {
      "head": 0,
      "holder": 0,
-     "margin": 3.034,
+     "margin": 2.87,
      "modality": "planned",
      "polarity": "positive",
      "relation": "participant in",
@@ -136,8 +136,8 @@
     },
     {
      "head": 0,
-     "holder": 0,
-     "margin": 0.844,
+     "holder": 1,
+     "margin": 0.698,
      "modality": "planned",
      "polarity": "positive",
      "relation": "attended",
@@ -147,7 +147,7 @@
     {
      "head": 4,
      "holder": 1,
-     "margin": 2.573,
+     "margin": 2.39,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "located in",
@@ -157,7 +157,7 @@
     {
      "head": 5,
      "holder": 0,
-     "margin": 4.921,
+     "margin": 5.154,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "occurred at",
@@ -167,7 +167,7 @@
     {
      "head": 5,
      "holder": 0,
-     "margin": 0.534,
+     "margin": 0.608,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "scheduled for",

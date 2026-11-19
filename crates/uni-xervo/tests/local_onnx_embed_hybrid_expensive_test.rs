@@ -17,7 +17,11 @@
 
 #![cfg(feature = "provider-onnx")]
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use std::env;
+use std::sync::Arc;
 
 use uni_xervo::api::{ModelAliasSpec, ModelTask, WarmupPolicy};
 use uni_xervo::provider::LocalOnnxProvider;
@@ -118,32 +122,38 @@ fn assert_multi_vector_eq(hybrid: &[Vec<Vec<f32>>], per_task: &[Vec<Vec<f32>>]) 
     }
 }
 
+/// A runtime serving one alias, so each BGE-M3 session can be released
+/// before the next loads.
+async fn runtime_for(alias: &str, task: ModelTask, preset: &str) -> Arc<ModelRuntime> {
+    ModelRuntime::builder()
+        .register_provider(LocalOnnxProvider::new())
+        .catalog(vec![spec(alias, task, preset)])
+        .build()
+        .await
+        .expect("runtime build failed")
+}
+
 /// Parity: one hybrid forward pass reproduces all three per-task paths exactly,
 /// plus shape sanity on the fused output.
+///
+/// Each model loads in its own runtime, dropped before the next: four BGE-M3
+/// sessions at once (2.2 GB of weights each) do not fit an 8 GB GPU, and the
+/// one that cannot be created falls back to CPU.
 #[tokio::test]
 #[ignore]
 async fn hybrid_matches_per_task_paths() {
     require_expensive_tests!();
-
-    let runtime = ModelRuntime::builder()
-        .register_provider(LocalOnnxProvider::new())
-        .catalog(vec![
-            spec("hybrid/bgem3", ModelTask::EmbedHybrid, "BGEM3Hybrid"),
-            spec("dense/bgem3", ModelTask::Embed, "BGEM3Dense"),
-            spec("sparse/bgem3", ModelTask::EmbedSparse, "BGEM3Sparse"),
-            spec("colbert/bgem3", ModelTask::EmbedMultiVector, "BGEM3Colbert"),
-        ])
-        .build()
-        .await
-        .expect("runtime build failed");
+    accelerator::log_warnings();
 
     let texts: Vec<&str> = TEXTS.to_vec();
+    let runtime = runtime_for("hybrid/bgem3", ModelTask::EmbedHybrid, "BGEM3Hybrid").await;
 
     // The single fused pass.
     let hybrid = runtime
         .hybrid_embedder("hybrid/bgem3")
         .await
         .expect("resolve hybrid embedder");
+    accelerator::expect_accelerator("hybrid/bgem3", &*hybrid);
     assert_eq!(
         hybrid.available_heads(),
         HeadSet::ALL,
@@ -188,31 +198,38 @@ async fn hybrid_matches_per_task_paths() {
     }
 
     // Parity against the trusted per-task handles on identical inputs.
-    let dense_ref = runtime
+    drop(hybrid);
+    drop(runtime);
+
+    let runtime = runtime_for("dense/bgem3", ModelTask::Embed, "BGEM3Dense").await;
+    let dense_model = runtime
         .embedding("dense/bgem3")
         .await
-        .expect("resolve dense")
-        .embed(&texts)
-        .await
-        .expect("dense embed");
+        .expect("resolve dense");
+    accelerator::expect_accelerator("dense/bgem3", &*dense_model);
+    let dense_ref = dense_model.embed(&texts).await.expect("dense embed");
     assert_dense_eq(dense, &dense_ref.vectors);
+    drop(dense_model);
+    drop(runtime);
 
-    let sparse_ref = runtime
+    let runtime = runtime_for("sparse/bgem3", ModelTask::EmbedSparse, "BGEM3Sparse").await;
+    let sparse_model = runtime
         .sparse_embedder("sparse/bgem3")
         .await
-        .expect("resolve sparse")
-        .embed(&texts)
-        .await
-        .expect("sparse embed");
+        .expect("resolve sparse");
+    accelerator::expect_accelerator("sparse/bgem3", &*sparse_model);
+    let sparse_ref = sparse_model.embed(&texts).await.expect("sparse embed");
     assert_sparse_eq(sparse, &sparse_ref.vectors);
+    drop(sparse_model);
+    drop(runtime);
 
-    let mv_ref = runtime
+    let runtime = runtime_for("colbert/bgem3", ModelTask::EmbedMultiVector, "BGEM3Colbert").await;
+    let mv_model = runtime
         .multi_vector_embedder("colbert/bgem3")
         .await
-        .expect("resolve multi-vector")
-        .embed(&texts)
-        .await
-        .expect("multi-vector embed");
+        .expect("resolve multi-vector");
+    accelerator::expect_accelerator("colbert/bgem3", &*mv_model);
+    let mv_ref = mv_model.embed(&texts).await.expect("multi-vector embed");
     assert_multi_vector_eq(multi_vector, &mv_ref.vectors);
 }
 
@@ -221,6 +238,7 @@ async fn hybrid_matches_per_task_paths() {
 #[tokio::test]
 #[ignore]
 async fn hybrid_respects_head_selection() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -238,6 +256,7 @@ async fn hybrid_respects_head_selection() {
         .hybrid_embedder("hybrid/bgem3")
         .await
         .expect("resolve hybrid embedder");
+    accelerator::expect_accelerator("hybrid/bgem3", &*hybrid);
 
     // Subset request: multi-vector is left out.
     let texts: Vec<&str> = TEXTS.to_vec();
@@ -269,6 +288,7 @@ async fn hybrid_respects_head_selection() {
 #[tokio::test]
 #[ignore]
 async fn hybrid_alias_serves_single_head_accessors() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -292,6 +312,7 @@ async fn hybrid_alias_serves_single_head_accessors() {
         .sparse_embedder("embed/hybrid")
         .await
         .expect("hybrid alias must serve a sparse query");
+    accelerator::expect_accelerator("embed/hybrid", &*sparse);
     assert_eq!(
         sparse.vocab_size(),
         runtime
@@ -307,13 +328,9 @@ async fn hybrid_alias_serves_single_head_accessors() {
         "BGE-M3 uses XLM-R's vocabulary"
     );
     let via_hybrid = sparse.embed(&texts).await.unwrap();
-    let via_task = runtime
-        .sparse_embedder("sparse/bgem3")
-        .await
-        .unwrap()
-        .embed(&texts)
-        .await
-        .unwrap();
+    let task_model = runtime.sparse_embedder("sparse/bgem3").await.unwrap();
+    accelerator::expect_accelerator("sparse/bgem3", &*task_model);
+    let via_task = task_model.embed(&texts).await.unwrap();
     assert_eq!(via_hybrid.vectors.len(), texts.len());
     for (a, b) in via_hybrid.vectors.iter().zip(via_task.vectors.iter()) {
         assert_eq!(a.len(), b.len(), "sparse term count differs from per-task");
@@ -324,6 +341,7 @@ async fn hybrid_alias_serves_single_head_accessors() {
         .multi_vector_embedder("embed/hybrid")
         .await
         .expect("hybrid alias must serve a multi-vector query");
+    accelerator::expect_accelerator("embed/hybrid", &*mv);
     let mv_out = mv.embed(&texts).await.unwrap();
     assert_eq!(mv_out.vectors.len(), texts.len());
     assert_eq!(mv.dimensions(), 1024);
@@ -337,6 +355,7 @@ async fn hybrid_alias_serves_single_head_accessors() {
         .embedding("embed/hybrid")
         .await
         .expect("hybrid alias must serve a dense query");
+    accelerator::expect_accelerator("embed/hybrid", &*dense);
     assert_eq!(dense.dimensions(), 1024);
     let dense_out = dense.embed(&texts).await.unwrap();
     assert_eq!(dense_out.vectors.len(), texts.len());

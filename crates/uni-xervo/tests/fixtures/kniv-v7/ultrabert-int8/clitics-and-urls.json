@@ -13,19 +13,6 @@
    "entities": [
     {
      "mentions": [
-      "visit"
-     ],
-     "spans": [
-      [
-       3,
-       4
-      ]
-     ],
-     "text": "visit",
-     "type": "LOC"
-    },
-    {
-     "mentions": [
       "3.14"
      ],
      "spans": [
@@ -82,7 +69,7 @@
       "Question",
       "Inform"
      ],
-     "sentiment": "neutral",
+     "sentiment": "negative",
      "whole": true
     }
    ],
@@ -132,11 +119,6 @@
        "ARG2",
        7,
        14
-      ],
-      [
-       "ARGM-ADV",
-       15,
-       16
       ]
      ],
      "predicate": 6

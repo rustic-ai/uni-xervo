@@ -16,14 +16,23 @@ add a platform, run `scripts/acceptance.sh <target>` there and copy its
 |---|---|---|---|---|---|---|
 | macOS arm64 (Apple Silicon) | `cpu` | 2026-11-19 | `a76262a` | 11 | 0 | 1 (whisper.cpp: no cmake) |
 | macOS arm64 (Apple Silicon) | `coreml` | 2026-11-19 | `d837a30` + the accelerator check | 12 | 0 | 1 (whisper.cpp: no cmake) |
-| Linux x86_64 + NVIDIA | `cuda` | not yet run | | | | |
+| Linux x86_64 (Intel Core Ultra 9 185H) | `cpu` | 2026-11-19 | `c371778` + the fixes below | 14 | 0 | 0 |
+| Linux x86_64 + NVIDIA RTX 4070 Laptop (8 GB) | `cuda` | 2026-11-19 | `c371778` + the fixes below | 15 | 0 | 0 |
 
 The first `coreml` run, at `a76262a`, failed `multi-vector` (3 of 6) and
 `ocr` (1 of 3); see [Known issues](#known-issues) for what was wrong and how
 the accelerator check fixed it.
 
-Both runs used Rust 1.100.0 and the `ort` 2.0.0-rc.15 ONNX Runtime binding,
-with the models listed under [Models](#models).
+The macOS runs used Rust 1.100.0, the Linux runs Rust 1.99.1; all used the
+`ort` 2.0.0-rc.15 ONNX Runtime binding, with the models listed under
+[Models](#models). The macOS runs predate three suite changes: the kniv v7
+suites now run the golden comparisons on the xlarge releases (they ran the
+model-agnostic tests on the tiny release), accelerator targets check every
+model runs on the accelerator, and they run tests one at a time.
+
+The first Linux `cuda` runs passed every suite while several models ran on
+CPU; see [Linux / CUDA](#linux--cuda-gpu-cuda) under Known issues for why,
+and the matrix changes that make that a failure.
 
 ## macOS arm64, `cpu`
 
@@ -66,6 +75,57 @@ is `["coreml", "cpu"]`.
 Times exclude the build. Peak RSS is for the whole test binary, whose tests
 run in parallel and each load their own models, so it is an upper bound on
 any one model, not a per-model figure.
+
+## Linux x86_64, `cpu`
+
+Run with `ORT_DYLIB_PATH` naming the ONNX Runtime 1.31.1 wheel's library,
+which enables `ep-skip-dynamic` and `nlp-kniv-v7-exact`.
+
+| Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
+|---|---|---|---|---|
+| `onnx-models` | pass | 11 / 0 / 0 | 5 s | 9.4 GiB |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 1 s | 0.9 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 1 s | 0.2 GiB |
+| `sparse` | pass | 4 / 0 / 0 | 3 s | 2.6 GiB |
+| `multi-vector` | pass | 6 / 0 / 0 | 2 s | 2.2 GiB |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 6 s | 4.0 GiB |
+| `ocr` | pass | 3 / 0 / 0 | 7 s | 0.8 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 9 s | 0.6 GiB |
+| `nlp-kniv-v7` (UltraBERT goldens, tolerant: 0.24% differ) | pass | 4 / 0 / 0 | 18 s | 4.0 GiB |
+| `nlp-kniv-v7-deberta` (DeBERTa goldens, tolerant: 0.54% differ) | pass | 4 / 0 / 0 | 33 s | 8.9 GiB |
+| `nlp-kniv-v7-exact` (UltraBERT goldens on their own library: 0 differ) | pass | 1 / 0 / 0 | 12 s | 2.4 GiB |
+| `ep-reporting` | pass | 7 / 0 / 0 | 0 s | 0.1 GiB |
+| `ep-skip-dynamic` (ONNX Runtime 1.31.1 wheel library) | pass | 2 / 0 / 0 | 0 s | 0.1 GiB |
+| `whisper` | pass | 1 / 0 / 0 | 1 s | 0.2 GiB |
+
+## Linux x86_64, `cuda`
+
+`local/onnx` built with `gpu-cuda` (CUDA 13.0 toolkit, driver 620.70, cuDNN
+9.19 for CUDA 13 from the `nvidia-cudnn-cu13` wheel on `LD_LIBRARY_PATH`), so
+every session's default provider list is `["cuda", "cpu"]`. All 37 model
+loads in the accelerator-checked suites reported `["cuda", "cpu"]`; the kniv
+v7 suites pin `["cpu"]` because their goldens are CPU results.
+
+| Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
+|---|---|---|---|---|
+| `onnx-models` | pass | 11 / 0 / 0 | 24 s | 3.5 GiB |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 2 s | 1.0 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.8 GiB |
+| `sparse` | pass | 4 / 0 / 0 | 7 s | 2.2 GiB |
+| `multi-vector` | pass | 6 / 0 / 0 | 7 s | 2.1 GiB |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 12 s | 2.5 GiB |
+| `ocr` (both stages on CUDA) | pass | 3 / 0 / 0 | 9 s | 1.3 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 9 s | 0.6 GiB |
+| `nlp-kniv-v7` | pass | 4 / 0 / 0 | 19 s | 2.2 GiB |
+| `nlp-kniv-v7-deberta` | pass | 4 / 0 / 0 | 39 s | 4.5 GiB |
+| `nlp-kniv-v7-exact` | pass | 1 / 0 / 0 | 11 s | 2.4 GiB |
+| `ep-reporting` (reports `["cuda", "cpu"]`) | pass | 7 / 0 / 0 | 0 s | 0.5 GiB |
+| `ep-skip-dynamic` | pass | 2 / 0 / 0 | 0 s | 0.1 GiB |
+| `cuda-inference` (embed and rerank on CUDA only) | pass | 2 / 0 / 0 | 2 s | 0.8 GiB |
+| `whisper` | pass | 1 / 0 / 0 | 1 s | 0.2 GiB |
+
+Accelerator targets run tests one at a time, so these times are serial; the
+CPU target's run in parallel.
 
 ## Known issues
 
@@ -112,6 +172,30 @@ PP-OCR model builds on it, and BERT-family models (BGE small, the MiniLM
 reranker, SPLADE) abort the whole process inside Metal (`'mps.matmul' op
 contracting dimensions differ`). A crash cannot be caught or fallen back from.
 
+### Linux / CUDA (`gpu-cuda`)
+
+Each of these let a `cuda` run pass while models ran on CPU, before the
+matrix checked where models run:
+
+- **cuDNN for CUDA 13 missing from `LD_LIBRARY_PATH`.** The bundled ONNX
+  Runtime is a CUDA 13 build and loads cuDNN at run time. With only a CUDA 12
+  cuDNN installed, every model with attention or convolution nodes failed its
+  load-time probe and fell back. See the GPU setup guide.
+- **GPU memory exhausted by parallel loads.** The tests of one suite loaded
+  their models at once and exhausted the 8 GB card; each session that could
+  not be created was rebuilt on CPU (BGE-M3, Qwen3). Run one at a time, none
+  ran out.
+- **Four BGE-M3 sessions in one runtime.** `hybrid_matches_per_task_paths`
+  loaded the hybrid and three per-task BGE-M3 models together (2.2 GB of
+  weights each); the third could not be created on CUDA. The test now loads
+  each in its own runtime.
+
+The kniv v7 goldens differ by ONNX Runtime build, not by platform alone: on
+identical inputs the bundled (pyke) 1.31.0 build and Microsoft's 1.31.1 wheel
+compute some INT8 shapes differently, both as close to the fp32 graph. Hence
+the exact and tolerant modes described in
+`crates/uni-xervo/tests/fixtures/kniv-v7/README.md`.
+
 ## Models
 
 The Hugging Face revisions both runs resolved (from the model cache). Set an
@@ -127,6 +211,8 @@ alias's `revision` to one of these to reproduce a run.
 | `cross-encoder/ms-marco-MiniLM-L6-v2` | `233902d25c440f23af6f7d6e94d2946bac0bee0a` | 87 MB |
 | `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` | `68af00aef58ef6dc4bb695612f2fd68d1f03fa27` | 294 MB |
 | `dragonscale-ai/kniv-v7-tiny-en` | `c6335931a9c911faaa6939a6b765e0c17d260a81` | 119 MB |
+| `dragonscale-ai/kniv-v7-xlarge-u-en` (Linux runs; pinned by the goldens) | `2733fe0d660f433b0e0d164e8f1f6ea58574954d` | 1.9 GB |
+| `dragonscale-ai/kniv-v7-xlarge-d-en` (Linux runs; pinned by the goldens) | `5545dfe5641872dae072f1c4d091422e033d1613` | 3.5 GB |
 | `lightonai/GTE-ModernColBERT-v1` | `25f6f7bb8237b7ae25ae1d9b805ce17c0d1cc639` | 573 MB |
 | `mixedbread-ai/mxbai-edge-colbert-v0-17m` | `592c6417c1c6687572043408ed1ae5196bce16b1` | 68 MB |
 | `mixedbread-ai/mxbai-edge-colbert-v0-32m` | `bb13a29ec9b1e7edd4ba8f7a0776c48b55cbad66` | 129 MB |
@@ -140,12 +226,11 @@ alias's `revision` to one of these to reproduce a run.
 
 ## Not covered
 
-- **CUDA:** no NVIDIA host was available. Run `scripts/acceptance.sh cuda` on
-  one; the `cuda-inference` suite then runs too.
-- **whisper.cpp:** needs cmake to build (`brew install cmake`).
-- **kniv v7 golden tests:** need the xlarge releases (see
-  `tests/local_onnx_nlp_v7_golden_expensive_test.rs`). The matrix runs the v7
-  suite's model-agnostic tests on the tiny release instead.
+- **macOS with the current suites:** the macOS runs above predate the kniv
+  v7 golden suites and the accelerator check; rerun `cpu` and `coreml` there.
+- **Exact kniv v7 goldens off linux-x86_64:** the goldens were generated on
+  linux-x86_64, so elsewhere the comparison is tolerant.
+- **whisper.cpp on macOS:** needs cmake to build (`brew install cmake`).
 - **Document extraction on `local/onnx`:** there is no ONNX export of a target
   document model yet. `remote/llamacpp` serves it, and needs a running server.
 - **Retrieval quality on real corpora:** that is a deployment concern. The
