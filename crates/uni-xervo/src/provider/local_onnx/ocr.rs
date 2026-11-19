@@ -35,7 +35,8 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    BuiltSession, SessionConfig, build_session, common_execution_providers, ep_ids,
+    BuiltSession, EpProbe, ProbeOutput, SessionConfig, build_session, common_execution_providers,
+    ep_ids, verify_execution_providers,
 };
 use crate::traits::{ImageInput, OcrBlock, OcrModel, OcrResult};
 use image::{DynamicImage, GenericImageView};
@@ -288,7 +289,10 @@ struct OnnxOcrModel {
     output_name: Option<String>,
     /// When present, `recognize()` runs detect → crop → recognize → order.
     detector: Option<Detector>,
-    /// Reported by [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers).
+    /// Reported by [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers):
+    /// the providers both stages share. Each stage passes the load-time
+    /// accelerator check on its own, so the detector may still run on an
+    /// accelerator when this reports only `cpu`.
     execution_providers: Vec<String>,
 }
 
@@ -353,7 +357,7 @@ impl OnnxOcrModel {
             None => (cfg.image_width, cfg.max_image_width),
         };
 
-        let mut execution_providers = rec_eps;
+        let mut det_built = None;
         let detector = match &cfg.detector {
             Some(dc) => {
                 info!(alias = %spec.alias, det_onnx = %dc.onnx_path, "Loading ONNX text detector");
@@ -366,10 +370,7 @@ impl OnnxOcrModel {
                 )
                 .await?;
                 let det = build_session(&det_path, &spec.alias, &session_cfg)?;
-                // Report what the whole pipeline runs on: a provider only one
-                // stage attached does not make the alias run on it.
-                execution_providers =
-                    common_execution_providers(&execution_providers, &det.execution_providers);
+                det_built = Some((det_path, det.execution_providers));
                 Some(Detector {
                     session: Mutex::new(det.session),
                     limit_side: dc.limit_side,
@@ -382,7 +383,7 @@ impl OnnxOcrModel {
             None => None,
         };
 
-        Ok(Self {
+        let mut model = Self {
             session: Mutex::new(session),
             alias: spec.alias.clone(),
             model_id: spec.model_id.clone(),
@@ -397,8 +398,88 @@ impl OnnxOcrModel {
             use_space_char: cfg.use_space_char,
             output_name: cfg.output_name,
             detector,
-            execution_providers: ep_ids(&execution_providers),
-        })
+            execution_providers: Vec::new(),
+        };
+
+        // Check each stage on its own: an accelerator can run one correctly
+        // and the other wrongly (CoreML runs PP-OCR's detector right and its
+        // recognizer wrong), and each keeps whichever passes.
+        let check = session_cfg.accelerator_check;
+        let mut execution_providers = verify_execution_providers(
+            &RecognizerProbe(&model),
+            &model.session,
+            rec_eps,
+            check,
+            &spec.alias,
+            &model_path,
+            || Ok(build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session),
+        )
+        .await?;
+        if let (Some(det), Some((det_path, det_eps))) = (&model.detector, det_built) {
+            let det_eps = verify_execution_providers(
+                &DetectorProbe(&model),
+                &det.session,
+                det_eps,
+                check,
+                &spec.alias,
+                &det_path,
+                || Ok(build_session(&det_path, &spec.alias, &session_cfg.cpu_only())?.session),
+            )
+            .await?;
+            // Report what the whole pipeline runs on: a provider only one
+            // stage attached does not make the alias run on it.
+            execution_providers = common_execution_providers(&execution_providers, &det_eps);
+        }
+        model.execution_providers = ep_ids(&execution_providers);
+        Ok(model)
+    }
+}
+
+/// A short rendered text line, the fixed input both OCR probes run.
+const PROBE_LINE_PNG: &[u8] = include_bytes!("ocr_probe_line.png");
+
+fn probe_line(alias: &str) -> Result<DynamicImage> {
+    image::load_from_memory(PROBE_LINE_PNG).map_err(|e| RuntimeError::OnnxInvocationFailure {
+        alias: alias.to_string(),
+        cause: format!("OCR probe image: {e}"),
+    })
+}
+
+/// The recognizer's load-time probe: its raw output for one text line.
+struct RecognizerProbe<'a>(&'a OnnxOcrModel);
+
+#[async_trait]
+impl EpProbe for RecognizerProbe<'_> {
+    async fn probe(&self) -> Result<ProbeOutput> {
+        let line = probe_line(&self.0.alias)?;
+        let output = self
+            .0
+            .recognition_output(self.0.line_batch_tensor(&[&line]))?;
+        Ok(vec![output.iter().copied().collect()])
+    }
+}
+
+/// The detector's load-time probe: its probability map for a page holding
+/// one text line.
+struct DetectorProbe<'a>(&'a OnnxOcrModel);
+
+#[async_trait]
+impl EpProbe for DetectorProbe<'_> {
+    async fn probe(&self) -> Result<ProbeOutput> {
+        let Some(det) = &self.0.detector else {
+            return Ok(Vec::new());
+        };
+        let line = probe_line(&self.0.alias)?;
+        let (w, h) = line.dimensions();
+        let mut page = image::RgbImage::from_pixel(w + 64, h * 3, image::Rgb([255, 255, 255]));
+        image::imageops::overlay(&mut page, &line.to_rgb8(), 32, i64::from(h));
+        let (tensor, _, _) = preprocess_det(
+            &DynamicImage::ImageRgb8(page),
+            det.limit_side,
+            det.normalization,
+        );
+        let map = self.0.run_detector(det, tensor)?;
+        Ok(vec![map.iter().copied().collect()])
     }
 }
 
@@ -528,31 +609,7 @@ impl OnnxOcrModel {
         let mut out = vec![(String::new(), 0.0f32); lines.len()];
         for chunk in order.chunks(self.batch_size) {
             let batch: Vec<&DynamicImage> = chunk.iter().map(|&i| lines[i]).collect();
-            let width = batch
-                .iter()
-                .map(|img| {
-                    let (w, h) = img.dimensions();
-                    aspect_width(w, h, self.image_height, self.max_width)
-                })
-                .max()
-                .unwrap_or(self.min_width)
-                .max(self.min_width);
-            let mut tensor = pack_text_lines(&batch, self.image_height, width, self.normalization);
-            if self.fixed_batch && batch.len() < self.batch_size {
-                // A fixed-batch graph takes exactly `batch_size` rows: pad the
-                // last, short batch with blank rows and ignore their output.
-                let mut padded = ndarray::Array4::<f32>::zeros((
-                    self.batch_size,
-                    3,
-                    self.image_height as usize,
-                    width as usize,
-                ));
-                padded
-                    .slice_mut(ndarray::s![..batch.len(), .., .., ..])
-                    .assign(&tensor);
-                tensor = padded;
-            }
-            let decoded = self.run_recognition(tensor)?;
+            let decoded = self.run_recognition(self.line_batch_tensor(&batch))?;
             for (&i, result) in chunk.iter().zip(decoded) {
                 out[i] = result;
             }
@@ -560,9 +617,73 @@ impl OnnxOcrModel {
         Ok(out)
     }
 
+    /// One batch of text lines as the recognizer's input: as wide as the
+    /// widest line (within `min_width..=max_width`), and padded with blank
+    /// rows to `batch_size` when the graph fixes its batch.
+    fn line_batch_tensor(&self, batch: &[&DynamicImage]) -> ndarray::Array4<f32> {
+        let width = batch
+            .iter()
+            .map(|img| {
+                let (w, h) = img.dimensions();
+                aspect_width(w, h, self.image_height, self.max_width)
+            })
+            .max()
+            .unwrap_or(self.min_width)
+            .max(self.min_width);
+        let tensor = pack_text_lines(batch, self.image_height, width, self.normalization);
+        if !(self.fixed_batch && batch.len() < self.batch_size) {
+            return tensor;
+        }
+        // A fixed-batch graph takes exactly `batch_size` rows: pad the last,
+        // short batch with blank rows and ignore their output.
+        let mut padded = ndarray::Array4::<f32>::zeros((
+            self.batch_size,
+            3,
+            self.image_height as usize,
+            width as usize,
+        ));
+        padded
+            .slice_mut(ndarray::s![..batch.len(), .., .., ..])
+            .assign(&tensor);
+        padded
+    }
+
     /// Run the recognition session on a preprocessed batch, CTC-decoding each
     /// row into `(text, mean_confidence)`.
     fn run_recognition(&self, tensor: ndarray::Array4<f32>) -> Result<Vec<(String, f32)>> {
+        let arr3 = self.recognition_output(tensor)?;
+        let (batch, _time, n_classes) = (arr3.shape()[0], arr3.shape()[1], arr3.shape()[2]);
+        if self.blank_class >= n_classes {
+            return Err(RuntimeError::OnnxInvocationFailure {
+                alias: self.alias.clone(),
+                cause: format!(
+                    "blank_class={} out of range for {n_classes} classes",
+                    self.blank_class
+                ),
+            });
+        }
+
+        let has_space = resolve_space_class(
+            &self.alias,
+            self.chars.len(),
+            n_classes,
+            self.use_space_char,
+        )?;
+
+        let mut out = Vec::with_capacity(batch);
+        for b in 0..batch {
+            out.push(decode_ctc(
+                arr3.slice(ndarray::s![b, .., ..]),
+                &self.chars,
+                self.blank_class,
+                has_space,
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The recognizer's raw `[batch, time, classes]` output for `tensor`.
+    fn recognition_output(&self, tensor: ndarray::Array4<f32>) -> Result<ndarray::Array3<f32>> {
         let mut session = self
             .session
             .lock()
@@ -610,35 +731,7 @@ impl OnnxOcrModel {
                 cause: format!("OCR output expected rank 3 [batch, time, classes]: {e}"),
             })?
             .to_owned();
-
-        let (batch, _time, n_classes) = (arr3.shape()[0], arr3.shape()[1], arr3.shape()[2]);
-        if self.blank_class >= n_classes {
-            return Err(RuntimeError::OnnxInvocationFailure {
-                alias: self.alias.clone(),
-                cause: format!(
-                    "blank_class={} out of range for {n_classes} classes",
-                    self.blank_class
-                ),
-            });
-        }
-
-        let has_space = resolve_space_class(
-            &self.alias,
-            self.chars.len(),
-            n_classes,
-            self.use_space_char,
-        )?;
-
-        let mut out = Vec::with_capacity(batch);
-        for b in 0..batch {
-            out.push(decode_ctc(
-                arr3.slice(ndarray::s![b, .., ..]),
-                &self.chars,
-                self.blank_class,
-                has_space,
-            ));
-        }
-        Ok(out)
+        Ok(arr3)
     }
 }
 

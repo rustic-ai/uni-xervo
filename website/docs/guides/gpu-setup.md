@@ -99,20 +99,31 @@ bundled ORT and the candle Metal kernels are
 self-contained. macOS 13 (Ventura) or later is recommended for
 current CoreML feature coverage.
 
-### Models to keep off CoreML
+### Accelerator output is checked at load
 
+Some models run wrongly on CoreML with ORT's default NeuralNetwork format.
 The acceptance matrix (`scripts/acceptance.sh coreml`, results in
-`docs/TEST_MATRIX.md`) found two model families that CoreML runs wrongly.
-On `gpu-metal` builds, give these aliases `"execution_providers": ["cpu"]`:
+`docs/TEST_MATRIX.md`) found two: PP-OCR recognition returns wrong text
+with no error, and the ModernBERT ColBERT models fail on real input. These
+defects come from CoreML's model conversion, not from the GPU: they occur
+on CoreML's CPU compute unit too.
 
-- **PP-OCR recognition** (`ocr` aliases). CoreML returns wrong text and
-  reports no error.
-- **ModernBERT ColBERT models** (`lightonai/GTE-ModernColBERT-v1`,
-  `mixedbread-ai/mxbai-edge-colbert-v0-*`). They pass the load-time probe,
-  then fail at inference on real input.
+You don't need a per-model list for this. When a `local/onnx` session
+attaches an accelerator, the load runs a fixed probe input through it and
+through a CPU session of the same model, and keeps the accelerator only if
+the outputs agree. A session that disagrees falls back to CPU and logs a
+`warn` with the measured error. For OCR, each stage is checked on its own:
+on CoreML the detector stays accelerated and the recognizer moves to CPU,
+which reads correctly at about 160 ms a page against 430 ms on CPU alone.
+When CoreML or ONNX Runtime fixes a defect, the check passes and the model
+moves back to the accelerator with no configuration change.
 
-Every other model the matrix covers runs correctly on CoreML: BGE, Qwen3,
-the rerankers, SPLADE, BGE-M3 and kniv.
+`accelerator_check` controls it per alias: `"compare"` (the default),
+`"probe"` (only check that the probe runs) or `"off"`. See the
+[ONNX provider reference](../reference/providers/onnx.md#common-keys-all-tasks).
+Because the alias reports the providers that every one of its sessions
+uses, an OCR alias whose recognizer fell back reports `["cpu"]` even though
+its detector runs on CoreML.
 
 ## Verifying the GPU EP actually loaded
 

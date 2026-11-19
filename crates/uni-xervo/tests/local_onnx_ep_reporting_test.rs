@@ -95,7 +95,7 @@ async fn ocr_reports_cpu_with_and_without_a_detector() {
         "fixture/ocr",
         &[
             ("rec.onnx", Fixture("ctc_fixed_batch_1.onnx")),
-            ("det.onnx", Fixture("ctc_fixed_batch_1.onnx")),
+            ("det.onnx", Fixture("tiny_detector.onnx")),
             ("dict.txt", Text("a\nb\n")),
         ],
     );
@@ -108,7 +108,7 @@ async fn ocr_reports_cpu_with_and_without_a_detector() {
         "recognizer only"
     );
 
-    // The detector is only built here, never run, so any graph will do.
+    // A detector-shaped graph: the load-time check on an accelerator runs it.
     let mut with_det = base;
     with_det["det_onnx_path"] = json!("det.onnx");
     let rt = runtime(ModelTask::Ocr, "fixture/ocr", &cache, with_det).await;

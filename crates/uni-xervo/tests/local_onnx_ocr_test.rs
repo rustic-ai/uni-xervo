@@ -223,3 +223,25 @@ async fn ocr_alias_accepts_whole_number_floats() {
         result.err().map(|e| e.to_string()).unwrap_or_default()
     );
 }
+
+#[tokio::test]
+async fn accelerator_check_accepts_its_three_values_only() {
+    for (value, ok) in [
+        ("compare", true),
+        ("probe", true),
+        ("off", true),
+        ("maybe", false),
+    ] {
+        let opts = serde_json::json!({
+            "onnx_path": "model.onnx",
+            "char_dict_path": "char_dict.txt",
+            "accelerator_check": value
+        });
+        let result = ModelRuntime::builder()
+            .register_provider(LocalOnnxProvider::new())
+            .catalog(vec![ocr_spec("ocr/check", "some/repo", opts)])
+            .build()
+            .await;
+        assert_eq!(result.is_ok(), ok, "accelerator_check = {value}");
+    }
+}

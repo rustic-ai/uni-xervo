@@ -15,8 +15,12 @@ add a platform, run `scripts/acceptance.sh <target>` there and copy its
 | Platform | Target | Date | Commit | Suites passed | Failed | Skipped |
 |---|---|---|---|---|---|---|
 | macOS arm64 (Apple Silicon) | `cpu` | 2026-11-19 | `a76262a` | 11 | 0 | 1 (whisper.cpp: no cmake) |
-| macOS arm64 (Apple Silicon) | `coreml` | 2026-11-19 | `a76262a` + this script | 10 | **2** ([known CoreML issues](#known-issues)) | 1 (whisper.cpp: no cmake) |
+| macOS arm64 (Apple Silicon) | `coreml` | 2026-11-19 | `d837a30` + the accelerator check | 12 | 0 | 1 (whisper.cpp: no cmake) |
 | Linux x86_64 + NVIDIA | `cuda` | not yet run | | | | |
+
+The first `coreml` run, at `a76262a`, failed `multi-vector` (3 of 6) and
+`ocr` (1 of 3); see [Known issues](#known-issues) for what was wrong and how
+the accelerator check fixed it.
 
 Both runs used Rust 1.100.0 and the `ort` 2.0.0-rc.15 ONNX Runtime binding,
 with the models listed under [Models](#models).
@@ -45,18 +49,18 @@ is `["coreml", "cpu"]`.
 
 | Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
 |---|---|---|---|---|
-| `onnx-models` | pass | 11 / 0 / 0 | 19 s | 15.5 GiB |
-| `onnx-hf-download` | pass | 2 / 0 / 0 | 2 s | 1.9 GiB |
-| `rerank` | pass | 2 / 0 / 0 | 3 s | 0.6 GiB |
-| `sparse` | pass | 4 / 0 / 0 | 6 s | 11.0 GiB |
-| `multi-vector` | **fail** | 3 / 3 / 0 | 7 s | 11.0 GiB |
-| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 42 s | 19.4 GiB |
-| `ocr` | **fail** | 2 / 1 / 0 | 8 s | 3.4 GiB |
-| `pdf-to-ocr` | pass | 1 / 0 / 0 | 3 s | 0.9 GiB |
-| `nlp-kniv-v7` | pass | 2 / 0 / 0 | 3 s | 0.2 GiB |
+| `onnx-models` | pass | 11 / 0 / 0 | 27 s | 16.3 GiB |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 15 s | 2.1 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.7 GiB |
+| `sparse` | pass | 4 / 0 / 0 | 7 s | 9.8 GiB |
+| `multi-vector` (ModernBERT models fall back to CPU) | pass | 6 / 0 / 0 | 7 s | 12.0 GiB |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 36 s | 17.5 GiB |
+| `ocr` (detector on CoreML, recognizer on CPU) | pass | 3 / 0 / 0 | 8 s | 1.5 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 2 s | 0.9 GiB |
+| `nlp-kniv-v7` | pass | 2 / 0 / 0 | 4 s | 0.2 GiB |
 | `ep-reporting` (reports `["coreml", "cpu"]`) | pass | 9 / 0 / 0 | 1 s | 0.1 GiB |
 | `ep-skip-dynamic` | pass | 2 / 0 / 0 | 1 s | 0.1 GiB |
-| `coreml-inference` (embed and rerank on CoreML only) | pass | 2 / 0 / 0 | 2 s | 0.9 GiB |
+| `coreml-inference` (embed and rerank on CoreML only) | pass | 2 / 0 / 0 | 2 s | 1.1 GiB |
 | `whisper` | skipped: no cmake | | | |
 
 Times exclude the build. Peak RSS is for the whole test binary, whose tests
@@ -67,25 +71,46 @@ any one model, not a per-model figure.
 
 ### CoreML (`gpu-metal`)
 
-Both failures above are CoreML defects with ort's default CoreML model
-format (NeuralNetwork); the same models pass on CPU.
+The first `coreml` run (commit `a76262a`) found two CoreML defects with
+ORT's default CoreML model format (NeuralNetwork). The same models pass on
+CPU, and both defects also occur on CoreML's CPU compute unit, so they come
+from CoreML's model conversion, not the GPU. Seen on an M2 Max, macOS 27.2.1.
 
-- **PP-OCR recognition reads text wrong, without any error.** On the
-  `maintenance_log.png` fixture, 3 of 4 lines come back garbled, for example
-  `"PUm&UOEC(g"` for "Pump Station Maintenance Log". OCR runs no load-time
-  probe, and a probe would not catch it anyway, since nothing fails. On
-  `gpu-metal` builds, set `"execution_providers": ["cpu"]` on OCR aliases.
-- **ModernBERT ColBERT models fail at inference.** `lightonai/GTE-ModernColBERT-v1`,
-  `mixedbread-ai/mxbai-edge-colbert-v0-17m` and `-32m` attach CoreML, pass the
-  one-word load-time probe, then fail on real input with "Unable to compute
-  the prediction using a neural network model". Set
-  `"execution_providers": ["cpu"]` on those aliases. BERT-family ColBERT
-  (`answerai-colbert-small-v1`) and BGE-M3 work on CoreML.
+- **PP-OCR recognition read text wrong, without any error.** On the
+  `maintenance_log.png` fixture, 3 of 4 lines came back garbled, for example
+  `"PUm&UOEC(g"` for "Pump Station Maintenance Log".
+- **ModernBERT ColBERT models failed at inference.** `lightonai/GTE-ModernColBERT-v1`
+  and `mixedbread-ai/mxbai-edge-colbert-v0-17m` and `-32m` attached CoreML,
+  passed a one-word load-time probe, then failed on real input with "Unable
+  to compute the prediction using a neural network model".
 
-Switching CoreML to the ML Program format fixes both. It was tried and not
-adopted: on ML Program, BERT-family models (BGE small, the MiniLM reranker,
-SPLADE) abort the whole process inside Metal (`'mps.matmul' op contracting
-dimensions differ`). A crash cannot be caught or fallen back from.
+The load-time accelerator check (`accelerator_check`, on by default) now
+handles both with no per-model configuration. It runs a probe through the
+accelerated session and a CPU session and keeps the accelerator only when
+they agree:
+
+- the OCR recognizer disagrees and moves to CPU, while the detector stays on
+  CoreML;
+- the ModernBERT probe errors on CoreML, so those aliases load on CPU.
+
+Relative L2 error between CoreML and CPU on the probe, against the 0.2
+tolerance:
+
+| Model | Relative error | Result |
+|---|---|---|
+| BGE small and large, Qwen3, the rerankers, SPLADE, answerai ColBERT | 1e-7 to 6e-6 | stays on CoreML |
+| BGE-M3 (dense, sparse, ColBERT) | 0 | stays on CoreML |
+| PP-OCRv5 detector | 0.052 | stays on CoreML |
+| PP-OCRv5 recognizer | 0.66 | falls back to CPU |
+| ModernBERT ColBERT | probe errors | falls back to CPU |
+
+With that split, OCR reads the fixture correctly at about 160 ms a page,
+against 430 ms with both stages on CPU.
+
+Switching CoreML to the ML Program format was tried and not adopted: neither
+PP-OCR model builds on it, and BERT-family models (BGE small, the MiniLM
+reranker, SPLADE) abort the whole process inside Metal (`'mps.matmul' op
+contracting dimensions differ`). A crash cannot be caught or fallen back from.
 
 ## Models
 

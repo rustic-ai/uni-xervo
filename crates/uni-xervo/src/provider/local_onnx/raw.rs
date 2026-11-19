@@ -426,6 +426,8 @@ fn build_session(path: &Path, options: &LocalOnnxOptions, alias: &str) -> Result
         optimization_level: options.graph_optimization_level,
         intra_threads: options.intra_op_num_threads,
         inter_threads: options.inter_op_num_threads,
+        // Raw sessions run no load-time probe: their inputs are the caller's.
+        accelerator_check: crate::provider::onnx_ep::AcceleratorCheck::Off,
     };
     shared_build_session(path, alias, &cfg)
 }

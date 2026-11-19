@@ -57,8 +57,8 @@ use crate::provider::local_onnx::decoder_inputs::{
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    BuiltSession, EpProbe, SessionConfig, build_session, ep_ids, replace_session,
-    verify_execution_providers,
+    BuiltSession, EpProbe, PROBE_TEXTS, ProbeOutput, SessionConfig, build_session, ep_ids,
+    scores_in_input_order, verify_execution_providers,
 };
 use crate::traits::{RerankerModel, ScoredDoc};
 use ort::session::builder::GraphOptimizationLevel;
@@ -201,13 +201,15 @@ impl OnnxGenerativeReranker {
             model_id: spec.model_id.clone(),
             requested_eps,
         };
-        let eps = verify_execution_providers(&model, built_eps, &spec.alias, &model_path, |m| {
-            replace_session(
-                &m.session,
-                build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session,
-                &spec.alias,
-            )
-        })
+        let eps = verify_execution_providers(
+            &model,
+            &model.session,
+            built_eps,
+            session_cfg.accelerator_check,
+            &spec.alias,
+            &model_path,
+            || Ok(build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session),
+        )
         .await?;
         model.requested_eps = ep_ids(&eps);
         Ok(model)
@@ -272,8 +274,9 @@ impl crate::traits::ModelInfo for OnnxGenerativeReranker {
 
 #[async_trait]
 impl EpProbe for OnnxGenerativeReranker {
-    async fn probe(&self) -> Result<()> {
-        self.rerank("probe", &["probe"]).await.map(drop)
+    async fn probe(&self) -> Result<ProbeOutput> {
+        let docs = self.rerank("probe", &PROBE_TEXTS).await?;
+        Ok(scores_in_input_order(&docs))
     }
 }
 

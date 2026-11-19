@@ -130,6 +130,23 @@ def tiny_image_encoder() -> None:
     save_model("tiny_image_encoder.onnx", graph)
 
 
+def tiny_detector() -> None:
+    """A DBNet-shaped text detector: `x [1, 3, h, w]` → `[1, 1, h, w]`.
+
+    The output is the per-pixel channel mean passed through a sigmoid: a
+    probability map of the right shape for any page size, enough for the OCR
+    detection stage to load, run its load-time probe and report providers.
+    """
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, "h", "w"])
+    y = helper.make_tensor_value_info("prob", TensorProto.FLOAT, [1, 1, "h", "w"])
+    nodes = [
+        helper.make_node("ReduceMean", ["x"], ["mean"], axes=[1], keepdims=1),
+        helper.make_node("Sigmoid", ["mean"], ["prob"]),
+    ]
+    graph = helper.make_graph(nodes, "tiny_detector", [x], [y])
+    save_model("tiny_detector.onnx", graph)
+
+
 def tiny_tokenizer() -> None:
     """A whitespace word-level tokenizer over a five-word vocabulary."""
     import json
@@ -167,6 +184,7 @@ def main() -> None:
     ctc_fixed_batch(2)
     tiny_encoder()
     tiny_image_encoder()
+    tiny_detector()
     tiny_tokenizer()
     malformed()
 

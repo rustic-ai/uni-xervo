@@ -121,18 +121,114 @@ pub(crate) fn new_session_builder() -> Result<ort::Result<ort::session::builder:
 // ---------------------------------------------------------------------------
 
 /// One small, real inference that proves a freshly built model runs on the
-/// execution providers its session was built with.
+/// execution providers its session was built with, and runs them correctly.
 ///
 /// ORT's own fallback happens once, at session creation: each node goes to
 /// the first EP that *claims* it. An accelerator that accepts a node and then
 /// fails to execute it (CoreML on a zero-length KV cache, for one) is never
-/// retried on CPU — the inference call just errors. A probe moves that
-/// failure to load time, where [`verify_execution_providers`] can still fall
-/// back. It catches compile and op-support failures, not every shape: a model
-/// that runs the probe can still fail on an input the probe did not cover.
+/// retried on CPU — the inference call just errors. Worse, one can execute it
+/// and return wrong numbers: CoreML's NeuralNetwork conversion of PP-OCR's
+/// recognizer reads text wrong without any error. A probe returns the
+/// model's numeric output for a fixed input, so [`verify_execution_providers`]
+/// can both catch an error and compare the answer with CPU's. It covers the
+/// probe's input only: a model that agrees on it can still fail on an input
+/// it did not cover.
 #[async_trait::async_trait]
 pub(crate) trait EpProbe: Sync {
-    async fn probe(&self) -> Result<()>;
+    /// Run the fixed probe input and return the model's numeric outputs, in
+    /// a fixed order, for comparison across execution providers.
+    async fn probe(&self) -> Result<ProbeOutput>;
+}
+
+/// A probe's numeric outputs: one flattened tensor per output, in a fixed
+/// order.
+pub(crate) type ProbeOutput = Vec<Vec<f32>>;
+
+/// The text the encoder probes run: a batch of two inputs of different
+/// lengths, so a longer sequence and padding are both exercised. A single
+/// short word passed on models that then failed on real input.
+pub(crate) const PROBE_TEXTS: [&str; 2] = [
+    "The quick brown fox jumps over the lazy dog near the riverbank at dawn.",
+    "probe",
+];
+
+/// Scores in input order, for a reranker's probe output.
+pub(crate) fn scores_in_input_order(docs: &[crate::traits::ScoredDoc]) -> ProbeOutput {
+    let mut by_index: Vec<(usize, f32)> = docs.iter().map(|d| (d.index, d.score)).collect();
+    by_index.sort_by_key(|(i, _)| *i);
+    vec![by_index.into_iter().map(|(_, s)| s).collect()]
+}
+
+/// What the load-time check does when a session runs on an accelerator,
+/// from the alias's `accelerator_check` option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AcceleratorCheck {
+    /// Run the probe on the accelerator and on CPU, and keep CPU if the
+    /// outputs disagree (or the accelerator errors). The default.
+    #[default]
+    Compare,
+    /// Run the probe on the accelerator only, falling back to CPU if it
+    /// errors. Catches errors, not wrong answers.
+    Probe,
+    /// No load-time check.
+    Off,
+}
+
+impl AcceleratorCheck {
+    fn from_option(value: Option<&str>) -> Self {
+        match value {
+            Some("probe") => Self::Probe,
+            Some("off") => Self::Off,
+            // Option validation rejects anything else first.
+            _ => Self::Compare,
+        }
+    }
+}
+
+/// Largest relative error, `‖accel − cpu‖ / ‖cpu‖` per output tensor, at
+/// which an accelerator's output still counts as agreeing with CPU's.
+///
+/// Measured on CoreML (M2 Max, macOS 27.2.1; see `docs/TEST_MATRIX.md`):
+/// the text encoders and rerankers land between 1e-7 and 1e-5, BGE-M3 at 0,
+/// and PP-OCR's detector at 0.052 while finding the same boxes. The one model
+/// CoreML computes wrongly, PP-OCR's recognizer, lands at 0.66. 0.2 sits
+/// well clear of both.
+pub(crate) const PROBE_REL_TOL: f32 = 0.2;
+
+/// Whether an accelerator's probe output agrees with CPU's: `Err` carries the
+/// worst relative error (infinite when the outputs differ in shape or the
+/// accelerator produced a non-finite value CPU did not).
+pub(crate) fn outputs_agree(
+    accel: &ProbeOutput,
+    cpu: &ProbeOutput,
+) -> std::result::Result<f32, f32> {
+    if accel.len() != cpu.len() {
+        return Err(f32::INFINITY);
+    }
+    let mut worst = 0.0f32;
+    for (a, c) in accel.iter().zip(cpu) {
+        if a.len() != c.len() {
+            return Err(f32::INFINITY);
+        }
+        let mut diff = 0.0f64;
+        let mut norm = 0.0f64;
+        for (&x, &y) in a.iter().zip(c) {
+            if !x.is_finite() && y.is_finite() {
+                return Err(f32::INFINITY);
+            }
+            if x.is_finite() && y.is_finite() {
+                diff += f64::from(x - y).powi(2);
+                norm += f64::from(y).powi(2);
+            }
+        }
+        let rel = (diff.sqrt() / norm.sqrt().max(1e-6)) as f32;
+        worst = worst.max(rel);
+    }
+    if worst > PROBE_REL_TOL {
+        Err(worst)
+    } else {
+        Ok(worst)
+    }
 }
 
 /// Whether a session built on `eps` needs a probe: only when something other
@@ -141,86 +237,143 @@ pub(crate) fn needs_probe(eps: &[OnnxExecutionProvider]) -> bool {
     eps.iter().any(|ep| *ep != OnnxExecutionProvider::Cpu)
 }
 
-/// Probe `model` and, if its accelerator fails, fall back to CPU.
+/// Check the session in `slot` with `probe`, falling back to CPU if its
+/// accelerator errors or (under [`AcceleratorCheck::Compare`]) answers
+/// differently from CPU.
 ///
-/// `eps` is the session's effective list ([`effective_ep_list`]). Returns the
-/// list the model now runs on, for [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers):
+/// `eps` is the providers the session attached. Returns the list it runs on
+/// afterwards, for [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers):
 ///
-/// - no probe needed (CPU only) → `eps` unchanged;
-/// - probe passes → `eps` unchanged;
-/// - probe fails and `eps` contains `cpu` → `rebuild_on_cpu` swaps in a
-///   CPU-only session, the probe runs again on it, and the result is `[cpu]`.
-///   Logged at `warn`, naming the EPs that failed and why;
-/// - probe fails and `eps` has no `cpu` → a load error. A CPU-free list is
-///   the caller asking for that accelerator or nothing (the same contract as
-///   `error_on_failure()` in [`build_execution_providers`]), and failing here
-///   beats failing on the first query.
-pub(crate) async fn verify_execution_providers<M: EpProbe>(
-    model: &M,
+/// - CPU only, or `check` is `Off` → `eps`, untouched;
+/// - the probe errors → a CPU session from `build_cpu` replaces it, the
+///   probe runs again on CPU, and the result is `[cpu]`;
+/// - `Probe` and the probe runs → `eps`;
+/// - `Compare` → a CPU session from `build_cpu` runs the probe too. If the
+///   outputs agree within [`PROBE_REL_TOL`], the accelerator session goes back
+///   in and the CPU one is dropped, returning `eps`; if not, the CPU session
+///   stays and the result is `[cpu]`.
+///
+/// Each fallback is logged at `warn`. A list with no `cpu` entry is the
+/// caller asking for that accelerator or nothing (the same contract as
+/// `error_on_failure()` in [`build_execution_providers`]), so there a failed
+/// check is a load error instead of a fallback.
+///
+/// Generic over the session type so tests can drive it without ONNX Runtime.
+pub(crate) async fn verify_execution_providers<P: EpProbe, S: Send>(
+    probe: &P,
+    slot: &std::sync::Mutex<S>,
     eps: Vec<OnnxExecutionProvider>,
+    check: AcceleratorCheck,
     alias: &str,
     model_path: &std::path::Path,
-    rebuild_on_cpu: impl FnOnce(&M) -> Result<()> + Send,
+    build_cpu: impl FnOnce() -> Result<S> + Send,
 ) -> Result<Vec<OnnxExecutionProvider>> {
-    if !needs_probe(&eps) {
+    if check == AcceleratorCheck::Off || !needs_probe(&eps) {
         return Ok(eps);
     }
-    let Err(probe_err) = model.probe().await else {
-        return Ok(eps);
-    };
-    let failed: Vec<OnnxExecutionProvider> = eps
+    let accelerators: Vec<OnnxExecutionProvider> = eps
         .iter()
         .copied()
         .filter(|ep| *ep != OnnxExecutionProvider::Cpu)
         .collect();
-    if !eps.contains(&OnnxExecutionProvider::Cpu) {
-        return Err(RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: model_path.to_path_buf(),
-            cause: format!(
-                "load-time probe failed on execution providers [{}] and the list has no \
-                 \"cpu\" entry to fall back to: {probe_err}",
-                join_eps(&eps)
-            ),
-        });
+    let has_cpu = eps.contains(&OnnxExecutionProvider::Cpu);
+    let load_failure = |cause: String| RuntimeError::OnnxLoadFailure {
+        alias: alias.to_string(),
+        path: model_path.to_path_buf(),
+        cause,
+    };
+
+    let accel_out = match probe.probe().await {
+        Ok(out) => out,
+        Err(probe_err) => {
+            if !has_cpu {
+                return Err(load_failure(format!(
+                    "load-time probe failed on execution providers [{}] and the list has no \
+                     \"cpu\" entry to fall back to: {probe_err}",
+                    join_eps(&eps)
+                )));
+            }
+            tracing::warn!(
+                alias = %alias,
+                failed = %join_eps(&accelerators),
+                error = %probe_err,
+                "ONNX model failed its load-time probe on the requested execution providers; \
+                 falling back to CPU"
+            );
+            replace_session(slot, build_cpu()?, alias)?;
+            probe.probe().await.map_err(|e| {
+                load_failure(format!(
+                    "load-time probe failed on CPU after [{}] failed: {e}",
+                    join_eps(&accelerators)
+                ))
+            })?;
+            return Ok(vec![OnnxExecutionProvider::Cpu]);
+        }
+    };
+    if check == AcceleratorCheck::Probe {
+        return Ok(eps);
     }
-    tracing::warn!(
-        alias = %alias,
-        failed = %join_eps(&failed),
-        error = %probe_err,
-        "ONNX model failed its load-time probe on the requested execution providers; \
-         falling back to CPU"
-    );
-    rebuild_on_cpu(model)?;
-    model
-        .probe()
-        .await
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: model_path.to_path_buf(),
-            cause: format!(
-                "load-time probe failed on CPU after [{}] failed: {e}",
-                join_eps(&failed)
-            ),
-        })?;
-    Ok(vec![OnnxExecutionProvider::Cpu])
+
+    // Run the same probe on CPU. The CPU session is needed anyway if the
+    // outputs disagree, so build it in place and keep the accelerator's aside.
+    let accel_session = replace_session(slot, build_cpu()?, alias)?;
+    let cpu_out = match probe.probe().await {
+        Ok(out) => out,
+        Err(e) => {
+            // No reference to compare with: keep the accelerator, which did
+            // run the probe.
+            tracing::warn!(
+                alias = %alias,
+                error = %e,
+                "ONNX model's load-time probe failed on CPU; keeping the accelerator unchecked"
+            );
+            replace_session(slot, accel_session, alias)?;
+            return Ok(eps);
+        }
+    };
+    match outputs_agree(&accel_out, &cpu_out) {
+        Ok(rel) => {
+            tracing::debug!(
+                alias = %alias,
+                providers = %join_eps(&accelerators),
+                relative_error = rel,
+                "ONNX model's accelerator output agrees with CPU"
+            );
+            replace_session(slot, accel_session, alias)?;
+            Ok(eps)
+        }
+        Err(rel) => {
+            if !has_cpu {
+                return Err(load_failure(format!(
+                    "output on execution providers [{}] differs from CPU's (relative error \
+                     {rel:.3}, limit {PROBE_REL_TOL}) and the list has no \"cpu\" entry to \
+                     fall back to; set accelerator_check to \"probe\" to use it anyway",
+                    join_eps(&eps)
+                )));
+            }
+            tracing::warn!(
+                alias = %alias,
+                failed = %join_eps(&accelerators),
+                relative_error = rel,
+                limit = PROBE_REL_TOL,
+                "ONNX model's output on the requested execution providers differs from CPU's; \
+                 using CPU"
+            );
+            drop(accel_session);
+            Ok(vec![OnnxExecutionProvider::Cpu])
+        }
+    }
 }
 
-/// Replace the session behind `slot`, for a [`verify_execution_providers`]
-/// `rebuild_on_cpu` callback.
-pub(crate) fn replace_session(
-    slot: &std::sync::Mutex<ort::session::Session>,
-    session: ort::session::Session,
-    alias: &str,
-) -> Result<()> {
+/// Put `session` in `slot` and return the one it replaces.
+pub(crate) fn replace_session<S>(slot: &std::sync::Mutex<S>, session: S, alias: &str) -> Result<S> {
     let mut guard = slot
         .lock()
         .map_err(|e| RuntimeError::OnnxInvocationFailure {
             alias: alias.to_string(),
             cause: format!("Session lock poisoned: {e}"),
         })?;
-    *guard = session;
-    Ok(())
+    Ok(std::mem::replace(&mut *guard, session))
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +393,8 @@ pub(crate) struct SessionConfig {
     pub(crate) optimization_level: ort::session::builder::GraphOptimizationLevel,
     pub(crate) intra_threads: Option<usize>,
     pub(crate) inter_threads: Option<usize>,
+    /// The load-time check on an accelerator session (`accelerator_check`).
+    pub(crate) accelerator_check: AcceleratorCheck,
 }
 
 impl SessionConfig {
@@ -277,6 +432,11 @@ impl SessionConfig {
             optimization_level,
             intra_threads: threads("intra_op_num_threads"),
             inter_threads: threads("inter_op_num_threads"),
+            accelerator_check: AcceleratorCheck::from_option(
+                options
+                    .get("accelerator_check")
+                    .and_then(serde_json::Value::as_str),
+            ),
         })
     }
 
@@ -1333,106 +1493,255 @@ mod tests {
     mod probe_fallback {
         use super::*;
         use std::path::Path;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        /// Stand-in for a loaded model: its probe fails until "rebuilt on
-        /// CPU" when `accel_broken`, and always when `cpu_broken`.
-        #[derive(Default)]
+        /// Which session the fake slot holds.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Fake {
+            Accel,
+            Cpu,
+        }
+
+        /// Stand-in for a loaded model. Its probe reads which session is in
+        /// `slot` and answers with that provider's output, or fails.
         struct FakeModel {
-            accel_broken: bool,
-            cpu_broken: bool,
-            on_cpu: AtomicBool,
+            slot: Mutex<Fake>,
+            accel: std::result::Result<Vec<f32>, ()>,
+            cpu: std::result::Result<Vec<f32>, ()>,
             probes: AtomicUsize,
-            rebuilds: AtomicUsize,
+            cpu_builds: AtomicUsize,
+        }
+
+        impl FakeModel {
+            fn new(
+                accel: std::result::Result<Vec<f32>, ()>,
+                cpu: std::result::Result<Vec<f32>, ()>,
+            ) -> Self {
+                Self {
+                    slot: Mutex::new(Fake::Accel),
+                    accel,
+                    cpu,
+                    probes: AtomicUsize::new(0),
+                    cpu_builds: AtomicUsize::new(0),
+                }
+            }
+
+            fn in_slot(&self) -> Fake {
+                *self.slot.lock().unwrap()
+            }
         }
 
         #[async_trait::async_trait]
         impl EpProbe for FakeModel {
-            async fn probe(&self) -> Result<()> {
+            async fn probe(&self) -> Result<ProbeOutput> {
                 self.probes.fetch_add(1, Ordering::SeqCst);
-                let on_cpu = self.on_cpu.load(Ordering::SeqCst);
-                if (on_cpu && self.cpu_broken) || (!on_cpu && self.accel_broken) {
-                    return Err(RuntimeError::Config("probe exploded".into()));
-                }
-                Ok(())
+                let answer = match self.in_slot() {
+                    Fake::Accel => &self.accel,
+                    Fake::Cpu => &self.cpu,
+                };
+                answer
+                    .clone()
+                    .map(|v| vec![v])
+                    .map_err(|()| RuntimeError::Config("probe exploded".into()))
             }
         }
 
         async fn verify(
             model: &FakeModel,
             eps: Vec<OnnxExecutionProvider>,
+            check: AcceleratorCheck,
         ) -> Result<Vec<OnnxExecutionProvider>> {
-            verify_execution_providers(model, eps, "embed/test", Path::new("m.onnx"), |m| {
-                m.rebuilds.fetch_add(1, Ordering::SeqCst);
-                m.on_cpu.store(true, Ordering::SeqCst);
-                Ok(())
-            })
+            verify_execution_providers(
+                model,
+                &model.slot,
+                eps,
+                check,
+                "embed/test",
+                Path::new("m.onnx"),
+                || {
+                    model.cpu_builds.fetch_add(1, Ordering::SeqCst);
+                    Ok(Fake::Cpu)
+                },
+            )
             .await
         }
 
+        use AcceleratorCheck::{Compare, Off, Probe};
         use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+
+        const GOOD: [f32; 3] = [0.6, -0.2, 0.75];
 
         #[tokio::test]
         async fn cpu_only_list_skips_the_probe() {
-            let model = FakeModel {
-                accel_broken: true,
-                ..Default::default()
-            };
-            assert_eq!(verify(&model, vec![Cpu]).await.unwrap(), vec![Cpu]);
+            let model = FakeModel::new(Err(()), Err(()));
+            assert_eq!(verify(&model, vec![Cpu], Compare).await.unwrap(), vec![Cpu]);
+            assert_eq!(model.probes.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                model.cpu_builds.load(Ordering::SeqCst),
+                0,
+                "no second session"
+            );
+        }
+
+        #[tokio::test]
+        async fn agreeing_accelerator_is_kept_and_its_session_restored() {
+            // fp16-like noise: well inside the tolerance.
+            let noisy: Vec<f32> = GOOD.iter().map(|x| x * 1.001).collect();
+            let model = FakeModel::new(Ok(noisy), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Compare).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
+            assert_eq!(
+                model.in_slot(),
+                Fake::Accel,
+                "accelerator session back in place"
+            );
+            assert_eq!(
+                model.probes.load(Ordering::SeqCst),
+                2,
+                "accelerator, then CPU"
+            );
+            assert_eq!(model.cpu_builds.load(Ordering::SeqCst), 1);
+        }
+
+        /// The CoreML PP-OCR case: runs without error, answers wrongly.
+        #[tokio::test]
+        async fn disagreeing_accelerator_is_replaced_by_cpu() {
+            let model = FakeModel::new(Ok(vec![0.1, 0.9, -0.4]), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Compare).await.unwrap(),
+                vec![Cpu]
+            );
+            assert_eq!(model.in_slot(), Fake::Cpu, "CPU session kept");
+        }
+
+        #[tokio::test]
+        async fn disagreement_on_a_cpu_free_list_is_a_load_error() {
+            let model = FakeModel::new(Ok(vec![0.1, 0.9, -0.4]), Ok(GOOD.to_vec()));
+            let err = verify(&model, vec![CoreMl], Compare).await.unwrap_err();
+            assert!(
+                matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
+                    if cause.contains("differs from CPU") && cause.contains("accelerator_check")),
+                "unexpected error: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn probe_mode_checks_errors_only() {
+            let model = FakeModel::new(Ok(vec![0.1, 0.9, -0.4]), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Probe).await.unwrap(),
+                vec![CoreMl, Cpu],
+                "a wrong answer passes when only errors are checked"
+            );
+            assert_eq!(model.cpu_builds.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn off_mode_checks_nothing() {
+            let model = FakeModel::new(Err(()), Err(()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Off).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
             assert_eq!(model.probes.load(Ordering::SeqCst), 0);
         }
 
         #[tokio::test]
-        async fn working_accelerator_is_kept() {
-            let model = FakeModel::default();
-            assert_eq!(
-                verify(&model, vec![CoreMl, Cpu]).await.unwrap(),
-                vec![CoreMl, Cpu]
-            );
-            assert_eq!(model.probes.load(Ordering::SeqCst), 1);
-            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 0);
-        }
-
-        #[tokio::test]
         async fn failing_accelerator_falls_back_to_cpu() {
-            let model = FakeModel {
-                accel_broken: true,
-                ..Default::default()
-            };
-            assert_eq!(verify(&model, vec![Cuda, Cpu]).await.unwrap(), vec![Cpu]);
-            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 1);
+            let model = FakeModel::new(Err(()), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![Cuda, Cpu], Compare).await.unwrap(),
+                vec![Cpu]
+            );
+            assert_eq!(model.in_slot(), Fake::Cpu);
             // Once on the accelerator, once more on the rebuilt CPU session.
             assert_eq!(model.probes.load(Ordering::SeqCst), 2);
         }
 
         #[tokio::test]
         async fn cpu_free_list_fails_the_load_instead_of_falling_back() {
-            let model = FakeModel {
-                accel_broken: true,
-                ..Default::default()
-            };
-            let err = verify(&model, vec![CoreMl]).await.unwrap_err();
+            let model = FakeModel::new(Err(()), Ok(GOOD.to_vec()));
+            let err = verify(&model, vec![CoreMl], Compare).await.unwrap_err();
             assert!(
                 matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
                     if cause.contains("no \"cpu\" entry") && cause.contains("probe exploded")),
                 "unexpected error: {err:?}"
             );
-            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 0);
+            assert_eq!(model.cpu_builds.load(Ordering::SeqCst), 0);
         }
 
         #[tokio::test]
         async fn failure_on_cpu_after_fallback_is_a_load_error() {
-            let model = FakeModel {
-                accel_broken: true,
-                cpu_broken: true,
-                ..Default::default()
-            };
-            let err = verify(&model, vec![CoreMl, Cpu]).await.unwrap_err();
+            let model = FakeModel::new(Err(()), Err(()));
+            let err = verify(&model, vec![CoreMl, Cpu], Compare)
+                .await
+                .unwrap_err();
             assert!(
                 matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
                     if cause.contains("failed on CPU after [coreml] failed")),
                 "unexpected error: {err:?}"
             );
+        }
+
+        /// No CPU reference to compare with: keep the accelerator, which ran.
+        #[tokio::test]
+        async fn a_cpu_reference_that_fails_keeps_the_accelerator() {
+            let model = FakeModel::new(Ok(GOOD.to_vec()), Err(()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Compare).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
+            assert_eq!(model.in_slot(), Fake::Accel);
+        }
+    }
+
+    mod output_comparison {
+        use super::*;
+
+        #[test]
+        fn identical_and_fp16_noise_agree() {
+            let a = vec![vec![1.0, -2.0, 3.0], vec![0.5]];
+            assert_eq!(outputs_agree(&a, &a), Ok(0.0));
+            let noisy: ProbeOutput = a
+                .iter()
+                .map(|t| t.iter().map(|x| x * (1.0 + 1e-3)).collect())
+                .collect();
+            assert!(outputs_agree(&noisy, &a).is_ok());
+        }
+
+        #[test]
+        fn large_or_structural_differences_disagree() {
+            let cpu = vec![vec![1.0, -2.0, 3.0]];
+            let off_by_30pct: ProbeOutput = vec![cpu[0].iter().map(|x| x * 1.3).collect()];
+            let rel = outputs_agree(&off_by_30pct, &cpu).unwrap_err();
+            assert!((rel - 0.3).abs() < 1e-3, "{rel}");
+            // The CoreML PP-OCR detector's measured 5% drift still agrees.
+            let off_by_5pct: ProbeOutput = vec![cpu[0].iter().map(|x| x * 1.05).collect()];
+            assert!(outputs_agree(&off_by_5pct, &cpu).is_ok());
+            assert!(
+                outputs_agree(&vec![vec![3.0, 1.0, -2.0]], &cpu).is_err(),
+                "garbled"
+            );
+            assert_eq!(
+                outputs_agree(&vec![vec![1.0, -2.0]], &cpu),
+                Err(f32::INFINITY)
+            );
+            assert_eq!(outputs_agree(&vec![], &cpu), Err(f32::INFINITY));
+            assert_eq!(
+                outputs_agree(&vec![vec![1.0, f32::NAN, 3.0]], &cpu),
+                Err(f32::INFINITY),
+                "a NaN only the accelerator produced"
+            );
+        }
+
+        #[test]
+        fn an_all_zero_reference_does_not_divide_by_zero() {
+            let zeros = vec![vec![0.0; 4]];
+            assert!(outputs_agree(&zeros, &zeros).is_ok());
+            assert!(outputs_agree(&vec![vec![1.0; 4]], &zeros).is_err());
         }
     }
 

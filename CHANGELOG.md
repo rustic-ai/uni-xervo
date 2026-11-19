@@ -42,12 +42,34 @@ silently ignored will now run with them. No function signature changed.
     revisions the run used.
   - A manual GitHub Actions workflow (Acceptance) runs the CPU target.
   - `docs/TEST_MATRIX.md` holds the first results (macOS arm64, CPU and
-    CoreML), which found two CoreML defects now documented in the GPU setup
-    guide: PP-OCR recognition reads text wrong without error, and ModernBERT
-    ColBERT models fail at inference.
+    CoreML), which found two CoreML defects: PP-OCR recognition reads text
+    wrong without error, and ModernBERT ColBERT models fail at inference.
+    The accelerator check below handles both.
   - `scripts/test-integration.sh` no longer passes `--all-features`, which
     needed a CUDA toolchain to build. It runs the remote-provider tests and
     points to the matrix for the local ones.
+
+- **`local/onnx` checks an accelerator's output against CPU at load.** When
+  a session attaches CUDA, CoreML or DirectML, the load runs a fixed probe
+  input through it and through a CPU session of the same model, and keeps
+  the accelerator only if the outputs agree (relative L2 error at most 0.2
+  per output). A session that disagrees falls back to CPU with a `warn`
+  giving the error, or fails to load when its `execution_providers` has no
+  `cpu`. This replaces the per-model advice for the CoreML defects the
+  matrix found: PP-OCR's recognizer now moves to CPU on its own while the
+  detector stays on CoreML (correct text, about 2.7x faster than CPU alone),
+  and the ModernBERT ColBERT models fall back to CPU instead of failing at
+  inference. Models that run correctly stay accelerated; when CoreML or ONNX
+  Runtime fixes a defect, the model moves back with no configuration change.
+  - The new `accelerator_check` option (`"compare"`, the default; `"probe"`,
+    which only checks the probe runs, as before; `"off"`) controls it per
+    alias. CPU-only sessions never run it.
+  - It covers dense, sparse, multi-vector and hybrid embedding, both
+    rerankers and both OCR stages, each OCR stage checked separately.
+  - Encoder probes now use a two-input batch of different lengths, which
+    exercises padding.
+  - The cost is one extra CPU session build and one forward pass per
+    accelerated session at load.
 
 - **`ModelRuntime` can be inspected without loading anything.** A readiness
   report or capability listing no longer needs its own copy of the catalog

@@ -6,6 +6,16 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "accelerator_check": {
+      "type": "string",
+      "enum": [
+        "compare",
+        "probe",
+        "off"
+      ],
+      "default": "compare",
+      "description": "Load-time check of a session built on an accelerator: compare its output on a fixed probe input with CPU's and use CPU if they differ (compare), only fall back if the accelerator errors (probe), or no check (off). Applies only when an accelerator is in the provider list."
+    },
     "artifact": {
       "type": "string",
       "description": "Relative path to the primary .onnx file inside a Hugging Face snapshot."
@@ -251,6 +261,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -299,6 +312,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -340,6 +356,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -367,6 +386,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -531,6 +553,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -579,6 +604,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -660,6 +688,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -705,6 +736,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -753,6 +787,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },
@@ -804,6 +841,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "accelerator_check": {
+          "$ref": "#/properties/accelerator_check"
+        },
         "artifact": {
           "$ref": "#/properties/artifact"
         },

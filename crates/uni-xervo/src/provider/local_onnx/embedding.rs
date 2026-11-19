@@ -33,7 +33,7 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    BuiltSession, EpProbe, SessionConfig, build_session, ep_ids, replace_session,
+    BuiltSession, EpProbe, PROBE_TEXTS, ProbeOutput, SessionConfig, build_session, ep_ids,
     verify_execution_providers,
 };
 use crate::traits::{EmbedResult, EmbeddingModel};
@@ -283,13 +283,15 @@ impl OnnxEmbedder {
             past_kv_schemas,
             active_eps: Vec::new(),
         };
-        let eps = verify_execution_providers(&model, built_eps, &spec.alias, &model_path, |m| {
-            replace_session(
-                &m.session,
-                build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session,
-                &spec.alias,
-            )
-        })
+        let eps = verify_execution_providers(
+            &model,
+            &model.session,
+            built_eps,
+            session_cfg.accelerator_check,
+            &spec.alias,
+            &model_path,
+            || Ok(build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session),
+        )
         .await?;
         model.active_eps = ep_ids(&eps);
         Ok(model)
@@ -356,8 +358,8 @@ impl crate::traits::ModelInfo for OnnxEmbedder {
 
 #[async_trait]
 impl EpProbe for OnnxEmbedder {
-    async fn probe(&self) -> Result<()> {
-        self.embed(&["probe"]).await.map(drop)
+    async fn probe(&self) -> Result<ProbeOutput> {
+        Ok(self.embed(&PROBE_TEXTS).await?.vectors)
     }
 }
 

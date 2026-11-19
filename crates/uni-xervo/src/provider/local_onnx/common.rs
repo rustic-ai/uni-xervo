@@ -30,7 +30,7 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    BuiltSession, EpProbe, SessionConfig, build_session, ep_ids, replace_session,
+    BuiltSession, EpProbe, PROBE_TEXTS, ProbeOutput, SessionConfig, build_session, ep_ids,
     verify_execution_providers,
 };
 use ort::session::builder::GraphOptimizationLevel;
@@ -75,8 +75,14 @@ pub(super) struct EncoderModel {
 
 #[async_trait::async_trait]
 impl EpProbe for EncoderModel {
-    async fn probe(&self) -> Result<()> {
-        self.run(&["probe"]).map(drop)
+    async fn probe(&self) -> Result<ProbeOutput> {
+        let run = self.run(&PROBE_TEXTS)?;
+        Ok(run
+            .output_order
+            .iter()
+            .filter_map(|name| run.outputs.get(name))
+            .map(|t| t.iter().copied().collect())
+            .collect())
     }
 }
 
@@ -223,13 +229,15 @@ impl EncoderModel {
             past_kv_schemas,
             execution_providers: Vec::new(),
         };
-        let eps = verify_execution_providers(&model, built_eps, &spec.alias, &model_path, |m| {
-            replace_session(
-                &m.session,
-                build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session,
-                &spec.alias,
-            )
-        })
+        let eps = verify_execution_providers(
+            &model,
+            &model.session,
+            built_eps,
+            session_cfg.accelerator_check,
+            &spec.alias,
+            &model_path,
+            || Ok(build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session),
+        )
         .await?;
         model.execution_providers = ep_ids(&eps);
         Ok(model)

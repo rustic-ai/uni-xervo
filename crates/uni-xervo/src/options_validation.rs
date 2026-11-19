@@ -73,6 +73,7 @@ const fn task(task: ModelTask, keys: &'static [&'static str]) -> TaskOptions {
 }
 
 const ONNX_COMMON: &[&str] = &[
+    "accelerator_check",
     "artifact",
     "max_batch_size",
     "execution_providers",
@@ -1081,6 +1082,15 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
                 )));
             }
         }
+    }
+
+    if let Some(value) = map.get("accelerator_check")
+        && !matches!(value.as_str(), Some("compare" | "probe" | "off"))
+    {
+        return Err(RuntimeError::Config(format!(
+            "Option 'accelerator_check' for provider '{}' must be one of: compare, probe, off",
+            provider_id
+        )));
     }
 
     if let Some(execution_providers) = map.get("execution_providers") {
