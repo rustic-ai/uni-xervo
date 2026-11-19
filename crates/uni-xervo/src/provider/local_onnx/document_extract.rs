@@ -60,6 +60,8 @@ struct OnnxDocumentExtractor {
     style: DocStyle,
 }
 
+/// Reports no execution providers: it builds no ORT session until an ONNX
+/// export of a target document model exists (see `extract`).
 impl crate::traits::ModelInfo for OnnxDocumentExtractor {
     fn model_id(&self) -> &str {
         &self.model_id

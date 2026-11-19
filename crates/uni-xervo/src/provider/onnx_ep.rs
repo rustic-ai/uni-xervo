@@ -223,6 +223,141 @@ pub(crate) fn replace_session(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Session building
+// ---------------------------------------------------------------------------
+
+/// How to build an ORT session for one alias, read once from its options.
+///
+/// Every `local/onnx` task builds its sessions through [`build_session`] with
+/// one of these, so the shared session options (`execution_providers`,
+/// `graph_optimization_level`, `intra_op_num_threads`,
+/// `inter_op_num_threads`) mean the same thing for every task.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionConfig {
+    /// The caller's list, or `None` for the feature-aware default.
+    pub(crate) execution_providers: Option<Vec<OnnxExecutionProvider>>,
+    pub(crate) optimization_level: ort::session::builder::GraphOptimizationLevel,
+    pub(crate) intra_threads: Option<usize>,
+    pub(crate) inter_threads: Option<usize>,
+}
+
+impl SessionConfig {
+    /// Read the shared session options from an alias's options.
+    ///
+    /// `default_level` applies when `graph_optimization_level` is unset, so
+    /// each task keeps the level it has always used: `Level3` for most,
+    /// `Level1` (`"basic"`) for `raw`.
+    pub(crate) fn from_options(
+        options: &serde_json::Value,
+        default_level: ort::session::builder::GraphOptimizationLevel,
+    ) -> Result<Self> {
+        use ort::session::builder::GraphOptimizationLevel as Level;
+        let execution_providers =
+            parse_execution_providers_option(options.get("execution_providers"))?;
+        let optimization_level = match options
+            .get("graph_optimization_level")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("disable") => Level::Disable,
+            Some("basic") => Level::Level1,
+            Some("extended") => Level::Level2,
+            Some("all") => Level::All,
+            // Option validation rejects any other string first.
+            _ => default_level,
+        };
+        let threads = |key: &str| {
+            options
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .map(|v| v as usize)
+        };
+        Ok(Self {
+            execution_providers,
+            optimization_level,
+            intra_threads: threads("intra_op_num_threads"),
+            inter_threads: threads("inter_op_num_threads"),
+        })
+    }
+
+    /// The same settings on CPU only: the rebuild [`verify_execution_providers`]
+    /// falls back to.
+    pub(crate) fn cpu_only(&self) -> Self {
+        Self {
+            execution_providers: Some(vec![OnnxExecutionProvider::Cpu]),
+            ..self.clone()
+        }
+    }
+
+    /// Fail fast on an execution-provider list this build cannot honour,
+    /// before any download or session build. The same check
+    /// [`build_session`] makes, moved to the start of a load.
+    pub(crate) fn check_execution_providers(&self, alias: &str) -> Result<()> {
+        build_execution_providers(self.execution_providers.as_deref(), alias, "local/onnx")
+            .map(|_| ())
+    }
+
+    /// The execution providers a session built from this config uses:
+    /// the requested list minus any whose feature is not compiled in.
+    pub(crate) fn effective_execution_providers(&self) -> Vec<OnnxExecutionProvider> {
+        effective_ep_list(self.execution_providers.as_deref())
+    }
+}
+
+/// A built session and the execution providers it was built with.
+pub(crate) struct BuiltSession {
+    pub(crate) session: ort::session::Session,
+    /// What [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
+    /// reports for a model running on this session, until a load-time probe
+    /// falls back to CPU.
+    pub(crate) execution_providers: Vec<OnnxExecutionProvider>,
+}
+
+/// Build one ORT session from `path` with `cfg`.
+///
+/// The one place a `local/onnx` session is built, so every task honours the
+/// same options and reports the execution providers it ended up with.
+pub(crate) fn build_session(
+    path: &std::path::Path,
+    alias: &str,
+    cfg: &SessionConfig,
+) -> Result<BuiltSession> {
+    let load_err = |e: &dyn std::fmt::Display| RuntimeError::OnnxLoadFailure {
+        alias: alias.to_string(),
+        path: path.to_path_buf(),
+        cause: e.to_string(),
+    };
+    let mut builder = new_session_builder()?.map_err(|e| load_err(&e))?;
+    builder = builder
+        .with_optimization_level(cfg.optimization_level)
+        .map_err(|e| load_err(&e))?;
+    if let Some(n) = cfg.intra_threads {
+        builder = builder.with_intra_threads(n).map_err(|e| load_err(&e))?;
+    }
+    if let Some(n) = cfg.inter_threads {
+        builder = builder.with_inter_threads(n).map_err(|e| load_err(&e))?;
+    }
+    let dispatch =
+        build_execution_providers(cfg.execution_providers.as_deref(), alias, "local/onnx")?;
+    builder = builder
+        .with_execution_providers(dispatch)
+        .map_err(|e| load_err(&e))?;
+    let session = builder.commit_from_file(path).map_err(|e| load_err(&e))?;
+    Ok(BuiltSession {
+        session,
+        execution_providers: cfg.effective_execution_providers(),
+    })
+}
+
+/// The providers in `a` that are also in `b`, in `a`'s order: what a model
+/// built from several sessions runs on end to end.
+pub(crate) fn common_execution_providers(
+    a: &[OnnxExecutionProvider],
+    b: &[OnnxExecutionProvider],
+) -> Vec<OnnxExecutionProvider> {
+    a.iter().copied().filter(|ep| b.contains(ep)).collect()
+}
+
 /// EP ids as strings, the shape [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers) reports.
 pub(crate) fn ep_ids(eps: &[OnnxExecutionProvider]) -> Vec<String> {
     eps.iter().map(|ep| ep.as_str().to_string()).collect()
@@ -760,6 +895,105 @@ pub(crate) fn preflight_ort_dylib(alias: &str, provider_label: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod session_config {
+        use super::*;
+        use ort::session::builder::GraphOptimizationLevel as Level;
+        use serde_json::json;
+
+        fn level_of(options: serde_json::Value, default: Level) -> String {
+            format!(
+                "{:?}",
+                SessionConfig::from_options(&options, default)
+                    .unwrap()
+                    .optimization_level
+            )
+        }
+
+        #[test]
+        fn optimization_level_maps_every_value() {
+            let d = Level::Level3;
+            for (value, expected) in [
+                ("disable", Level::Disable),
+                ("basic", Level::Level1),
+                ("extended", Level::Level2),
+                ("all", Level::All),
+            ] {
+                assert_eq!(
+                    level_of(json!({ "graph_optimization_level": value }), d),
+                    format!("{expected:?}"),
+                    "{value}"
+                );
+            }
+        }
+
+        #[test]
+        fn unset_level_keeps_the_task_default() {
+            assert_eq!(
+                level_of(json!({}), Level::Level3),
+                format!("{:?}", Level::Level3)
+            );
+            assert_eq!(
+                level_of(json!(null), Level::Level1),
+                format!("{:?}", Level::Level1)
+            );
+        }
+
+        #[test]
+        fn threads_and_providers_are_read() {
+            let cfg = SessionConfig::from_options(
+                &json!({
+                    "intra_op_num_threads": 4,
+                    "inter_op_num_threads": 2,
+                    "execution_providers": ["cpu"],
+                }),
+                Level::Level3,
+            )
+            .unwrap();
+            assert_eq!(cfg.intra_threads, Some(4));
+            assert_eq!(cfg.inter_threads, Some(2));
+            assert_eq!(
+                cfg.execution_providers,
+                Some(vec![OnnxExecutionProvider::Cpu])
+            );
+            let unset = SessionConfig::from_options(&json!({}), Level::Level3).unwrap();
+            assert_eq!(unset.intra_threads, None);
+            assert_eq!(unset.execution_providers, None);
+        }
+
+        #[test]
+        fn cpu_only_keeps_everything_but_the_providers() {
+            let cfg = SessionConfig::from_options(
+                &json!({ "graph_optimization_level": "basic", "intra_op_num_threads": 3 }),
+                Level::Level3,
+            )
+            .unwrap();
+            let cpu = cfg.cpu_only();
+            assert_eq!(
+                cpu.execution_providers,
+                Some(vec![OnnxExecutionProvider::Cpu])
+            );
+            assert_eq!(cpu.intra_threads, Some(3));
+            assert_eq!(
+                format!("{:?}", cpu.optimization_level),
+                format!("{:?}", Level::Level1)
+            );
+            assert_eq!(
+                cpu.effective_execution_providers(),
+                [OnnxExecutionProvider::Cpu]
+            );
+        }
+
+        #[test]
+        fn common_providers_keep_the_first_lists_order() {
+            use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+            assert_eq!(
+                common_execution_providers(&[Cuda, CoreMl, Cpu], &[Cpu, Cuda]),
+                [Cuda, Cpu]
+            );
+            assert!(common_execution_providers(&[Cuda], &[Cpu]).is_empty());
+        }
+    }
 
     mod probe_fallback {
         use super::*;

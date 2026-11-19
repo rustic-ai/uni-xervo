@@ -14,8 +14,8 @@ use crate::hf::HfModelRepo;
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, effective_ep_list, new_session_builder,
-    parse_execution_providers_option,
+    BuiltSession, OnnxExecutionProvider, SessionConfig, build_execution_providers,
+    build_session as shared_build_session, ep_ids, parse_execution_providers_option,
 };
 use crate::traits::{DimSize, RawTensorModel, TensorBatch, TensorDtype, TensorSpec, TensorValue};
 use async_trait::async_trait;
@@ -32,8 +32,8 @@ pub(super) struct LoadedOnnxSession {
     input_signature: Vec<TensorSpec>,
     output_signature: Vec<TensorSpec>,
     batch_support: BatchDimSupport,
-    /// Resolved execution-provider list as stable string ids
-    /// (e.g. `["cuda", "cpu"]`). See
+    /// The execution providers the session was built with, as stable string
+    /// ids (e.g. `["cuda", "cpu"]`). See
     /// [`crate::traits::ModelInfo::active_execution_providers`].
     requested_eps: Vec<String>,
 }
@@ -98,11 +98,6 @@ pub(super) async fn load_raw(
     }
 
     let options = LocalOnnxOptions::from_value(&spec.options)?;
-    let requested_eps: Vec<String> = effective_ep_list(options.execution_providers.as_deref())
-        .into_iter()
-        .map(|ep| ep.as_str().to_string())
-        .collect();
-
     // Validate the requested EP list FIRST (before preflight or I/O).
     // Misconfigurations (e.g. CUDA requested without `gpu-cuda` enabled)
     // surface as a precise "feature not enabled" error rather than a
@@ -123,7 +118,11 @@ pub(super) async fn load_raw(
     preflight_ort_dylib(&spec.alias, "local/onnx")?;
 
     let path = resolve_model_path(base_dir, spec, &options).await?;
-    let session = build_session(&path, &options, &spec.alias)?;
+    let BuiltSession {
+        session,
+        execution_providers,
+    } = build_session(&path, &options, &spec.alias)?;
+    let requested_eps = ep_ids(&execution_providers);
     let (input_signature, output_signature) = extract_signatures(&session, &spec.alias)?;
     let batch_support = detect_batch_support(&input_signature, options.max_batch_size);
 
@@ -421,58 +420,14 @@ fn select_onnx_artifact(
     }
 }
 
-fn build_session(path: &Path, options: &LocalOnnxOptions, alias: &str) -> Result<Session> {
-    let mut builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: alias.to_string(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
-
-    builder = builder
-        .with_optimization_level(options.graph_optimization_level)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-
-    if let Some(v) = options.inter_op_num_threads {
-        builder = builder
-            .with_inter_threads(v)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: alias.to_string(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-    }
-
-    if let Some(v) = options.intra_op_num_threads {
-        builder = builder
-            .with_intra_threads(v)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: alias.to_string(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-    }
-
-    let execution_providers =
-        build_execution_providers(options.execution_providers.as_deref(), alias, "local/onnx")?;
-    builder = builder
-        .with_execution_providers(execution_providers)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-
-    builder
-        .commit_from_file(path)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })
+fn build_session(path: &Path, options: &LocalOnnxOptions, alias: &str) -> Result<BuiltSession> {
+    let cfg = SessionConfig {
+        execution_providers: options.execution_providers.clone(),
+        optimization_level: options.graph_optimization_level,
+        intra_threads: options.intra_op_num_threads,
+        inter_threads: options.inter_op_num_threads,
+    };
+    shared_build_session(path, alias, &cfg)
 }
 
 fn extract_signatures(

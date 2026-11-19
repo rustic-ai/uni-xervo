@@ -35,8 +35,7 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, new_session_builder,
-    parse_execution_providers_option,
+    BuiltSession, SessionConfig, build_session, common_execution_providers, ep_ids,
 };
 use crate::traits::{ImageInput, OcrBlock, OcrModel, OcrResult};
 use image::{DynamicImage, GenericImageView};
@@ -289,15 +288,16 @@ struct OnnxOcrModel {
     output_name: Option<String>,
     /// When present, `recognize()` runs detect → crop → recognize → order.
     detector: Option<Detector>,
+    /// Reported by [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers).
+    execution_providers: Vec<String>,
 }
 
 impl OnnxOcrModel {
     async fn load(spec: &ModelAliasSpec) -> Result<Self> {
         let cfg = OcrConfig::resolve(spec)?;
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
+        session_cfg.check_execution_providers(&spec.alias)?;
         #[cfg(feature = "provider-onnx-dynamic")]
         preflight_ort_dylib(&spec.alias, "local/onnx")?;
 
@@ -321,7 +321,10 @@ impl OnnxOcrModel {
         );
 
         let chars = read_char_dict(&char_dict_path)?;
-        let session = build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: rec_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
 
         // Catch a dictionary that doesn't match the model at load, when the
         // graph fixes its class count; otherwise each run checks it.
@@ -350,6 +353,7 @@ impl OnnxOcrModel {
             None => (cfg.image_width, cfg.max_image_width),
         };
 
+        let mut execution_providers = rec_eps;
         let detector = match &cfg.detector {
             Some(dc) => {
                 info!(alias = %spec.alias, det_onnx = %dc.onnx_path, "Loading ONNX text detector");
@@ -361,9 +365,13 @@ impl OnnxOcrModel {
                     &dc.onnx_path,
                 )
                 .await?;
-                let det_session = build_session(&det_path, spec, execution_providers.as_deref())?;
+                let det = build_session(&det_path, &spec.alias, &session_cfg)?;
+                // Report what the whole pipeline runs on: a provider only one
+                // stage attached does not make the alias run on it.
+                execution_providers =
+                    common_execution_providers(&execution_providers, &det.execution_providers);
                 Some(Detector {
-                    session: Mutex::new(det_session),
+                    session: Mutex::new(det.session),
                     limit_side: dc.limit_side,
                     params: dc.params,
                     normalization: dc.normalization,
@@ -389,6 +397,7 @@ impl OnnxOcrModel {
             use_space_char: cfg.use_space_char,
             output_name: cfg.output_name,
             detector,
+            execution_providers: ep_ids(&execution_providers),
         })
     }
 }
@@ -396,6 +405,12 @@ impl OnnxOcrModel {
 impl crate::traits::ModelInfo for OnnxOcrModel {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    /// The providers the recognizer runs on; with a detector, only those both
+    /// stages run on, in the recognizer's order.
+    fn active_execution_providers(&self) -> Vec<String> {
+        self.execution_providers.clone()
     }
 }
 
@@ -904,41 +919,6 @@ async fn download_ocr_artifacts(
                 cause: format!("Could not download char dict '{char_dict_path}': {e}"),
             })?;
     Ok((onnx_file, dict_file))
-}
-
-fn build_session(
-    path: &Path,
-    spec: &ModelAliasSpec,
-    execution_providers: Option<&[OnnxExecutionProvider]>,
-) -> Result<Session> {
-    let builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: spec.alias.clone(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
-    let mut builder = builder
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-    let dispatch = build_execution_providers(execution_providers, &spec.alias, "local/onnx")?;
-    builder =
-        builder
-            .with_execution_providers(dispatch)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: spec.alias.clone(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-    builder
-        .commit_from_file(path)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })
 }
 
 #[cfg(test)]

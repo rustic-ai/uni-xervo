@@ -698,3 +698,17 @@ async fn narrow_task_requests_agree_with_the_full_analysis() {
         );
     }
 }
+
+/// The `plain` graph is built at load, so the model reports the execution
+/// providers it runs on before any request (rustic-ai/uni-xervo#65). On a
+/// CPU-only build that is `["cpu"]`.
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_execution_providers_from_load() {
+    require_expensive!();
+    let runtime = runtime().await;
+    let model = runtime.nlp_model("nlp/kniv-v7").await.expect("resolve nlp");
+    let eps = model.active_execution_providers();
+    assert!(eps.contains(&"cpu".to_string()), "{eps:?}");
+    #[cfg(not(any(feature = "gpu-cuda", feature = "gpu-metal")))]
+    assert_eq!(eps, ["cpu"]);
+}

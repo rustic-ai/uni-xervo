@@ -23,16 +23,17 @@ use super::decoder_inputs::{InputRole, InputSchema};
 /// Tokenizer output for one batch: `(input_ids, attention_mask, token_type_ids?)`.
 type TokenizedBatch = (Array2<i64>, Array2<i64>, Option<Array2<i64>>);
 use super::decoder_inputs::build_input_schema;
-use super::embedding::{build_session, download_model_files};
+use super::embedding::download_model_files;
 use crate::api::ModelAliasSpec;
 use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list,
-    parse_execution_providers_option, replace_session, verify_execution_providers,
+    BuiltSession, EpProbe, SessionConfig, build_session, ep_ids, replace_session,
+    verify_execution_providers,
 };
+use ort::session::builder::GraphOptimizationLevel;
 
 /// File layout and tokenization shape needed to load an [`EncoderModel`].
 pub(super) struct EncoderSpec {
@@ -68,6 +69,8 @@ pub(super) struct EncoderModel {
     /// Declared name of the `position_ids` input, if the model has one.
     position_ids_name: Option<String>,
     past_kv_schemas: Vec<InputSchema>,
+    /// Set from the load-time probe's result; see [`Self::execution_providers`].
+    execution_providers: Vec<String>,
 }
 
 #[async_trait::async_trait]
@@ -143,13 +146,12 @@ impl EncoderModel {
     /// Returns an error if execution-provider validation, download, tokenizer
     /// parsing, or session construction fails.
     pub(super) async fn load(spec: &ModelAliasSpec, enc: EncoderSpec) -> Result<Self> {
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
 
         // Validate the requested EP list before any I/O so misconfigurations
         // fail fast with a precise error (mirrors the dense embedder).
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        session_cfg.check_execution_providers(&spec.alias)?;
 
         #[cfg(feature = "provider-onnx-dynamic")]
         preflight_ort_dylib(&spec.alias, "local/onnx")?;
@@ -182,7 +184,10 @@ impl EncoderModel {
             }
         })?;
 
-        let session = build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: built_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
 
         // Discover the actual input tensor names from the session so non-standard
         // exports (renamed mask / token-type inputs) feed correctly, and so we
@@ -206,7 +211,7 @@ impl EncoderModel {
             .cloned()
             .collect();
 
-        let model = Self {
+        let mut model = Self {
             session: Mutex::new(session),
             tokenizer,
             alias: spec.alias.clone(),
@@ -216,22 +221,24 @@ impl EncoderModel {
             token_type_name,
             position_ids_name,
             past_kv_schemas,
+            execution_providers: Vec::new(),
         };
-        verify_execution_providers(
-            &model,
-            effective_ep_list(execution_providers.as_deref()),
-            &spec.alias,
-            &model_path,
-            |m| {
-                replace_session(
-                    &m.session,
-                    build_session(&model_path, spec, Some(&[OnnxExecutionProvider::Cpu]))?,
-                    &spec.alias,
-                )
-            },
-        )
+        let eps = verify_execution_providers(&model, built_eps, &spec.alias, &model_path, |m| {
+            replace_session(
+                &m.session,
+                build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session,
+                &spec.alias,
+            )
+        })
         .await?;
+        model.execution_providers = ep_ids(&eps);
         Ok(model)
+    }
+
+    /// The execution providers the encoder runs on, after any CPU fallback,
+    /// for its task wrappers' [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers).
+    pub(super) fn execution_providers(&self) -> Vec<String> {
+        self.execution_providers.clone()
     }
 
     /// Encode a batch of texts into padded `[batch, seq]` i64 tensors.

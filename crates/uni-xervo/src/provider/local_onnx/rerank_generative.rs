@@ -57,10 +57,11 @@ use crate::provider::local_onnx::decoder_inputs::{
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list, ep_ids,
-    parse_execution_providers_option, replace_session, verify_execution_providers,
+    BuiltSession, EpProbe, SessionConfig, build_session, ep_ids, replace_session,
+    verify_execution_providers,
 };
 use crate::traits::{RerankerModel, ScoredDoc};
+use ort::session::builder::GraphOptimizationLevel;
 
 /// Default ONNX file path within the HF repo. Qwen3-Reranker repos
 /// publish `onnx/model_q4.onnx` (4-bit weight-only quantized) and
@@ -139,16 +140,16 @@ impl OnnxGenerativeReranker {
             .unwrap_or(DEFAULT_INSTRUCTION)
             .to_string();
 
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
-        let requested_eps: Vec<String> = effective_ep_list(execution_providers.as_deref())
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
+        let requested_eps: Vec<String> = session_cfg
+            .effective_execution_providers()
             .into_iter()
             .map(|ep| ep.as_str().to_string())
             .collect();
 
         // Same fail-fast EP validation as the cross-encoder path.
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        session_cfg.check_execution_providers(&spec.alias)?;
 
         #[cfg(feature = "provider-onnx-dynamic")]
         preflight_ort_dylib(&spec.alias, "local/onnx")?;
@@ -181,8 +182,10 @@ impl OnnxGenerativeReranker {
         let yes_token_id = lookup_token_id(&tokenizer, "yes", &spec.alias)?;
         let no_token_id = lookup_token_id(&tokenizer, "no", &spec.alias)?;
 
-        let session =
-            super::rerank::build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: built_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
 
         let input_schema = build_input_schema(&session, &spec.alias)?;
 
@@ -198,23 +201,13 @@ impl OnnxGenerativeReranker {
             model_id: spec.model_id.clone(),
             requested_eps,
         };
-        let eps = verify_execution_providers(
-            &model,
-            effective_ep_list(execution_providers.as_deref()),
-            &spec.alias,
-            &model_path,
-            |m| {
-                replace_session(
-                    &m.session,
-                    super::rerank::build_session(
-                        &model_path,
-                        spec,
-                        Some(&[OnnxExecutionProvider::Cpu]),
-                    )?,
-                    &spec.alias,
-                )
-            },
-        )
+        let eps = verify_execution_providers(&model, built_eps, &spec.alias, &model_path, |m| {
+            replace_session(
+                &m.session,
+                build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session,
+                &spec.alias,
+            )
+        })
         .await?;
         model.requested_eps = ep_ids(&eps);
         Ok(model)

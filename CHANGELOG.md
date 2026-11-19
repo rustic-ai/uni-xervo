@@ -43,6 +43,23 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Every `local/onnx` model reports its execution providers.**
+  `active_execution_providers()` returned an empty list for NLP (kniv v1 and
+  v7), OCR, image embedding, and the sparse, multi-vector and hybrid
+  embedders, so a caller who asked for CUDA could not see what those sessions
+  were built with. All seven session builders are now one, which returns the
+  list it built with, and every model reports it. OCR with a detector reports
+  only the providers both stages run on; a kniv v7 model builds its `plain`
+  graph at load, rather than on the first request, and reports that graph's.
+  `local/onnx` document extraction still reports none: it runs no session
+  yet. (#65)
+- **`graph_optimization_level`, `intra_op_num_threads` and
+  `inter_op_num_threads` take effect for every `local/onnx` task.** They were
+  accepted for all tasks but read only by `raw` and kniv v7: embedding,
+  reranking, kniv v1, OCR, image embedding and the sparse, multi-vector and
+  hybrid embedders ignored them. Unset, each task keeps the level it used
+  before. kniv v7 also read `"all"` as ORT's layout level; it now means
+  `All`, as it already did for `raw`.
 - **The shipped JSON Schemas match runtime validation again (#62).** The
   catalog schema accepted only 4 of the 14 tasks, so any sparse, hybrid, NLP,
   OCR, transcription or document-extraction catalog failed it. The ONNX schema

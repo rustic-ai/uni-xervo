@@ -50,8 +50,8 @@ Options are validated per task (unknown keys are rejected with a precise `Runtim
 - `artifact` (string) — explicit `.onnx` filename within an HF repo (auto-detected if a single match exists).
 - `max_batch_size` (integer)
 - `execution_providers` — array of EP identifiers. Accepted by option validation: `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Other identifiers (e.g. `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"`) are rejected at catalog load with `RuntimeError::Config`. Defaults to a feature-aware list: `["cuda", "cpu"]` under `gpu-cuda`, `["coreml", "cpu"]` under `gpu-metal`, `["cpu"]` otherwise. Vendor EPs are never default — opt in explicitly. Selecting `"cuda"`/`"coreml"` still requires the matching GPU feature (or a `provider-onnx-dynamic` build pointed at a vendor ORT library via `ORT_DYLIB_PATH`). **Per-spec**, so a single catalog can mix GPU and CPU placement on a `gpu-cuda` build (e.g. embedder on `["cpu"]`, reranker on `["cuda", "cpu"]`) — see the [mixed-catalog recipe](../../guides/onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog). No other provider takes a per-spec device option: `local/candle` places from the build features alone, and `remote/llamacpp` runs inference in the server process, where the device is a `llama-server` flag. If a requested EP fails to initialize (missing cuDNN, wrong CUDA major version, etc.), ORT silently falls through to the next EP in the list — see [GPU setup → verifying the GPU EP actually loaded](../../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) for how to detect this. See `docs/migrations/0.9.0-feature-surface.md` for vendor-build setup.
-- `graph_optimization_level` — `"disable" | "basic" | "extended" | "all"`.
-- `inter_op_num_threads`, `intra_op_num_threads` (integers)
+- `graph_optimization_level` — `"disable" | "basic" | "extended" | "all"`. Applies to every task; when unset, `raw` uses `"basic"` and every other task ORT's layout level (between `"extended"` and `"all"`).
+- `inter_op_num_threads`, `intra_op_num_threads` (integers) — ORT thread counts, for every task.
 - `cache_dir` (string) — overrides `UNI_CACHE_DIR` and the default `.uni_cache/onnx-…/` location.
 
 ### Embed-only keys
@@ -180,7 +180,7 @@ registration — before any download. v7 takes no `max_seq_len`: its window is
 UltraBERT, 512 for DeBERTa).
 
 `graph_optimization_level`, `intra_op_num_threads` and `inter_op_num_threads`
-are honoured on the v7 path. Set `intra_op_num_threads` when the model runs
+apply here as on every task. Set `intra_op_num_threads` when the model runs
 alongside an embedder, or ONNX Runtime takes every core.
 
 On GPUs use `"variant": "fp16"`: the INT8 graphs use dynamic per-channel

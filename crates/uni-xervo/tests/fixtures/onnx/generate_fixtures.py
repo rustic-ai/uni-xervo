@@ -97,6 +97,61 @@ def ctc_fixed_batch(batch: int) -> None:
     save_model(f"ctc_fixed_batch_{batch}.onnx", graph)
 
 
+def tiny_encoder() -> None:
+    """A text encoder with the usual BERT-style inputs and a 4-wide output.
+
+    `input_ids`, `attention_mask` `[batch, seq]` int64 → `last_hidden_state`
+    `[batch, seq, 4]`: each token's id, cast to float, in all four channels.
+    Enough for the encoder tasks to load and run on CPU.
+    """
+    ids = helper.make_tensor_value_info("input_ids", TensorProto.INT64, ["batch", "seq"])
+    mask = helper.make_tensor_value_info("attention_mask", TensorProto.INT64, ["batch", "seq"])
+    out = helper.make_tensor_value_info(
+        "last_hidden_state", TensorProto.FLOAT, ["batch", "seq", 4]
+    )
+    ones = numpy_helper.from_array(np.ones((1, 1, 4), dtype=np.float32), name="ones")
+    axes = numpy_helper.from_array(np.array([2], dtype=np.int64), name="axes")
+    nodes = [
+        helper.make_node("Mul", ["input_ids", "attention_mask"], ["masked"]),
+        helper.make_node("Cast", ["masked"], ["as_float"], to=TensorProto.FLOAT),
+        helper.make_node("Unsqueeze", ["as_float", "axes"], ["col"]),
+        helper.make_node("Mul", ["col", "ones"], ["last_hidden_state"]),
+    ]
+    graph = helper.make_graph(nodes, "tiny_encoder", [ids, mask], [out], [ones, axes])
+    save_model("tiny_encoder.onnx", graph)
+
+
+def tiny_image_encoder() -> None:
+    """An image encoder: `pixel_values [batch, 3, h, w]` → `[batch, 3]` channel means."""
+    x = helper.make_tensor_value_info("pixel_values", TensorProto.FLOAT, ["batch", 3, "h", "w"])
+    y = helper.make_tensor_value_info("image_embeds", TensorProto.FLOAT, ["batch", 3])
+    node = helper.make_node("ReduceMean", ["pixel_values"], ["image_embeds"], axes=[2, 3], keepdims=0)
+    graph = helper.make_graph([node], "tiny_image_encoder", [x], [y])
+    save_model("tiny_image_encoder.onnx", graph)
+
+
+def tiny_tokenizer() -> None:
+    """A whitespace word-level tokenizer over a five-word vocabulary."""
+    import json
+
+    tokenizer = {
+        "version": "1.0",
+        "truncation": None,
+        "padding": None,
+        "added_tokens": [],
+        "normalizer": None,
+        "pre_tokenizer": {"type": "Whitespace"},
+        "post_processor": None,
+        "decoder": None,
+        "model": {
+            "type": "WordLevel",
+            "vocab": {"[UNK]": 0, "hello": 1, "world": 2, "a": 3, "b": 4},
+            "unk_token": "[UNK]",
+        },
+    }
+    (ROOT / "tiny_tokenizer.json").write_text(json.dumps(tokenizer, indent=2) + "\n", encoding="utf-8")
+
+
 def malformed() -> None:
     (ROOT / "malformed.onnx").write_text("not a valid onnx model\n", encoding="utf-8")
 
@@ -110,6 +165,9 @@ def main() -> None:
     static_batch_8()
     ctc_fixed_batch(1)
     ctc_fixed_batch(2)
+    tiny_encoder()
+    tiny_image_encoder()
+    tiny_tokenizer()
     malformed()
 
 

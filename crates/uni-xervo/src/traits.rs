@@ -108,7 +108,15 @@ pub trait ModelInfo: Send + Sync {
     fn model_id(&self) -> &str;
 
     /// Names of the ONNX Runtime execution providers this session was built
-    /// with, in priority order. Empty for remote and non-ONNX models.
+    /// with, in priority order. Every `local/onnx` model reports it once
+    /// loaded; it is empty for remote and non-ONNX models, and for
+    /// `local/onnx` document extraction, which runs no ORT session yet.
+    ///
+    /// When the load-time probe falls back to CPU, this is `["cpu"]`. A model
+    /// built from several sessions reports the providers all of them use:
+    /// OCR with a detector lists only those both stages run on, and a kniv v7
+    /// model starts from its `plain` graph and narrows if a graph built later
+    /// runs on fewer.
     ///
     /// This is the *requested* list minus any entry whose backing feature
     /// isn't compiled into this binary — so a list that reads `["cpu"]`
