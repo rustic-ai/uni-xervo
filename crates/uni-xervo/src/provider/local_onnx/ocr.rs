@@ -229,9 +229,9 @@ fn resolve_space_class(
     Ok(has_space)
 }
 
-/// Fixed `(height, width)` of the recognizer's `[N, 3, H, W]` input, where
-/// the graph fixes them (`None` for a dynamic dimension).
-fn rec_input_dims(session: &Session) -> (Option<u32>, Option<u32>) {
+/// Fixed `(batch, height, width)` of the recognizer's `[N, 3, H, W]` input,
+/// where the graph fixes them (`None` for a dynamic dimension).
+fn rec_input_dims(session: &Session) -> (Option<u32>, Option<u32>, Option<u32>) {
     let dim = |i: usize| {
         session
             .inputs()
@@ -241,7 +241,7 @@ fn rec_input_dims(session: &Session) -> (Option<u32>, Option<u32>) {
             .and_then(|shape| u32::try_from(shape[i]).ok())
             .filter(|&d| d > 0)
     };
-    (dim(2), dim(3))
+    (dim(0), dim(2), dim(3))
 }
 
 /// The recognizer output's class count, when the graph fixes it.
@@ -279,6 +279,10 @@ struct OnnxOcrModel {
     /// Widest a line is resized to. Equals `min_width` when the graph fixes
     /// its input width.
     max_width: u32,
+    /// Lines per session run: [`REC_BATCH_SIZE`], or the graph's fixed batch.
+    batch_size: usize,
+    /// Whether the graph fixes its batch, so every run must be `batch_size` rows.
+    fixed_batch: bool,
     normalization: Normalization,
     blank_class: usize,
     use_space_char: Option<bool>,
@@ -324,7 +328,7 @@ impl OnnxOcrModel {
         if let Some(n_classes) = rec_output_classes(&session, cfg.output_name.as_deref()) {
             resolve_space_class(&spec.alias, chars.len(), n_classes, cfg.use_space_char)?;
         }
-        let (fixed_h, fixed_w) = rec_input_dims(&session);
+        let (fixed_batch, fixed_h, fixed_w) = rec_input_dims(&session);
         if let Some(h) = fixed_h
             && h != cfg.image_height
         {
@@ -335,6 +339,12 @@ impl OnnxOcrModel {
         }
         // A graph with a fixed input width can't take wider lines: resize to
         // it with the aspect ratio kept, padding on the right.
+        // A graph exported with a fixed batch (paddle2onnx's `[1, 3, 48, 320]`
+        // is common) takes that many lines per run, never more.
+        let batch_size = match fixed_batch {
+            Some(n) => n as usize,
+            None => REC_BATCH_SIZE,
+        };
         let (min_width, max_width) = match fixed_w {
             Some(w) => (w, w),
             None => (cfg.image_width, cfg.max_image_width),
@@ -372,6 +382,8 @@ impl OnnxOcrModel {
             image_height: cfg.image_height,
             min_width,
             max_width,
+            batch_size,
+            fixed_batch: fixed_batch.is_some(),
             normalization: cfg.normalization,
             blank_class: cfg.blank_class,
             use_space_char: cfg.use_space_char,
@@ -486,7 +498,7 @@ impl OnnxOcrModel {
     /// Recognize text-line images, returning `(text, confidence)` in input
     /// order.
     ///
-    /// Lines are sorted by aspect ratio and run [`REC_BATCH_SIZE`] at a time,
+    /// Lines are sorted by aspect ratio and run `batch_size` at a time,
     /// each batch as wide as its widest line (within `min_width..=max_width`),
     /// so every line keeps its aspect ratio and short lines in a batch are
     /// right-padded rather than stretched.
@@ -499,7 +511,7 @@ impl OnnxOcrModel {
         order.sort_by(|&a, &b| ratio(a).total_cmp(&ratio(b)));
 
         let mut out = vec![(String::new(), 0.0f32); lines.len()];
-        for chunk in order.chunks(REC_BATCH_SIZE) {
+        for chunk in order.chunks(self.batch_size) {
             let batch: Vec<&DynamicImage> = chunk.iter().map(|&i| lines[i]).collect();
             let width = batch
                 .iter()
@@ -510,7 +522,21 @@ impl OnnxOcrModel {
                 .max()
                 .unwrap_or(self.min_width)
                 .max(self.min_width);
-            let tensor = pack_text_lines(&batch, self.image_height, width, self.normalization);
+            let mut tensor = pack_text_lines(&batch, self.image_height, width, self.normalization);
+            if self.fixed_batch && batch.len() < self.batch_size {
+                // A fixed-batch graph takes exactly `batch_size` rows: pad the
+                // last, short batch with blank rows and ignore their output.
+                let mut padded = ndarray::Array4::<f32>::zeros((
+                    self.batch_size,
+                    3,
+                    self.image_height as usize,
+                    width as usize,
+                ));
+                padded
+                    .slice_mut(ndarray::s![..batch.len(), .., .., ..])
+                    .assign(&tensor);
+                tensor = padded;
+            }
             let decoded = self.run_recognition(tensor)?;
             for (&i, result) in chunk.iter().zip(decoded) {
                 out[i] = result;
