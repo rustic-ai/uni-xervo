@@ -48,17 +48,20 @@ All notable changes to this project are documented in this file.
   download through `hf-hub` recreates the file's snapshot links, and ONNX
   Runtime resolving `model.onnx.data` through one of them at that moment saw
   a path outside the model's directory. BGE-M3's dense, sparse and hybrid
-  aliases loading together hit it about one time in three. Building a
-  session now holds a shared lock on the repository, which downloads take
-  exclusively, so the two never overlap, in one process or across several.
+  aliases loading together hit it about one time in three. A file resolved
+  once is now reused for the rest of the process without asking `hf-hub`
+  again, so loads in one process no longer relink each other's files; and
+  building a session holds a shared lock on the repository, which downloads
+  take exclusively, so a download in another process waits for it. That wait
+  is capped at 60 seconds, after which the session builds unlocked.
 - **Every `local/onnx` model reports its execution providers.**
   `active_execution_providers()` returned an empty list for NLP (kniv v1 and
   v7), OCR, image embedding, and the sparse, multi-vector and hybrid
   embedders, so a caller who asked for CUDA could not see what those sessions
   were built with. All seven session builders are now one, which returns the
-  list it built with, and every model reports it. OCR with a detector reports
-  only the providers both stages run on; a kniv v7 model builds its `plain`
-  graph at load, rather than on the first request, and reports that graph's.
+  list it built with, and every model reports it. A kniv v7 model now builds
+  its `plain` graph at load, rather than on the first request, so a session
+  that fails to build fails `nlp_model()` instead of the first `analyze`.
   `local/onnx` document extraction still reports none: it runs no session
   yet. (#65)
 - **`graph_optimization_level`, `intra_op_num_threads` and

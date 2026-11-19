@@ -38,6 +38,7 @@
 //! - a returned path outside `snapshots/<commit>/` is retried once, which
 //!   covers a writer that does not take the lock (another `hf-hub` client).
 
+use std::collections::HashMap;
 use std::fs::{File, TryLockError};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -244,14 +245,30 @@ impl HfModelRepo {
                 return Ok(cached);
             }
         }
-        self.locked_download(&format!("'{filename}'"), SnapshotDepth::File, || {
-            self.repo
-                .download_file()
-                .filename(filename)
-                .maybe_revision(self.revision.clone())
-                .send()
-        })
-        .await
+        let key = ResolvedKey {
+            repo_dir: self.repo_dir.clone(),
+            revision: self
+                .revision
+                .clone()
+                .unwrap_or_else(|| DEFAULT_REVISION.into()),
+            filename: filename.to_string(),
+        };
+        if let Some(path) = resolved_get(&key)
+            && is_snapshot_path(&self.repo_dir, &path, SnapshotDepth::File)
+        {
+            return Ok(path);
+        }
+        let path = self
+            .locked_download(&format!("'{filename}'"), SnapshotDepth::File, || {
+                self.repo
+                    .download_file()
+                    .filename(filename)
+                    .maybe_revision(self.revision.clone())
+                    .send()
+            })
+            .await?;
+        resolved_insert(key, path.clone());
+        Ok(path)
     }
 
     /// Download every file in the repository and return the snapshot
@@ -309,13 +326,53 @@ fn is_commit_hash(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// A file this process has already resolved: the repository folder, the
+/// revision asked for, and the file within it.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ResolvedKey {
+    repo_dir: PathBuf,
+    revision: String,
+    filename: String,
+}
+
+/// Files resolved in this process, reused rather than asked of `hf-hub`
+/// again.
+///
+/// Every cached download through `hf-hub` revalidates against the Hub and
+/// deletes and recreates the file's snapshot links. Within one process that
+/// buys nothing (a branch does not need checking again for each alias that
+/// shares a file) and the relinking races any session reading the same
+/// files: BGE-M3's dense, sparse and hybrid aliases loading together saw
+/// ONNX Runtime reject `model.onnx.data` as "escaping" the model directory.
+/// A new process still checks the Hub on its first load of each file.
+static RESOLVED: std::sync::LazyLock<std::sync::Mutex<HashMap<ResolvedKey, PathBuf>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn resolved_get(key: &ResolvedKey) -> Option<PathBuf> {
+    RESOLVED.lock().ok()?.get(key).cloned()
+}
+
+fn resolved_insert(key: ResolvedKey, path: PathBuf) {
+    if let Ok(mut map) = RESOLVED.lock() {
+        map.insert(key, path);
+    }
+}
+
+/// Forget every file resolved so far, so a test can exercise `hf-hub` again.
+#[cfg(test)]
+fn forget_resolved() {
+    if let Ok(mut map) = RESOLVED.lock() {
+        map.clear();
+    }
+}
+
 /// The lock file for the repository cached at `<cache_dir>/<folder>`.
 fn repo_lock_path(cache_dir: &Path, folder: &str) -> PathBuf {
     cache_dir.join(".locks").join(folder).join("uni-xervo.lock")
 }
 
 /// Hold a **shared** lock on the repository a cached file belongs to, while
-/// a reader opens it and the files beside it.
+/// ONNX Runtime builds a session from it and the sidecar files it names.
 ///
 /// A cached download through `hf-hub` deletes and recreates the file's
 /// snapshot symlinks. ONNX Runtime, building a session from
@@ -347,26 +404,57 @@ pub(crate) fn lock_cached_repo_for_reading(path: &Path) -> Option<File> {
         .write(true)
         .open(&lock_path)
         .ok()?;
-    let started = Instant::now();
-    let mut pause = Duration::from_millis(20);
-    loop {
-        match file.try_lock_shared() {
-            Ok(()) => return Some(file),
-            Err(TryLockError::WouldBlock) if started.elapsed() < LOCK_WAIT => {
-                // Called from synchronous session building, which already
-                // blocks its thread for far longer than this wait.
-                std::thread::sleep(pause);
-                pause = (pause * 2).min(Duration::from_millis(500));
-            }
-            Err(_) => {
-                warn!(
-                    path = %lock_path.display(),
-                    "Reading a cached Hugging Face model without its repository lock"
-                );
-                return None;
-            }
+    match file.try_lock_shared() {
+        Ok(()) => return Some(file),
+        Err(TryLockError::WouldBlock) => {}
+        Err(TryLockError::Error(e)) => {
+            warn!(
+                path = %lock_path.display(),
+                error = %e,
+                "Cannot take the Hugging Face cache lock; reading the model unlocked"
+            );
+            return None;
         }
     }
+    // A download holds the lock. Session building is synchronous code on an
+    // async task, so wait in a way that does not starve the runtime: on a
+    // multi-thread runtime, `block_in_place` hands this worker's other tasks
+    // to another thread, the download among them if it runs in this process.
+    let wait = || {
+        let started = Instant::now();
+        let mut pause = Duration::from_millis(20);
+        loop {
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(Duration::from_millis(500));
+            match file.try_lock_shared() {
+                Ok(()) => return true,
+                Err(TryLockError::WouldBlock) if started.elapsed() < LOCK_WAIT => {}
+                Err(TryLockError::WouldBlock) => {
+                    warn!(
+                        path = %lock_path.display(),
+                        waited_secs = LOCK_WAIT.as_secs(),
+                        "A Hugging Face download still holds the cache lock; reading the model unlocked"
+                    );
+                    return false;
+                }
+                Err(TryLockError::Error(e)) => {
+                    warn!(
+                        path = %lock_path.display(),
+                        error = %e,
+                        "Cannot take the Hugging Face cache lock; reading the model unlocked"
+                    );
+                    return false;
+                }
+            }
+        }
+    };
+    let locked = match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(wait)
+        }
+        _ => wait(),
+    };
+    locked.then_some(file)
 }
 
 /// Whether a revision is safe to join onto `refs/`: no absolute path, `..`
@@ -585,6 +673,54 @@ mod tests {
         assert!(!is_snapshot_path_unchecked(&repo_dir, &hashless, file));
     }
 
+    /// A file resolved once is served again without asking `hf-hub`: this
+    /// branch revision would otherwise need the network.
+    #[tokio::test]
+    async fn resolved_files_are_reused_within_the_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = HfModelRepo::open(dir.path(), "owner/reuse", None).unwrap();
+        let file = r
+            .repo_dir
+            .join("snapshots")
+            .join(HASH)
+            .join("tokenizer.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        resolved_insert(
+            ResolvedKey {
+                repo_dir: r.repo_dir.clone(),
+                revision: DEFAULT_REVISION.into(),
+                filename: "tokenizer.json".into(),
+            },
+            file.clone(),
+        );
+        assert_eq!(r.get("tokenizer.json").await.unwrap(), file);
+    }
+
+    /// Waiting for a download's lock on a multi-thread runtime leaves the
+    /// runtime free to run the download: it finishes and the reader gets in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn reader_waits_without_starving_the_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = std::sync::Arc::new(repo(dir.path(), None));
+        let file = r.repo_dir.join("snapshots").join(HASH).join("model.onnx");
+        let held = r.lock().await.expect("download lock");
+        // The "download" releases its lock from a task on the one worker.
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(held);
+        });
+        let started = Instant::now();
+        let reader = tokio::spawn(async move { lock_cached_repo_for_reading(&file).is_some() });
+        assert!(reader.await.unwrap(), "reader got the lock");
+        release.await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
     #[tokio::test]
     async fn readers_and_downloads_exclude_each_other() {
         let dir = tempfile::tempdir().unwrap();
@@ -718,6 +854,8 @@ mod tests {
         rt.block_on(async {
             let r = HfModelRepo::open(cache, "Xenova/bge-small-en-v1.5", None).unwrap();
             for _ in 0..rounds {
+                // Ask hf-hub every round, as separate processes would.
+                forget_resolved();
                 for file in ["tokenizer.json", "config.json"] {
                     let path = r
                         .get(file)
