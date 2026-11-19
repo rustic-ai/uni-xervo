@@ -43,6 +43,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Loading two aliases of a repo with an external-data sidecar at once no
+  longer fails with "External data path escapes model directory".** A cached
+  download through `hf-hub` recreates the file's snapshot links, and ONNX
+  Runtime resolving `model.onnx.data` through one of them at that moment saw
+  a path outside the model's directory. BGE-M3's dense, sparse and hybrid
+  aliases loading together hit it about one time in three. Building a
+  session now holds a shared lock on the repository, which downloads take
+  exclusively, so the two never overlap, in one process or across several.
 - **Every `local/onnx` model reports its execution providers.**
   `active_execution_providers()` returned an empty list for NLP (kniv v1 and
   v7), OCR, image embedding, and the sparse, multi-vector and hybrid

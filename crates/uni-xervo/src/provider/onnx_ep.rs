@@ -342,6 +342,9 @@ pub(crate) fn build_session(
     builder = builder
         .with_execution_providers(dispatch)
         .map_err(|e| load_err(&e))?;
+    // Keep downloads of the same repo from recreating the snapshot links
+    // ORT is resolving (the graph's external-data sidecar among them).
+    let _read_lock = crate::hf::lock_cached_repo_for_reading(path);
     let session = builder.commit_from_file(path).map_err(|e| load_err(&e))?;
     Ok(BuiltSession {
         session,

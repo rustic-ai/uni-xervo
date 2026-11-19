@@ -98,10 +98,7 @@ impl HfModelRepo {
             repo,
             revision: revision.map(str::to_string),
             repo_dir: cache_dir.join(&folder),
-            lock_path: cache_dir
-                .join(".locks")
-                .join(&folder)
-                .join("uni-xervo.lock"),
+            lock_path: repo_lock_path(cache_dir, &folder),
             lock_wait: LOCK_WAIT,
         })
     }
@@ -310,6 +307,66 @@ fn repo_folder_name(repo_path: &str) -> String {
 /// A full 40-character hex commit hash.
 fn is_commit_hash(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The lock file for the repository cached at `<cache_dir>/<folder>`.
+fn repo_lock_path(cache_dir: &Path, folder: &str) -> PathBuf {
+    cache_dir.join(".locks").join(folder).join("uni-xervo.lock")
+}
+
+/// Hold a **shared** lock on the repository a cached file belongs to, while
+/// a reader opens it and the files beside it.
+///
+/// A cached download through `hf-hub` deletes and recreates the file's
+/// snapshot symlinks. ONNX Runtime, building a session from
+/// `snapshots/<commit>/model.onnx`, resolves its external-data sidecar
+/// (`model.onnx.data`) through such a link; if another load of the same repo
+/// recreates the link at that moment, the sidecar briefly resolves to a path
+/// outside the model's directory and the session fails with "External data
+/// path escapes model directory". Downloads take this lock exclusively, so
+/// holding it shared keeps them out while the reader runs, in this process
+/// or any other.
+///
+/// `None`, meaning read unlocked, when `path` is not inside a Hugging Face
+/// cache (a local model file), the lock cannot be taken (read-only cache, no
+/// file locks), or a download holds it past [`LOCK_WAIT`].
+pub(crate) fn lock_cached_repo_for_reading(path: &Path) -> Option<File> {
+    // `<cache_dir>/models--<owner>--<name>/snapshots/<commit>/<file…>`
+    let repo_dir = path.ancestors().find(|dir| {
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("models--"))
+            && path.starts_with(dir.join("snapshots"))
+    })?;
+    let folder = repo_dir.file_name()?.to_str()?;
+    let lock_path = repo_lock_path(repo_dir.parent()?, folder);
+    std::fs::create_dir_all(lock_path.parent()?).ok()?;
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .ok()?;
+    let started = Instant::now();
+    let mut pause = Duration::from_millis(20);
+    loop {
+        match file.try_lock_shared() {
+            Ok(()) => return Some(file),
+            Err(TryLockError::WouldBlock) if started.elapsed() < LOCK_WAIT => {
+                // Called from synchronous session building, which already
+                // blocks its thread for far longer than this wait.
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(500));
+            }
+            Err(_) => {
+                warn!(
+                    path = %lock_path.display(),
+                    "Reading a cached Hugging Face model without its repository lock"
+                );
+                return None;
+            }
+        }
+    }
 }
 
 /// Whether a revision is safe to join onto `refs/`: no absolute path, `..`
@@ -526,6 +583,28 @@ mod tests {
         assert!(!is_snapshot_path(&repo_dir, &dangling, file));
         let hashless = repo_dir.join("snapshots/gone.json");
         assert!(!is_snapshot_path_unchecked(&repo_dir, &hashless, file));
+    }
+
+    #[tokio::test]
+    async fn readers_and_downloads_exclude_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = repo(dir.path(), None);
+        let file = r.repo_dir.join("snapshots").join(HASH).join("model.onnx");
+
+        // Two readers share the lock; a download cannot take it meanwhile.
+        let first = lock_cached_repo_for_reading(&file).expect("shared lock");
+        let second = lock_cached_repo_for_reading(&file).expect("shared again");
+        let probe = File::options().write(true).open(&r.lock_path).unwrap();
+        assert!(probe.try_lock().is_err(), "download blocked by readers");
+        drop((first, second));
+        assert!(
+            probe.try_lock().is_ok(),
+            "download proceeds once they finish"
+        );
+        probe.unlock().unwrap();
+
+        // A model file outside any Hugging Face cache needs no lock.
+        assert!(lock_cached_repo_for_reading(&dir.path().join("local.onnx")).is_none());
     }
 
     #[tokio::test]
