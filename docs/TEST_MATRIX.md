@@ -14,15 +14,16 @@ add a platform, run `scripts/acceptance.sh <target>` there and copy its
 
 | Platform | Target | Date | Commit | Suites passed | Failed | Skipped |
 |---|---|---|---|---|---|---|
-| macOS arm64 (Apple M2 Max) | `cpu` | 2026-11-19 | `0313805` | 11 | **2** (kniv v7 UltraBERT goldens) | 1 (whisper.cpp: no cmake) |
-| macOS arm64 (Apple M2 Max) | `coreml` | 2026-11-19 | `0313805` | 11 | **3** (kniv v7 UltraBERT goldens; Qwen3 on CPU) | 1 (whisper.cpp: no cmake) |
+| macOS arm64 (Apple M2 Max) | `cpu` | 2026-11-19 | `0313805` + the fixes below | 13 | 0 | 1 (whisper.cpp: no cmake) |
+| macOS arm64 (Apple M2 Max) | `coreml` | 2026-11-19 | `0313805` + the fixes below | 14 | 0 | 1 (whisper.cpp: no cmake) |
 | Linux x86_64 (Intel Core Ultra 9 185H) | `cpu` | 2026-11-19 | `c371778` + the fixes below | 14 | 0 | 0 |
 | Linux x86_64 + NVIDIA RTX 4070 Laptop (8 GB) | `cuda` | 2026-11-19 | `c371778` + the fixes below | 15 | 0 | 0 |
 
-The macOS failures are findings, not regressions: see
-[macOS arm64](#macos-arm64) under Known issues. The first `coreml` run, at
-`a76262a`, failed `multi-vector` (3 of 6) and `ocr` (1 of 3); the accelerator
-check fixed both.
+At `0313805` the Mac runs failed the kniv v7 UltraBERT goldens on both
+targets and `onnx-models` on `coreml`; the suites marked † were rerun after
+the fixes under [macOS arm64](#macos-arm64) in Known issues. The first
+`coreml` run, at `a76262a`, failed `multi-vector` (3 of 6) and `ocr` (1 of
+3); the accelerator check fixed both.
 
 The macOS runs used Rust 1.100.0 and macOS's own `/bin/bash` 3.2.57 for
 `scripts/acceptance.sh`; the Linux runs Rust 1.99.1 and bash 5. All used the
@@ -46,9 +47,9 @@ and the matrix changes that make that a failure.
 | `hybrid-bge-m3` | pass | 3 / 0 / 0 | 7 s | 3.3 GiB |
 | `ocr` | pass | 3 / 0 / 0 | 2 s | 0.5 GiB |
 | `pdf-to-ocr` | pass | 1 / 0 / 0 | 3 s | 0.9 GiB |
-| `nlp-kniv-v7` (UltraBERT goldens, tolerant: 2.65% differ) | **fail** | 3 / 1 / 0 | 51 s | 4.6 GiB |
-| `nlp-kniv-v7-deberta` (DeBERTa goldens, tolerant: 0.41% differ) | pass | 4 / 0 / 0 | 76 s | 10.1 GiB |
-| `nlp-kniv-v7-exact` (tolerant off linux-x86_64: 2.65% differ) | **fail** | 0 / 1 / 0 | 7 s | 3.6 GiB |
+| `nlp-kniv-v7` † (UltraBERT darwin-arm64 goldens, tolerant: 0 of 844 differ) | pass | 4 / 0 / 0 | 14 s | |
+| `nlp-kniv-v7-deberta` † (DeBERTa darwin-arm64 goldens, tolerant: 0 of 810 differ) | pass | 4 / 0 / 0 | 17 s | |
+| `nlp-kniv-v7-exact` † (on the goldens' own library: 0 of 844 differ) | pass | 1 / 0 / 0 | 12 s | |
 | `ep-reporting` | pass | 7 / 0 / 0 | 0 s | 0.1 GiB |
 | `ep-skip-dynamic` (ONNX Runtime 1.31.1 wheel library) | pass | 2 / 0 / 0 | 0 s | 0.1 GiB |
 | `whisper` | skipped: cmake not on PATH | | | |
@@ -58,12 +59,12 @@ and the matrix changes that make that a failure.
 `local/onnx` built with `gpu-metal`, so every session's default provider list
 is `["coreml", "cpu"]`. Of the 37 model loads in the accelerator-checked
 suites, 31 reported `["coreml", "cpu"]` and 6 `["cpu"]`: the OCR alias and
-the three ModernBERT ColBERT models, which are allowed, and the two Qwen3
-models, which are not (see [Known issues](#macos-arm64)).
+the three ModernBERT ColBERT models and the two Qwen3 models, all of which
+are allowed (see [Known issues](#macos-arm64)).
 
 | Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
 |---|---|---|---|---|
-| `onnx-models` (Qwen3 embedding and reranker on CPU) | **fail** | 9 / 2 / 0 | 43 s | 11.1 GiB |
+| `onnx-models` † (Qwen3 embedding and reranker on CPU, allowed) | pass | 11 / 0 / 0 | 42 s | |
 | `onnx-hf-download` | pass | 2 / 0 / 0 | 3 s | 1.4 GiB |
 | `rerank` | pass | 2 / 0 / 0 | 3 s | 0.6 GiB |
 | `sparse` | pass | 4 / 0 / 0 | 13 s | 10.4 GiB |
@@ -71,15 +72,16 @@ models, which are not (see [Known issues](#macos-arm64)).
 | `hybrid-bge-m3` | pass | 3 / 0 / 0 | 38 s | 13.9 GiB |
 | `ocr` (detector on CoreML, recognizer on CPU, allowed) | pass | 3 / 0 / 0 | 8 s | 1.9 GiB |
 | `pdf-to-ocr` | pass | 1 / 0 / 0 | 1 s | 0.9 GiB |
-| `nlp-kniv-v7` (2.65% differ) | **fail** | 3 / 1 / 0 | 17 s | 3.6 GiB |
-| `nlp-kniv-v7-deberta` (0.41% differ) | pass | 4 / 0 / 0 | 26 s | 6.6 GiB |
-| `nlp-kniv-v7-exact` (tolerant: 2.65% differ) | **fail** | 0 / 1 / 0 | 6 s | 3.5 GiB |
+| `nlp-kniv-v7` † (0 of 844 differ) | pass | 4 / 0 / 0 | 17 s | |
+| `nlp-kniv-v7-deberta` † (0 of 810 differ) | pass | 4 / 0 / 0 | 26 s | |
+| `nlp-kniv-v7-exact` † (exact: 0 of 844 differ) | pass | 1 / 0 / 0 | 12 s | |
 | `ep-reporting` (reports `["coreml", "cpu"]`) | pass | 9 / 0 / 0 | 1 s | 0.1 GiB |
 | `ep-skip-dynamic` | pass | 2 / 0 / 0 | 0 s | 0.1 GiB |
 | `coreml-inference` (embed and rerank on CoreML only) | pass | 2 / 0 / 0 | 3 s | 0.8 GiB |
 | `whisper` | skipped: cmake not on PATH | | | |
 
-Times exclude the build. On `cpu`, peak RSS is for the whole test binary,
+† Rerun alone with `--only` after the fixes; `--only` runs report no peak
+RSS here. Times exclude the build. On `cpu`, peak RSS is for the whole test binary,
 whose tests run in parallel, so it is an upper bound on any one model; on
 `coreml` the tests run one at a time, which is why its times are longer.
 
@@ -195,19 +197,21 @@ the kniv v7 golden suites on a Mac:
   `rerank/qwen3-06b` gives the same error. The decoder is fed an empty
   (length-0) KV cache, which the CoreML provider rejects. The earlier
   `coreml` runs passed only because the matrix did not yet check where models
-  ran. Not added to the allow list.
-- **kniv v7 UltraBERT goldens: 22 of 830 decisions differ (2.65%)**, over the
-  2% budget, on the bundled build and on the 1.31.1 arm64 wheel alike, and
-  on `cpu` and `coreml` alike (kniv v7 pins `["cpu"]`). Linux measured 0.24%
-  on the bundled build. 19 of the 22 are fact-margin values; the other three
-  are near-tie decisions in `clitics-and-urls` (a sentiment, an extra
-  `ARGM-ADV` argument, an extra `visit` entity) and one argument label in
-  `negation-and-plans`. No token or sentence structure differs.
-- **kniv v7 DeBERTa goldens: 3 of 734 decisions differ (0.41%)**, within
-  budget: two extra facts (`4-created by->0`, `0-plans to->5`) and one
-  margin.
-- **Exact mode is tolerant on macOS,** as expected: the goldens' library hash
-  is the linux-x86_64 wheel's.
+  ran. The model runs correctly on CPU, and the load-time check is what
+  moves it there, so both aliases are on the CoreML allow list.
+- **kniv v7 goldens differ by CPU architecture.** Against the linux-x86_64
+  goldens, 22 of 830 UltraBERT decisions differed (2.65%, over the 2%
+  budget) and 3 of 734 DeBERTa ones (0.41%), identically on the bundled
+  build and on the 1.31.1 arm64 wheel, and on `cpu` and `coreml` (kniv v7
+  pins `["cpu"]`). 18 of the 22 were fact margins; the rest near-tie
+  decisions (a sentiment, an extra `ARGM-ADV` argument, an extra entity, an
+  `ARG1`/`ARG2` label). No token or sentence differed. Since both builds
+  agree with each other on arm64, the gap is the architecture's INT8
+  kernels, so the Mac now has its own golden set, generated on this machine
+  with the 1.31.1 wheel (`<tag>/darwin-arm64/`, chosen by the test on that
+  platform). Against it, 0 decisions differ for either release, in tolerant
+  mode on the bundled build and in exact mode on the wheel (UltraBERT 844,
+  DeBERTa 810 decisions; fact margins within 2.7e-3).
 
 ### Linux / CUDA (`gpu-cuda`)
 
@@ -263,8 +267,9 @@ alias's `revision` to one of these to reproduce a run.
 
 ## Not covered
 
-- **Exact kniv v7 goldens off linux-x86_64:** the goldens were generated on
-  linux-x86_64, so elsewhere the comparison is tolerant.
+- **Exact kniv v7 goldens beyond linux-x86_64 and darwin-arm64:** only those
+  two platforms have golden sets; elsewhere the comparison is tolerant
+  against the linux-x86_64 set (Linux on arm64 may need its own).
 - **whisper.cpp on macOS:** needs cmake to build (`brew install cmake`).
 - **Document extraction on `local/onnx`:** there is no ONNX export of a target
   document model yet. `remote/llamacpp` serves it, and needs a running server.

@@ -25,6 +25,20 @@ against fp32 ones.
 Both are worth running: the pooling difference is a different set of graph
 inputs, not a tuning knob.
 
+The files at the top of each tag were generated on linux-x86_64. A platform
+whose INT8 kernels decide differently has its own set in a subdirectory
+named for it, which the test uses when it runs there:
+
+| set | platform |
+| --- | --- |
+| `<tag>/` | `linux-x86_64`, and any platform without its own set |
+| `<tag>/darwin-arm64/` | macOS on Apple Silicon |
+
+On darwin-arm64 the bundled build and the 1.31.1 wheel agree with each
+other, and both differ from the linux-x86_64 goldens in 2.65% of UltraBERT's
+decisions, above the tolerant budget: the gap is the CPU architecture's INT8
+kernels, not the build.
+
 Each case file holds the case's input, the schema it was run against, and
 the reference's per-window output verbatim. `provenance.json` records what
 produced them:
@@ -48,12 +62,14 @@ so the test has two modes:
 - **Exact** — `provider-onnx-dynamic` with `ORT_DYLIB_PATH` naming the library
   whose SHA-256 is in `provenance.json`, and the pinned model. The sessions
   run on `intra_op_threads`, and every discrete decision must match. Measured
-  on linux-x86_64 for both tags: 0 differences (839 and 798 decisions), fact
-  margins within 2.3e-3.
-- **Tolerant** — any other build or platform. Structure (windows, tokens,
-  sentences, word counts) must match exactly; at most 2% of the discrete
-  decisions may differ. Measured on the bundled build: 0.24% (UltraBERT) and
-  0.54% (DeBERTa), all of them facts near the threshold or their margins.
+  for both tags: 0 differences on linux-x86_64 (839 and 798 decisions) and
+  on darwin-arm64 against its own set (844 and 810), fact margins within
+  2.3e-3.
+- **Tolerant** — any other build. Structure (windows, tokens, sentences,
+  word counts) must match exactly; at most 2% of the discrete decisions may
+  differ. Measured on the bundled build against its platform's goldens:
+  0.24% (UltraBERT) and 0.54% (DeBERTa) on linux-x86_64, 0% for both on
+  darwin-arm64, all of them facts near the threshold or their margins.
 
 Every difference is printed in both modes.
 
@@ -75,9 +91,24 @@ python scripts/gen-kniv-v7-goldens.py \
 The release ships its own `kniv_v7/` reference runtime, which the script
 uses (`--runtime` overrides it). Regenerate when the reference runtime or a
 model release changes, and read the diff rather than accepting it: it is a
-change in what the model says. Generate on linux-x86_64 with the wheel above
-so the exact mode stays reproducible, and keep the ONNX Runtime version the
-same as the one `ort` bundles.
+change in what the model says. Generate the tag's own set on linux-x86_64
+with the wheel above so the exact mode stays reproducible, and keep the ONNX
+Runtime version the same as the one `ort` bundles.
+
+When a tag is regenerated, regenerate each platform set with it, on that
+platform, into `--out <tag>/<platform>`, for example on a Mac:
+
+```bash
+python scripts/gen-kniv-v7-goldens.py --model "$SNAPSHOT" \
+    --repo dragonscale-ai/kniv-v7-xlarge-u-en --revision "$REV" --variant int8 \
+    --out crates/uni-xervo/tests/fixtures/kniv-v7/ultrabert-int8/darwin-arm64
+```
+
+`provenance.json` then names that platform and its library
+(`libonnxruntime.<version>.dylib` on macOS). The model cache the tests fill
+holds only the files the provider loads; download the `kniv_v7/` folder at
+the same revision (`hf download ... --include 'kniv_v7/*'`) and pass it as
+`--runtime`.
 
 ## Running
 

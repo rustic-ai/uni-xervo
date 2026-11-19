@@ -59,7 +59,8 @@ session costs one extra CPU session build and one forward pass. Set
   - On `cuda` and `coreml`, every model a suite loads must report that
     accelerator first, so a model that fell back to CPU fails its suite
     instead of passing unmeasured (the models CoreML moves to CPU by design
-    are allowed). Tests run one at a time there: in parallel, the models
+    are allowed: the OCR recognizer, the ModernBERT ColBERT models, and
+    Qwen3 0.6B, whose empty past-key-values input CoreML rejects). Tests run one at a time there: in parallel, the models
     loading at once exhausted an 8 GB GPU and fell back. A suite that fails
     to build now fails the run; one whose tool is missing (cmake for
     whisper) is skipped.
@@ -69,7 +70,13 @@ session costs one extra CPU session build and one forward pass. Set
     for v7.1.2 with their provenance recorded. The comparison is exact on
     the goldens' own ONNX Runtime library (`nlp-kniv-v7-exact`, through
     `provider-onnx-dynamic`) and allows 2% of decisions to differ on other
-    builds, which round some INT8 shapes differently.
+    builds, which round some INT8 shapes differently. INT8 kernels also
+    differ by CPU architecture, so macOS on Apple Silicon has its own golden
+    set (`<tag>/darwin-arm64/`), which the test picks on that platform:
+    against the linux-x86_64 goldens 2.65% of UltraBERT's decisions differed
+    there; against its own, none do, in tolerant or exact mode.
+  - The report's model list includes revision-pinned downloads (the kniv v7
+    xlarge releases), which have a snapshot but no ref and were left out.
 
 - **`local/onnx` checks an accelerator's output against CPU at load.** When
   a session attaches CUDA, CoreML or DirectML, the load runs a fixed probe

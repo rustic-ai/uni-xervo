@@ -70,11 +70,13 @@ esac
 # wrongly (OCR then reports the stages' common list, cpu) and cannot run
 # ModernBERT, the architecture of all three ModernBERT ColBERT models the
 # multi-vector suite loads (GTE-ModernColBERT, mxbai-edge-colbert 17m and
-# 32m), and the load-time check moves them to CPU.
+# 32m), and the load-time check moves them to CPU. Qwen3 0.6B (embedding and
+# reranking) is fed an empty past-key-values cache, a zero-element input the
+# CoreML provider rejects, so its probe fails and it loads on CPU too.
 if [[ "$TARGET" != "cpu" ]]; then
   export UNI_XERVO_EXPECT_EP="$TARGET"
   if [[ "$TARGET" == "coreml" ]]; then
-    export UNI_XERVO_EXPECT_EP_ALLOW_CPU="${UNI_XERVO_EXPECT_EP_ALLOW_CPU:-ocr/ppocr-en,embed_mv/gte,embed_mv/mxbai17,embed_mv/mxbai32}"
+    export UNI_XERVO_EXPECT_EP_ALLOW_CPU="${UNI_XERVO_EXPECT_EP_ALLOW_CPU:-ocr/ppocr-en,embed_mv/gte,embed_mv/mxbai17,embed_mv/mxbai32,embed/qwen3-06b,rerank/qwen3-06b}"
   fi
 fi
 
@@ -232,18 +234,23 @@ while IFS='|' read -r name package features test args requirement; do
   rows+="| \`$name\` | $result | ${passed:-0} / ${fails:-0} / ${skipped} | ${secs} s | ${rss:-?} MiB | \`$pretty\` |"$'\n'
 done <<<"$SUITES"
 
-# Models the run used: every Hugging Face repo in the cache, with the commit
-# its `main` (or other) ref points at and the size of its snapshot.
+# Models the run used: every snapshot of every Hugging Face repo in the
+# cache, with the ref that points at it (`main`, say) and its size. A
+# download pinned to a commit hash writes a snapshot but no ref, so those are
+# listed as `(pinned)` rather than missed.
 manifest=""
 if [[ -d "$cache_root" ]]; then
-  while IFS= read -r ref; do
-    repo_dir="$(dirname "$(dirname "$ref")")"
+  while IFS= read -r snap; do
+    repo_dir="$(dirname "$(dirname "$snap")")"
     repo="$(basename "$repo_dir" | sed -E 's/^models--//; s/--/\//')"
-    rev="$(basename "$ref")"
-    commit="$(tr -d '[:space:]' <"$ref")"
-    size="$(du -sLh "$repo_dir/snapshots/$commit" 2>/dev/null | cut -f1)"
-    manifest+="| \`$repo\` | \`$rev\` | \`$commit\` | ${size:-?} |"$'\n'
-  done < <(find "$cache_root" -path '*/models--*/refs/*' -type f 2>/dev/null | sort)
+    commit="$(basename "$snap")"
+    rev=""
+    if [[ -d "$repo_dir/refs" ]]; then
+      rev="$(grep -rlx "$commit" "$repo_dir/refs" 2>/dev/null | sed "s|^$repo_dir/refs/||" | sort | paste -sd, -)"
+    fi
+    size="$(du -sLh "$snap" 2>/dev/null | cut -f1)"
+    manifest+="| \`$repo\` | \`${rev:-(pinned)}\` | \`$commit\` | ${size:-?} |"$'\n'
+  done < <(find "$cache_root" -path '*/models--*/snapshots/*' -prune -type d -not -path '*/.locks/*' 2>/dev/null | sort)
 fi
 
 {
