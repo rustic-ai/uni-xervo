@@ -701,7 +701,8 @@ async fn narrow_task_requests_agree_with_the_full_analysis() {
 
 /// The `plain` graph is built at load, so the model reports the execution
 /// providers it runs on before any request (rustic-ai/uni-xervo#65). On a
-/// CPU-only build that is `["cpu"]`.
+/// CPU-only build that is `["cpu"]`. Needs no golden fixtures, so any v7
+/// release works, e.g. `KNIV_V7_MODEL_DIR=dragonscale-ai/kniv-v7-tiny-en`.
 #[tokio::test(flavor = "multi_thread")]
 async fn reports_execution_providers_from_load() {
     require_expensive!();
@@ -711,4 +712,15 @@ async fn reports_execution_providers_from_load() {
     assert!(eps.contains(&"cpu".to_string()), "{eps:?}");
     #[cfg(not(any(feature = "gpu-cuda", feature = "gpu-metal")))]
     assert_eq!(eps, ["cpu"]);
+
+    // A full request builds the lazy graphs too; they share `plain`'s
+    // configuration, so the list does not change.
+    model
+        .analyze(vec![NlpRequest::new(
+            "Ada Lovelace was born in London in 1815.",
+            NlpTasks::ALL,
+        )])
+        .await
+        .expect("analyze");
+    assert_eq!(model.active_execution_providers(), eps);
 }
