@@ -245,42 +245,81 @@ pub(crate) async fn verify_send(
     request: reqwest::RequestBuilder,
     display_url: &str,
 ) -> std::result::Result<VerifyOutcome, VerifyFailure> {
-    verify_send_inner(request, display_url, false).await
+    verify_send_with(request, display_url, On400::Fail).await
 }
 
-/// [`verify_send`] for a provider with no read-only endpoint, which sends an
-/// empty body to a real one instead.
-///
-/// The server checks the credential (and for Azure, that the deployment
-/// exists) before it validates the body, so a 400 or 422 means the request
-/// got through: verified, without generating or embedding anything.
+/// What an HTTP 400 means for one provider's verification request.
 #[allow(dead_code)]
-pub(crate) async fn verify_send_empty_body(
-    request: reqwest::RequestBuilder,
-    display_url: &str,
-) -> std::result::Result<VerifyOutcome, VerifyFailure> {
-    verify_send_inner(request.json(&serde_json::json!({})), display_url, true).await
+#[derive(Clone, Copy)]
+pub(crate) enum On400 {
+    /// An ordinary failure.
+    Fail,
+    /// The credential was rejected: Gemini answers a bad key with 400
+    /// `API_KEY_INVALID`.
+    Unauthorized,
+    /// The request got through: an empty body was posted to a real
+    /// endpoint, and the server checks the credential (and for Azure, that
+    /// the deployment exists) before the body. `unsupported` lists error
+    /// codes meaning the endpoint exists but cannot serve this alias's task
+    /// (Azure's `OperationNotSupported`); only the code is read from the
+    /// body, never shown in full.
+    Verified {
+        unsupported: &'static [&'static str],
+    },
 }
 
-async fn verify_send_inner(
+/// Longest one verification request may take when a provider's `verify` is
+/// called directly; the runtime applies the alias's own, shorter bound.
+const VERIFY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// [`verify_send`], with what an HTTP 400 means for this request.
+#[allow(dead_code)]
+pub(crate) async fn verify_send_with(
     request: reqwest::RequestBuilder,
     display_url: &str,
-    body_rejection_is_success: bool,
+    on_400: On400,
 ) -> std::result::Result<VerifyOutcome, VerifyFailure> {
     use VerifyErrorKind as K;
-    let response = request.send().await.map_err(|e| {
-        if e.is_timeout() {
-            VerifyFailure::new(K::Timeout, format!("no answer from {display_url}"))
-        } else if e.is_connect() {
-            VerifyFailure::new(K::Unreachable, format!("cannot connect to {display_url}"))
-        } else {
-            VerifyFailure::new(K::Other, e.without_url().to_string())
-        }
-    })?;
+    let response = request
+        .timeout(VERIFY_REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() {
+                VerifyFailure::new(K::Timeout, format!("no answer from {display_url}"))
+            } else if e.is_connect() {
+                VerifyFailure::new(K::Unreachable, format!("cannot connect to {display_url}"))
+            } else {
+                VerifyFailure::new(K::Other, e.without_url().to_string())
+            }
+        })?;
     let status = response.status();
     let code = status.as_u16();
-    if status.is_success() || (body_rejection_is_success && matches!(code, 400 | 422)) {
+    if status.is_success() {
         return Ok(VerifyOutcome::Verified);
+    }
+    match (code, on_400) {
+        (400, On400::Unauthorized) => {
+            return Err(VerifyFailure::new(
+                K::Unauthorized,
+                "credential rejected (HTTP 400)",
+            ));
+        }
+        (400 | 422, On400::Verified { unsupported }) => {
+            let error_code = response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| body["error"]["code"].as_str().map(str::to_string));
+            return match error_code {
+                Some(c) if unsupported.contains(&c.as_str()) => Err(VerifyFailure::new(
+                    K::Config,
+                    format!("{display_url} cannot serve this alias's task ({c})"),
+                )),
+                _ => Ok(VerifyOutcome::Verified),
+            };
+        }
+        _ => {}
     }
     Err(match code {
         401 | 403 => VerifyFailure::new(

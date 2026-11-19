@@ -68,6 +68,9 @@ const DEFAULT_LOAD_TIMEOUT_SECS: u64 = 600;
 /// timeout; an alias with a shorter `load_timeout` uses that.
 const MAX_VERIFY_TIMEOUT_SECS: u64 = 30;
 
+/// Most aliases [`ModelRuntime::verify`] checks at once.
+const MAX_CONCURRENT_VERIFICATIONS: usize = 8;
+
 /// The central runtime that owns registered providers and a catalog of model
 /// aliases.
 ///
@@ -98,6 +101,49 @@ pub struct ModelRegistry {
     /// The last failed load of each key, cleared when a later load succeeds.
     /// Keyed like `instances`, so aliases that share a model share its state.
     failures: std::sync::Mutex<HashMap<ModelRuntimeKey, LoadFailure>>,
+    /// Loads of each key actually running (calling the provider), for
+    /// [`LoadState::Loading`]. Counted rather than read from `loader_locks`,
+    /// whose entry a finished load removes while a waiter may still be about
+    /// to retry.
+    in_flight: std::sync::Mutex<HashMap<ModelRuntimeKey, usize>>,
+}
+
+/// Counts one running load of a key in [`ModelRegistry::in_flight`] for as
+/// long as it lives, including when the load's future is dropped.
+struct InFlight<'a> {
+    registry: &'a ModelRegistry,
+    key: ModelRuntimeKey,
+}
+
+impl<'a> InFlight<'a> {
+    fn start(registry: &'a ModelRegistry, key: &ModelRuntimeKey) -> Self {
+        *registry
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key.clone())
+            .or_insert(0) += 1;
+        Self {
+            registry,
+            key: key.clone(),
+        }
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .registry
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = in_flight.get_mut(&self.key) {
+            *n -= 1;
+            if *n == 0 {
+                in_flight.remove(&self.key);
+            }
+        }
+    }
 }
 
 /// A load that failed: its error and when.
@@ -301,7 +347,7 @@ impl ModelRuntime {
     /// Opt-in: nothing else in the runtime contacts a remote provider before
     /// the first request, so `build`, `prefetch` and `health()` stay offline.
     /// Loads no model. Aliases are checked concurrently and reported in the
-    /// order given, and each result is kept for
+    /// order given (at most eight at a time), and each result is kept for
     /// [`aliases`](Self::aliases) and [`provider_health`](Self::provider_health).
     ///
     /// A local alias returns [`VerifyOutcome::NotApplicable`]. A failure is a
@@ -309,7 +355,14 @@ impl ModelRuntime {
     /// contains a credential. Each check waits at most the alias's
     /// `load_timeout`, capped at 30 seconds.
     pub async fn verify(&self, aliases: &[&str]) -> Vec<(String, Result<VerifyOutcome>)> {
-        let results = futures::future::join_all(aliases.iter().map(|a| self.verify_one(a))).await;
+        use futures::StreamExt;
+        // A few at a time: a large catalog sent at once can trip a
+        // provider's rate limit, which would then read as a failure.
+        let results: Vec<Result<VerifyOutcome>> = futures::stream::iter(aliases)
+            .map(|alias| self.verify_one(alias))
+            .buffered(MAX_CONCURRENT_VERIFICATIONS)
+            .collect()
+            .await;
         aliases
             .iter()
             .map(|a| (*a).to_string())
@@ -399,14 +452,26 @@ impl ModelRuntime {
                     _ => (checked, failed),
                 })
         };
-        Some(if failed == 0 {
-            own
+        let from_verification = if failed == 0 {
+            None
         } else if failed == checked {
-            ProviderHealth::Unhealthy(format!(
+            Some(ProviderHealth::Unhealthy(format!(
                 "all {checked} verified aliases failed verification"
-            ))
+            )))
         } else {
-            ProviderHealth::Degraded(format!("{failed} of {checked} aliases failed verification"))
+            Some(ProviderHealth::Degraded(format!(
+                "{failed} of {checked} aliases failed verification"
+            )))
+        };
+        // Report whichever is worse: the provider's own view or the checks.
+        let rank = |h: &ProviderHealth| match h {
+            ProviderHealth::Healthy => 0,
+            ProviderHealth::Degraded(_) => 1,
+            _ => 2,
+        };
+        Some(match from_verification {
+            Some(v) if rank(&v) > rank(&own) => v,
+            _ => own,
         })
     }
 
@@ -418,23 +483,35 @@ impl ModelRuntime {
 
     /// Build snapshots for `specs`. Reads the registry's maps one after
     /// another, never holding two locks at once.
+    ///
+    /// In-flight loads are read first: a load records its outcome (instance
+    /// or failure) before it stops counting as in flight, so reading in that
+    /// order never shows a settling load as untouched.
     async fn snapshots(&self, specs: &[ModelAliasSpec]) -> Vec<AliasSnapshot> {
         let keys: Vec<ModelRuntimeKey> = specs.iter().map(ModelRuntimeKey::new).collect();
-        let loaded: HashMap<&ModelRuntimeKey, Vec<String>> = {
+        let loading: std::collections::HashSet<&ModelRuntimeKey> = {
+            let in_flight = self
+                .registry
+                .in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            keys.iter()
+                .filter(|key| in_flight.contains_key(*key))
+                .collect()
+        };
+        let loaded: HashMap<&ModelRuntimeKey, Option<Vec<String>>> = {
             let instances = self.registry.instances.read().await;
             keys.iter()
                 .filter_map(|key| {
                     let handle = instances.get(key)?;
+                    // An empty list means the model does not report any
+                    // (remote, or a backend that cannot say), shown as None.
                     let eps = model_info(handle)
                         .map(|m| m.active_execution_providers())
-                        .unwrap_or_default();
+                        .filter(|eps| !eps.is_empty());
                     Some((key, eps))
                 })
                 .collect()
-        };
-        let loading: std::collections::HashSet<&ModelRuntimeKey> = {
-            let locks = self.registry.loader_locks.lock().await;
-            keys.iter().filter(|key| locks.contains_key(*key)).collect()
         };
         let verifications: HashMap<String, VerificationStatus> = {
             let verifications = self.verifications.read().await;
@@ -463,7 +540,7 @@ impl ModelRuntime {
             .zip(&keys)
             .map(|(spec, key)| {
                 let (state, execution_providers) = if let Some(eps) = loaded.get(key) {
-                    (LoadState::Loaded, Some(eps.clone()))
+                    (LoadState::Loaded, eps.clone())
                 } else if loading.contains(key) {
                     (LoadState::Loading, None)
                 } else if let Some(f) = failures.get(key) {
@@ -1232,6 +1309,10 @@ impl ModelRuntime {
             }
         }
 
+        // Counted until this function returns, after the outcome is
+        // recorded below, so a snapshot sees Loading until then.
+        let _in_flight = InFlight::start(&self.registry, &key);
+
         let load_timeout =
             std::time::Duration::from_secs(spec.load_timeout.unwrap_or(DEFAULT_LOAD_TIMEOUT_SECS));
 
@@ -1290,7 +1371,7 @@ impl ModelRuntime {
             }
         };
 
-        // Record the outcome before the key leaves `loader_locks`, so a
+        // Record the outcome while this load still counts as in flight, so a
         // snapshot never sees it neither loading nor settled.
         {
             let mut failures = self
@@ -1560,16 +1641,17 @@ mod tests {
                 let rt = rt.clone();
                 tokio::spawn(async move { rt.prefetch(&["embed/a"]).await })
             };
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            assert_eq!(rt.alias("embed/a").await.unwrap().state, LoadState::Loading);
+            // Poll rather than sleep a fixed time, so a slow machine where
+            // the load starts late does not fail the test.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while rt.alias("embed/a").await.unwrap().state != LoadState::Loading {
+                assert!(std::time::Instant::now() < deadline, "never saw Loading");
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
             loader.await.unwrap().unwrap();
             let loaded = rt.alias("embed/a").await.unwrap();
             assert_eq!(loaded.state, LoadState::Loaded);
-            assert_eq!(
-                loaded.execution_providers,
-                Some(Vec::new()),
-                "the mock reports none"
-            );
+            assert_eq!(loaded.execution_providers, None, "the mock reports none");
         }
 
         #[tokio::test]

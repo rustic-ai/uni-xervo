@@ -53,11 +53,13 @@ silently ignored will now run with them. No function signature changed.
     implements it.
 - **Remote aliases can be checked for reachability and a valid key, on
   request (#66).** `ModelRuntime::verify(&[alias])` and `verify_all()` make
-  one cheap authenticated request per remote alias: a models or model lookup
-  for OpenAI, Anthropic, Cohere, Gemini, Mistral and Vertex AI, `/health`
-  (then `/models` with a key) for llama.cpp, and an empty body posted to the
-  alias's endpoint for Azure OpenAI and Voyage AI, which have no read-only
-  call (a 400 proves the key without generating anything). Nothing else
+  one cheap authenticated request per remote alias, at most eight at a time:
+  a models or model lookup for OpenAI, Anthropic, Cohere, Gemini and Mistral,
+  `/health` (then `/tokenize` with a key) for llama.cpp, and an empty body
+  posted to the alias's own endpoint for Azure OpenAI, Voyage AI and Vertex
+  AI (a 400 proves the key, and for Vertex the project, without generating
+  anything; Azure's `OperationNotSupported` is reported as a misconfigured
+  alias). Nothing else
   contacts a remote provider: building, prefetching and `health()` are
   unchanged.
   - A failure is the new `RuntimeError::Verification { alias, provider_id,
@@ -67,10 +69,13 @@ silently ignored will now run with them. No function signature changed.
     capped at 30 seconds.
   - Results show up as each alias's `verification` in `aliases()`, and
     `provider_health(id)` folds them in (`Degraded` when some verified
-    aliases failed, `Unhealthy` when all did), returning the provider's own
-    `health()` until one is verified.
+    aliases failed, `Unhealthy` when all did, never better than the
+    provider's own `health()`), returning `health()` itself until one is
+    verified.
   - `ModelProvider::verify(&spec)` is defaulted to `NotApplicable`, so
     third-party providers keep compiling.
+  - `remote/gemini` no longer puts its API key into error messages: a
+    transport error's text included the request URL, which carries the key.
   - See the new Startup Readiness guide.
 
 - **`uni_xervo::schemas` publishes the catalog rules for configuration

@@ -240,11 +240,21 @@ impl ModelProvider for RemoteVertexAIProvider {
         &self,
         spec: &ModelAliasSpec,
     ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::inspect::{VerifyErrorKind, VerifyFailure};
         use crate::provider::remote_common::{
-            credential_env_name, missing_credential, option_or, verify_send,
+            On400, credential_env_name, missing_credential, option_or, verify_send_with,
         };
         let env = credential_env_name(&spec.options, "api_token_env", "VERTEX_AI_TOKEN");
-        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        let token = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        let project = match spec.options.get("project_id").and_then(|v| v.as_str()) {
+            Some(p) => p.to_string(),
+            None => std::env::var("VERTEX_AI_PROJECT").map_err(|_| {
+                VerifyFailure::new(
+                    VerifyErrorKind::Config,
+                    "project_id option not set and VERTEX_AI_PROJECT env var not set",
+                )
+            })?,
+        };
         let location = option_or(&spec.options, "location", "us-central1");
         let publisher = option_or(&spec.options, "publisher", "google");
         let host = if location == "global" {
@@ -252,14 +262,27 @@ impl ModelProvider for RemoteVertexAIProvider {
         } else {
             format!("{location}-aiplatform.googleapis.com")
         };
+        let method = match spec.task {
+            ModelTask::Embed => "predict",
+            _ => "generateContent",
+        };
+        // Post an empty body to the project-scoped endpoint the model is
+        // served from, so the project and the token's permission on it are
+        // checked too: a 403 is a token without access to this project, a
+        // 404 a model it cannot see, and a 400 the request getting through.
         let url = format!(
-            "{}/v1/publishers/{publisher}/models/{}",
+            "{}/v1/projects/{project}/locations/{location}/publishers/{publisher}/models/{}:{method}",
             self.base.root(&format!("https://{host}")),
             spec.model_id
         );
-        verify_send(
-            self.base.client.get(&url).bearer_auth(key),
+        verify_send_with(
+            self.base
+                .client
+                .post(&url)
+                .bearer_auth(token)
+                .json(&serde_json::json!({})),
             &crate::inspect::redact_url(&url),
+            On400::Verified { unsupported: &[] },
         )
         .await
     }

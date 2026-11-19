@@ -18,6 +18,8 @@ use tokio::net::TcpListener;
 pub(crate) enum Reply {
     /// Answer with this status and `{}`.
     Status(u16),
+    /// Answer with this status and this JSON body.
+    Json(u16, &'static str),
     /// Accept the request and never answer.
     Hang,
 }
@@ -78,13 +80,19 @@ impl StubServer {
                             .find(|(m, p, _)| *m == request.method && *p == path)
                             .map_or(Reply::Status(404), |(_, _, r)| *r);
                         seen.lock().unwrap().push(request);
+                        let answer = |code: u16, body: &str| {
+                            format!(
+                                "HTTP/1.1 {code} Stub\r\ncontent-type: application/json\r\n\
+                                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                        };
                         match reply {
                             Reply::Status(code) => {
-                                let response = format!(
-                                    "HTTP/1.1 {code} Stub\r\ncontent-type: application/json\r\n\
-                                     content-length: 2\r\nconnection: close\r\n\r\n{{}}"
-                                );
-                                let _ = socket.write_all(response.as_bytes()).await;
+                                let _ = socket.write_all(answer(code, "{}").as_bytes()).await;
+                            }
+                            Reply::Json(code, body) => {
+                                let _ = socket.write_all(answer(code, body).as_bytes()).await;
                             }
                             Reply::Hang => {
                                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;

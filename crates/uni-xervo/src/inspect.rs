@@ -35,8 +35,9 @@ pub struct AliasSnapshot {
     /// of this alias.
     pub verification: VerificationStatus,
     /// The execution providers the loaded model runs on (see
-    /// [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers));
-    /// `None` until it is loaded. Empty for a remote model.
+    /// [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)).
+    /// `None` until it is loaded, and for a model that reports none: remote
+    /// models, and local backends that cannot say (such as whisper.cpp).
     pub execution_providers: Option<Vec<String>>,
     /// Where a remote alias sends requests, with userinfo, query and fragment
     /// removed. `None` for local models, or when the provider does not say.
@@ -206,17 +207,19 @@ pub enum VerificationStatus {
 ///
 /// String-based rather than a full URL parse: it must also clean values that
 /// are not valid URLs, and it is applied to whatever a provider reports.
+/// Userinfo goes first, through the *last* `@`, because a password may itself
+/// contain `?`, `#`, `/` or `@`. That errs toward hiding: an `@` inside a
+/// path (rare in a base URL) drops the host before it too, but nothing before
+/// an `@` is ever shown.
 pub(crate) fn redact_url(url: &str) -> String {
-    let end = url.find(['?', '#']).unwrap_or(url.len());
-    let url = &url[..end];
     let (scheme, rest) = match url.find("://") {
         Some(i) => (&url[..i + 3], &url[i + 3..]),
         None => ("", url),
     };
-    let authority_end = rest.find('/').unwrap_or(rest.len());
-    let (authority, path) = rest.split_at(authority_end);
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    format!("{scheme}{host}{path}")
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, after)| after);
+    let rest = rest.trim_start_matches('/');
+    let end = rest.find(['?', '#']).unwrap_or(rest.len());
+    format!("{scheme}{}", &rest[..end])
 }
 
 #[cfg(test)]
@@ -241,13 +244,31 @@ mod tests {
             redact_url("http://[::1]:8080/v1?x=1"),
             "http://[::1]:8080/v1"
         );
-        assert_eq!(
-            redact_url("https://user@h/p@q"),
-            "https://h/p@q",
-            "@ in a path is kept"
-        );
         assert_eq!(redact_url("u:p@host/v1"), "host/v1", "no scheme");
+        assert_eq!(redact_url("//u:p@h/v1"), "h/v1", "scheme-relative");
         assert_eq!(redact_url("https://h?key=secret"), "https://h");
         assert_eq!(redact_url(""), "");
+    }
+
+    /// A password containing `?`, `#`, `/` or `@` must not survive.
+    #[test]
+    fn redact_url_never_shows_any_part_of_a_password() {
+        for (url, shown) in [
+            ("https://u:pa?ss@h/v1", "https://h/v1"),
+            ("https://u:p#w@h", "https://h"),
+            ("https://u:p/w@h/v1", "https://h/v1"),
+            ("https://u:p@w@h/v1", "https://h/v1"),
+            ("https://u:%40pw@h/v1", "https://h/v1"),
+        ] {
+            let got = redact_url(url);
+            assert_eq!(got, shown, "{url}");
+            for part in ["pa", "ss", "p#w", "p/w", "%40pw"] {
+                if url.contains(part) {
+                    assert!(!got.contains(part), "{url} leaks {part}: {got}");
+                }
+            }
+        }
+        // The price of erring toward hiding: an `@` in a path hides the host.
+        assert_eq!(redact_url("https://h/p@q"), "https://q");
     }
 }

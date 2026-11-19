@@ -153,7 +153,7 @@ impl ModelProvider for RemoteGeminiProvider {
         spec: &ModelAliasSpec,
     ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
         use crate::provider::remote_common::{
-            credential_env_name, missing_credential, option_or, verify_send,
+            On400, credential_env_name, missing_credential, option_or, verify_send_with,
         };
         let env = credential_env_name(&spec.options, "api_key_env", "GEMINI_API_KEY");
         let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
@@ -165,9 +165,11 @@ impl ModelProvider for RemoteGeminiProvider {
         );
         // The key rides in the query, so it is added only to the URL sent,
         // never to `url`, which is what errors show.
-        verify_send(
+        // A bad key is a 400 API_KEY_INVALID here, not a 401.
+        verify_send_with(
             self.base.client.get(format!("{url}?key={key}")),
             &crate::inspect::redact_url(&url),
+            On400::Unauthorized,
         )
         .await
     }
@@ -226,12 +228,12 @@ impl EmbeddingModel for GeminiEmbeddingModel {
                     .json(&json!({ "requests": requests }))
                     .send()
                     .await
-                    .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
+                    .map_err(|e| RuntimeError::ApiError(e.without_url().to_string()))?;
 
                 let body: serde_json::Value = check_http_status("Gemini", response)?
                     .json()
                     .await
-                    .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
+                    .map_err(|e| RuntimeError::ApiError(e.without_url().to_string()))?;
 
                 let embeddings_json = body
                     .get("embeddings")
@@ -315,12 +317,13 @@ impl GeneratorModel for GeminiGeneratorModel {
                     .json(&payload)
                     .send()
                     .await
-                    .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
+                    .map_err(|e| RuntimeError::ApiError(e.without_url().to_string()))?;
 
-                let body: serde_json::Value = check_http_status("Gemini", response)?
-                    .json()
-                    .await
-                    .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
+                let body: serde_json::Value =
+                    check_http_status("Gemini", response)?
+                        .json()
+                        .await
+                        .map_err(|e| RuntimeError::ApiError(e.without_url().to_string()))?;
 
                 let candidates = body
                     .get("candidates")
@@ -474,11 +477,11 @@ impl MultimodalEmbeddingModel for GeminiMultimodalEmbeddingModel {
                     .json(&json!({ "requests": requests }))
                     .send()
                     .await
-                    .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
+                    .map_err(|e| RuntimeError::ApiError(e.without_url().to_string()))?;
                 let body: serde_json::Value = check_http_status("Gemini", response)?
                     .json()
                     .await
-                    .map_err(|e| RuntimeError::ApiError(e.to_string()))?;
+                    .map_err(|e| RuntimeError::ApiError(e.without_url().to_string()))?;
 
                 let embeddings_json = body
                     .get("embeddings")

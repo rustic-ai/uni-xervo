@@ -178,7 +178,7 @@ impl ModelProvider for RemoteAzureOpenAIProvider {
         spec: &ModelAliasSpec,
     ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
         use crate::provider::remote_common::{
-            credential_env_name, missing_credential, verify_send_empty_body,
+            On400, credential_env_name, missing_credential, verify_send_with,
         };
         let env = credential_env_name(&spec.options, "api_key_env", "AZURE_OPENAI_API_KEY");
         let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
@@ -204,12 +204,18 @@ impl ModelProvider for RemoteAzureOpenAIProvider {
             .base
             .root(&format!("https://{resource}.openai.azure.com"));
         let url = format!("{root}{path}");
-        verify_send_empty_body(
+        verify_send_with(
             self.base
                 .client
                 .post(format!("{url}?api-version={api_version}"))
-                .header("api-key", key),
+                .header("api-key", key)
+                .json(&serde_json::json!({})),
             &crate::inspect::redact_url(&url),
+            // A chat deployment behind an embed alias (or the reverse)
+            // answers 400 OperationNotSupported: reachable, but wrong.
+            On400::Verified {
+                unsupported: &["OperationNotSupported"],
+            },
         )
         .await
     }

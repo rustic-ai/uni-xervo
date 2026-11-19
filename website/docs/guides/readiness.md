@@ -34,8 +34,9 @@ for alias in runtime.aliases().await {
   - `Failed { error, at }`: the last load failed. That covers a load error, a
     timeout, or a background warmup that failed. A later successful load
     clears it.
-- `execution_providers`, once loaded (for a local ONNX model, the providers
-  its session attached);
+- `execution_providers`, once loaded: for a local ONNX model, the providers
+  its session attached. It is `None` until the model loads, and for models
+  that report none (remote models, whisper.cpp);
 - for a remote alias, `endpoint` and `credential_env` (see the next section);
 - `verification`, the last verify result (see below).
 
@@ -96,8 +97,8 @@ for (alias, result) in runtime.verify(&["generate/chat", "embed/remote"]).await 
 }
 ```
 
-- Each alias is checked once, concurrently, and reported in the order given.
-  `verify_all()` checks the whole catalog.
+- Each alias is checked once, up to eight at a time, and reported in the
+  order given. `verify_all()` checks the whole catalog.
 - Local aliases return `VerifyOutcome::NotApplicable` without doing anything.
 - A failure is `RuntimeError::Verification { alias, provider_id, kind, detail }`.
   The message names the alias and never contains the key. `kind` is one of:
@@ -117,7 +118,8 @@ The result is kept. It shows up as each alias's `verification` in
 `aliases()`, and `provider_health(id)` folds it in. Until one of the
 provider's aliases has been verified, `provider_health(id)` returns exactly
 what the provider's own `health()` reports. After that, it reads `Degraded`
-if some verified aliases failed, or `Unhealthy` if all of them did.
+if some verified aliases failed, or `Unhealthy` if all of them did, unless
+the provider's own `health()` is already worse.
 
 ### What each provider checks
 
@@ -127,17 +129,26 @@ if some verified aliases failed, or `Unhealthy` if all of them did.
 | `remote/anthropic` | `GET /v1/models/{model}` |
 | `remote/azure-openai` | `POST` an empty body to the deployment's `embeddings` or `chat/completions` |
 | `remote/cohere` | `GET /v1/models/{model}` |
-| `remote/gemini` | `GET /{api_version}/models/{model}` |
+| `remote/gemini` | `GET /{api_version}/models/{model}` (a bad key answers 400, reported as `Unauthorized`) |
 | `remote/mistral` | `GET /v1/models/{model}` |
-| `remote/vertexai` | `GET /v1/publishers/{publisher}/models/{model}` |
+| `remote/vertexai` | `POST` an empty body to the project-scoped `predict` or `generateContent` endpoint |
 | `remote/voyageai` | `POST` an empty body to `/v1/embeddings` or `/v1/rerank` |
-| `remote/llamacpp` | `GET /health`, then `GET {base_url}/models` if the alias has `api_key_env` |
+| `remote/llamacpp` | `GET /health`, then `POST /tokenize` with an empty string if the alias has `api_key_env` |
 
 Azure OpenAI has no read-only data-plane call for a deployment, and Voyage AI
 has no models endpoint. So for both, verify sends an empty body to the
 alias's real endpoint. The service checks the key (and, for Azure, that the
 deployment exists) before it looks at the body. A `400` or `422` therefore
-counts as verified, and nothing is generated or billed.
+counts as verified, and nothing is generated or billed. The one exception is
+Azure's `OperationNotSupported`: a deployment that cannot serve the alias's
+task, such as a chat model behind an embed alias. That is reported as
+`Config`.
+
+Vertex AI is checked the same way, against the project-scoped endpoint the
+model is served from. That also checks the token's access to the alias's
+project: a `403` there means a token without access. llama.cpp checks its key
+on `/tokenize` because recent `llama-server` versions leave `/health` and
+`/models` public even with `--api-key`.
 
 ## Writing a provider
 

@@ -144,11 +144,11 @@ fn cases() -> Vec<Case> {
             provider_id: "remote/vertexai",
             task: ModelTask::Generate,
             model: "gemini-2.0-flash",
-            method: "GET",
-            path: "/v1/publishers/google/models/gemini-2.0-flash",
+            method: "POST",
+            path: "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent",
             key_option: "api_token_env",
             options: json!({ "project_id": "p" }),
-            empty_body: false,
+            empty_body: true,
             make: |url| Box::new(RemoteVertexAIProvider::with_endpoint_override(url)),
             auth: bearer,
         },
@@ -170,8 +170,8 @@ fn cases() -> Vec<Case> {
             provider_id: "remote/llamacpp",
             task: ModelTask::Generate,
             model: "qwen",
-            method: "GET",
-            path: "/v1/models",
+            method: "POST",
+            path: "/tokenize",
             key_option: "api_key_env",
             options: json!({ "base_url": "{stub}/v1" }),
             empty_body: false,
@@ -292,6 +292,9 @@ async fn a_rejected_empty_body_counts_as_verified_only_where_one_is_sent() {
             .await;
         if case.empty_body {
             assert_eq!(outcome, Ok(VerifyOutcome::Verified), "{}", case.name);
+        } else if case.name == "gemini" {
+            // Gemini answers a bad key with 400 API_KEY_INVALID.
+            assert_eq!(outcome.unwrap_err().kind, VerifyErrorKind::Unauthorized);
         } else {
             assert_eq!(
                 outcome.unwrap_err().kind,
@@ -364,7 +367,23 @@ async fn llamacpp_checks_health_and_skips_models_without_a_key() {
     let provider = RemoteLlamaCppProvider::new();
     assert_eq!(provider.verify(&no_key).await, Ok(VerifyOutcome::Verified));
     let paths: Vec<String> = stub.seen().iter().map(|s| s.target.clone()).collect();
-    assert_eq!(paths, ["/health"], "no key, so /models is not called");
+    assert_eq!(paths, ["/health"], "no key, so nothing checks one");
+
+    // With a key, it is checked on /tokenize, which --api-key guards
+    // (recent llama-server leaves /models and /health public).
+    let keyed = StubServer::start(&[
+        ("GET", "/health", Reply::Status(200)),
+        ("POST", "/tokenize", Reply::Status(401)),
+        ("GET", "/v1/models", Reply::Status(200)),
+    ])
+    .await;
+    let failure = provider
+        .verify(&spec(&case, &keyed.url(), "keyed", true))
+        .await
+        .unwrap_err();
+    assert_eq!(failure.kind, VerifyErrorKind::Unauthorized);
+    let paths: Vec<String> = keyed.seen().iter().map(|s| s.target.clone()).collect();
+    assert_eq!(paths, ["/health", "/tokenize"]);
 
     // A server still loading its model answers /health with 503.
     let loading = StubServer::start(&[("GET", "/health", Reply::Status(503))]).await;
@@ -374,6 +393,52 @@ async fn llamacpp_checks_health_and_skips_models_without_a_key() {
         .unwrap_err();
     assert_eq!(failure.kind, VerifyErrorKind::Unavailable);
     assert!(failure.detail.contains("loading"), "{}", failure.detail);
+}
+
+/// An Azure deployment that cannot serve the alias's task answers 400
+/// OperationNotSupported: reachable, but not verified.
+#[tokio::test]
+async fn azure_reports_a_deployment_that_cannot_serve_the_task() {
+    let case = cases().into_iter().find(|c| c.name == "azure").unwrap();
+    let stub = StubServer::start(&[(
+        "POST",
+        "/openai/deployments/my-deployment/embeddings",
+        Reply::Json(
+            400,
+            r#"{"error":{"code":"OperationNotSupported","message":"The embeddings operation does not work with the specified model"}}"#,
+        ),
+    )])
+    .await;
+    let provider = RemoteAzureOpenAIProvider::with_endpoint_override(&stub.url());
+    let failure = provider
+        .verify(&spec(&case, &stub.url(), "unsupported", true))
+        .await
+        .unwrap_err();
+    assert_eq!(failure.kind, VerifyErrorKind::Config);
+    assert!(
+        failure.detail.contains("OperationNotSupported"),
+        "{}",
+        failure.detail
+    );
+    assert!(
+        !failure.detail.contains("does not work"),
+        "the body message is not echoed"
+    );
+
+    // Any other 400 (here, the empty body itself) means the request got through.
+    let ok = StubServer::start(&[(
+        "POST",
+        "/openai/deployments/my-deployment/embeddings",
+        Reply::Json(400, r#"{"error":{"code":"BadRequest"}}"#),
+    )])
+    .await;
+    let provider = RemoteAzureOpenAIProvider::with_endpoint_override(&ok.url());
+    assert_eq!(
+        provider
+            .verify(&spec(&case, &ok.url(), "badrequest", true))
+            .await,
+        Ok(VerifyOutcome::Verified)
+    );
 }
 
 #[tokio::test]

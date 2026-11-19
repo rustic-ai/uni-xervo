@@ -125,7 +125,7 @@ impl ModelProvider for RemoteVoyageAIProvider {
         spec: &ModelAliasSpec,
     ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
         use crate::provider::remote_common::{
-            credential_env_name, missing_credential, verify_send_empty_body,
+            On400, credential_env_name, missing_credential, verify_send_with,
         };
         let env = credential_env_name(&spec.options, "api_key_env", "VOYAGE_API_KEY");
         let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
@@ -139,9 +139,14 @@ impl ModelProvider for RemoteVoyageAIProvider {
             "{}/v1/{operation}",
             self.base.root("https://api.voyageai.com")
         );
-        verify_send_empty_body(
-            self.base.client.post(&url).bearer_auth(key),
+        verify_send_with(
+            self.base
+                .client
+                .post(&url)
+                .bearer_auth(key)
+                .json(&serde_json::json!({})),
             &crate::inspect::redact_url(&url),
+            On400::Verified { unsupported: &[] },
         )
         .await
     }

@@ -208,10 +208,17 @@ impl ModelProvider for RemoteLlamaCppProvider {
             return Ok(crate::inspect::VerifyOutcome::Verified);
         };
         let key = std::env::var(env).map_err(|_| missing_credential(env))?;
-        let models = format!("{base}/models");
+        // Recent llama-server exempts `/models` and `/health` from
+        // --api-key, so check the key on `/tokenize`, which it guards; an
+        // empty string tokenizes to nothing.
+        let tokenize = format!("{}/tokenize", resolve_tokenizer_base_url(base));
         verify_send(
-            self.base.client.get(&models).bearer_auth(key),
-            &crate::inspect::redact_url(&models),
+            self.base
+                .client
+                .post(&tokenize)
+                .bearer_auth(key)
+                .json(&serde_json::json!({ "content": "" })),
+            &crate::inspect::redact_url(&tokenize),
         )
         .await
     }

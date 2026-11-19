@@ -16,6 +16,7 @@ pub use crate::inspect::{
     AliasSnapshot, LoadState, ProviderDescription, ProviderSnapshot, VerificationStatus,
     VerifyErrorKind, VerifyFailure, VerifyOutcome,
 };
+#[doc(inline)]
 pub use crate::runtime::{ModelRuntime, ModelRuntimeBuilder};
 
 // Provider + capability surface.
