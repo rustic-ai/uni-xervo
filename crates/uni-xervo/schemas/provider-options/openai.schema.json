@@ -1,6 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/openai.schema.json",
   "title": "OpenAI Provider Options",
+  "description": "Options for the remote/openai provider. `$defs/<task>` holds the schema for one task; the top-level schema accepts the keys of any task.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -8,15 +10,44 @@
       "type": "string",
       "description": "Environment variable name that contains the OpenAI API key."
     },
+    "base_url": {
+      "type": "string",
+      "pattern": "^\\s*https?://",
+      "description": "Override the API base URL (default: https://api.openai.com/v1). Set this to target an OpenAI-compatible server such as OpenRouter, vLLM, LM Studio, or Ollama. Should include the version path segment (e.g. /v1)."
+    },
     "embedding_dimensions": {
       "type": "integer",
       "minimum": 1,
-      "description": "Override embedding vector dimensions reported by the model handle."
+      "description": "Embed task only. Override embedding vector dimensions reported by the model handle."
+    }
+  },
+  "$defs": {
+    "embed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "base_url": {
+          "$ref": "#/properties/base_url"
+        },
+        "embedding_dimensions": {
+          "$ref": "#/properties/embedding_dimensions"
+        }
+      }
     },
-    "base_url": {
-      "type": "string",
-      "format": "uri",
-      "description": "Override the API base URL (default: https://api.openai.com/v1). Set this to target an OpenAI-compatible server such as OpenRouter, vLLM, LM Studio, or Ollama. Should include the version path segment (e.g. /v1)."
+    "generate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "base_url": {
+          "$ref": "#/properties/base_url"
+        }
+      }
     }
   }
 }

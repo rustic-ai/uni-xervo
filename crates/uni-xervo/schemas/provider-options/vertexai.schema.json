@@ -1,6 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/vertexai.schema.json",
   "title": "Vertex AI Provider Options",
+  "description": "Options for the remote/vertexai provider. `$defs/<task>` holds the schema for one task; the top-level schema accepts the keys of any task.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -23,7 +25,48 @@
     "embedding_dimensions": {
       "type": "integer",
       "minimum": 1,
-      "description": "Optional explicit embedding dimension for model handles."
+      "description": "Embed task only. Override embedding vector dimensions reported by the model handle."
+    }
+  },
+  "$defs": {
+    "embed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_token_env": {
+          "$ref": "#/properties/api_token_env"
+        },
+        "project_id": {
+          "$ref": "#/properties/project_id"
+        },
+        "location": {
+          "$ref": "#/properties/location"
+        },
+        "publisher": {
+          "$ref": "#/properties/publisher"
+        },
+        "embedding_dimensions": {
+          "$ref": "#/properties/embedding_dimensions"
+        }
+      }
+    },
+    "generate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_token_env": {
+          "$ref": "#/properties/api_token_env"
+        },
+        "project_id": {
+          "$ref": "#/properties/project_id"
+        },
+        "location": {
+          "$ref": "#/properties/location"
+        },
+        "publisher": {
+          "$ref": "#/properties/publisher"
+        }
+      }
     }
   }
 }

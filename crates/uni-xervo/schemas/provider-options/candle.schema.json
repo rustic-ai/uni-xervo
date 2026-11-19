@@ -1,12 +1,25 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/candle.schema.json",
   "title": "Candle Provider Options",
+  "description": "Options for the local/candle provider. `$defs/<task>` holds the schema for one task; the top-level schema accepts the keys of any task.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "cache_dir": {
       "type": "string",
       "description": "Path to the per-model cache directory."
+    }
+  },
+  "$defs": {
+    "embed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        }
+      }
     }
   }
 }

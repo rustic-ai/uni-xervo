@@ -96,6 +96,7 @@ pub mod prelude;
 pub mod provider;
 pub mod reliability;
 pub mod runtime;
+pub mod schemas;
 pub mod score;
 pub mod traits;
 

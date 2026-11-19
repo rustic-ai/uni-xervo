@@ -1,6 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/onnx.schema.json",
   "title": "ONNX Provider Options",
+  "description": "Options for the local/onnx provider. Each task accepts the shared session keys plus its own; `$defs/<task>` holds the schema for one task, and the top-level schema accepts the keys of any task.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -24,8 +26,7 @@
           "coreml",
           "directml"
         ]
-      },
-      "minItems": 1
+      }
     },
     "graph_optimization_level": {
       "type": "string",
@@ -47,6 +48,66 @@
       "minimum": 1,
       "description": "Intra-op thread count passed to ONNX Runtime."
     },
+    "cache_dir": {
+      "type": "string",
+      "description": "Overrides UNI_CACHE_DIR and the default .uni_cache/onnx-.../ location."
+    },
+    "tokenizer_path": {
+      "type": "string",
+      "description": "Relative path of tokenizer.json within the repo (default: tokenizer.json)."
+    },
+    "pooling": {
+      "type": "string",
+      "enum": [
+        "cls",
+        "mean",
+        "max",
+        "last-token"
+      ],
+      "description": "Pooling over token states. Required when no preset matches; last-token suits decoder-style embedders."
+    },
+    "normalize": {
+      "type": "boolean",
+      "description": "Apply L2 normalization to each output vector (default: true)."
+    },
+    "dimensions": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Output vector width; required when no preset matches and validated against the model."
+    },
+    "max_seq_len": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Truncation cap for tokenizer input."
+    },
+    "token_type_ids": {
+      "type": "boolean",
+      "description": "Whether the model takes a token_type_ids tensor."
+    },
+    "output_name": {
+      "type": "string",
+      "description": "Explicit ONNX output to read; defaults to the first session output."
+    },
+    "output_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Positional output to read when output_name is not set."
+    },
+    "style": {
+      "type": "string",
+      "enum": [
+        "cross-encoder",
+        "generative",
+        "granite-docling",
+        "mineru",
+        "olmocr"
+      ],
+      "description": "Rerank: cross-encoder or generative. Document extract: the output dialect, granite-docling, mineru or olmocr."
+    },
+    "instruction": {
+      "type": "string",
+      "description": "Generative rerank only. Task description shown to the reranker."
+    },
     "generation": {
       "type": "string",
       "enum": [
@@ -54,6 +115,14 @@
         "v7"
       ],
       "description": "Which kniv NLP generation the model repo holds. Inferred from the repo (onnx/onnx_meta.json means v7) when omitted."
+    },
+    "onnx_path": {
+      "type": "string",
+      "description": "Relative path of the .onnx graph within the repo."
+    },
+    "label_maps_path": {
+      "type": "string",
+      "description": "kniv v1 only. Relative path of label_maps.json within the repo."
     },
     "variant": {
       "type": "string",
@@ -66,6 +135,709 @@
     "label_bank_path": {
       "type": "string",
       "description": "Relative path to a kniv v7 label_bank.json inside the repo, which marks the relations whose thresholds were tuned. Default: label_bank.json."
+    },
+    "image_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Square input edge in pixels."
+    },
+    "normalization": {
+      "type": "string",
+      "enum": [
+        "siglip",
+        "imagenet"
+      ],
+      "description": "Pixel normalization: siglip ((x/255-0.5)/0.5) or imagenet."
+    },
+    "pool": {
+      "type": "string",
+      "enum": [
+        "none",
+        "mean"
+      ],
+      "description": "Pooling over the image model's output (default: none)."
+    },
+    "char_dict_path": {
+      "type": "string",
+      "description": "Character dictionary file within the repo, one entry per line."
+    },
+    "image_height": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Height every text line is resized to (default: 48)."
+    },
+    "image_width": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Narrowest a batch of text lines is (default: 320); lines keep their aspect ratio and are right-padded."
+    },
+    "max_image_width": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Widest a text line is resized to (default: 3200); must be at least image_width."
+    },
+    "blank_class": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The CTC blank's class index (default: 0)."
+    },
+    "use_space_char": {
+      "type": "boolean",
+      "description": "Whether the recognizer has a space class after the last dictionary entry. Detected from the model's class count when omitted."
+    },
+    "det_onnx_path": {
+      "type": "string",
+      "description": "DBNet detector .onnx within the repo; setting it turns on two-stage detection."
+    },
+    "det_model_id": {
+      "type": "string",
+      "description": "Separate Hugging Face repo for the detector (default: the alias's model_id)."
+    },
+    "det_limit_side": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Longest side the page is resized to before detection (default: 960)."
+    },
+    "det_bin_threshold": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Probability-map binarization threshold (default: 0.3)."
+    },
+    "det_box_score_threshold": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Minimum mean box probability to keep a region (default: 0.6)."
+    },
+    "det_unclip_ratio": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Box dilation (unclip) ratio (default: 1.5)."
+    },
+    "det_min_box_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Minimum box side in detector pixels (default: 3)."
+    },
+    "det_input_name": {
+      "type": "string",
+      "description": "Detector input tensor name (default: x)."
+    },
+    "det_output_name": {
+      "type": "string",
+      "description": "Detector output tensor name (default: the first output)."
+    },
+    "sparse_method": {
+      "type": "string",
+      "enum": [
+        "mlm",
+        "lexical"
+      ],
+      "description": "Sparse recipe: SPLADE-style MLM logits or BGE-M3 lexical weights. Required when no preset matches."
+    },
+    "top_k": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Keep only the highest-weight terms per sparse vector."
+    },
+    "drop_special_tokens": {
+      "type": "boolean",
+      "description": "Drop special-token vectors from multi-vector output (default: false)."
+    }
+  },
+  "$defs": {
+    "embed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "tokenizer_path": {
+          "$ref": "#/properties/tokenizer_path"
+        },
+        "pooling": {
+          "$ref": "#/properties/pooling"
+        },
+        "normalize": {
+          "$ref": "#/properties/normalize"
+        },
+        "dimensions": {
+          "$ref": "#/properties/dimensions"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        },
+        "token_type_ids": {
+          "$ref": "#/properties/token_type_ids"
+        },
+        "output_name": {
+          "$ref": "#/properties/output_name"
+        }
+      }
+    },
+    "rerank": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "cross-encoder",
+            "generative"
+          ],
+          "description": "cross-encoder (default) for single-logit models, generative for LLM rerankers."
+        },
+        "instruction": {
+          "$ref": "#/properties/instruction"
+        }
+      }
+    },
+    "raw": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        }
+      }
+    },
+    "nlp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "tokenizer_path": {
+          "$ref": "#/properties/tokenizer_path"
+        },
+        "generation": {
+          "$ref": "#/properties/generation"
+        },
+        "onnx_path": {
+          "$ref": "#/properties/onnx_path"
+        },
+        "label_maps_path": {
+          "$ref": "#/properties/label_maps_path"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        },
+        "variant": {
+          "$ref": "#/properties/variant"
+        },
+        "calibration_path": {
+          "$ref": "#/properties/calibration_path"
+        },
+        "label_bank_path": {
+          "$ref": "#/properties/label_bank_path"
+        }
+      },
+      "allOf": [
+        {
+          "not": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "required": [
+                      "variant"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "calibration_path"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "label_bank_path"
+                    ]
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "required": [
+                      "onnx_path"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "label_maps_path"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "max_seq_len"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "description": "kniv v7 keys (variant, calibration_path, label_bank_path) and v1 keys (onnx_path, label_maps_path, max_seq_len) cannot be mixed."
+        },
+        {
+          "if": {
+            "properties": {
+              "generation": {
+                "const": "v7"
+              }
+            },
+            "required": [
+              "generation"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "onnx_path"
+                  ]
+                },
+                {
+                  "required": [
+                    "label_maps_path"
+                  ]
+                },
+                {
+                  "required": [
+                    "max_seq_len"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "generation": {
+                "const": "v1"
+              }
+            },
+            "required": [
+              "generation"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "variant"
+                  ]
+                },
+                {
+                  "required": [
+                    "calibration_path"
+                  ]
+                },
+                {
+                  "required": [
+                    "label_bank_path"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "embed_image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "onnx_path": {
+          "$ref": "#/properties/onnx_path"
+        },
+        "image_size": {
+          "$ref": "#/properties/image_size"
+        },
+        "dimensions": {
+          "$ref": "#/properties/dimensions"
+        },
+        "normalization": {
+          "$ref": "#/properties/normalization"
+        },
+        "pool": {
+          "$ref": "#/properties/pool"
+        },
+        "normalize": {
+          "$ref": "#/properties/normalize"
+        },
+        "output_name": {
+          "$ref": "#/properties/output_name"
+        }
+      }
+    },
+    "ocr": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "onnx_path": {
+          "$ref": "#/properties/onnx_path"
+        },
+        "char_dict_path": {
+          "$ref": "#/properties/char_dict_path"
+        },
+        "image_height": {
+          "$ref": "#/properties/image_height"
+        },
+        "image_width": {
+          "$ref": "#/properties/image_width"
+        },
+        "normalization": {
+          "$ref": "#/properties/normalization"
+        },
+        "blank_class": {
+          "$ref": "#/properties/blank_class"
+        },
+        "use_space_char": {
+          "$ref": "#/properties/use_space_char"
+        },
+        "max_image_width": {
+          "$ref": "#/properties/max_image_width"
+        },
+        "output_name": {
+          "$ref": "#/properties/output_name"
+        },
+        "det_onnx_path": {
+          "$ref": "#/properties/det_onnx_path"
+        },
+        "det_model_id": {
+          "$ref": "#/properties/det_model_id"
+        },
+        "det_limit_side": {
+          "$ref": "#/properties/det_limit_side"
+        },
+        "det_bin_threshold": {
+          "$ref": "#/properties/det_bin_threshold"
+        },
+        "det_box_score_threshold": {
+          "$ref": "#/properties/det_box_score_threshold"
+        },
+        "det_unclip_ratio": {
+          "$ref": "#/properties/det_unclip_ratio"
+        },
+        "det_min_box_size": {
+          "$ref": "#/properties/det_min_box_size"
+        },
+        "det_input_name": {
+          "$ref": "#/properties/det_input_name"
+        },
+        "det_output_name": {
+          "$ref": "#/properties/det_output_name"
+        }
+      }
+    },
+    "document_extract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "granite-docling",
+            "mineru",
+            "olmocr"
+          ],
+          "description": "Output dialect of the document model."
+        },
+        "onnx_path": {
+          "$ref": "#/properties/onnx_path"
+        },
+        "tokenizer_path": {
+          "$ref": "#/properties/tokenizer_path"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        }
+      }
+    },
+    "embed_sparse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "tokenizer_path": {
+          "$ref": "#/properties/tokenizer_path"
+        },
+        "sparse_method": {
+          "$ref": "#/properties/sparse_method"
+        },
+        "output_name": {
+          "$ref": "#/properties/output_name"
+        },
+        "output_index": {
+          "$ref": "#/properties/output_index"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        },
+        "token_type_ids": {
+          "$ref": "#/properties/token_type_ids"
+        },
+        "top_k": {
+          "$ref": "#/properties/top_k"
+        }
+      }
+    },
+    "embed_multi_vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "tokenizer_path": {
+          "$ref": "#/properties/tokenizer_path"
+        },
+        "dimensions": {
+          "$ref": "#/properties/dimensions"
+        },
+        "normalize": {
+          "$ref": "#/properties/normalize"
+        },
+        "drop_special_tokens": {
+          "$ref": "#/properties/drop_special_tokens"
+        },
+        "output_name": {
+          "$ref": "#/properties/output_name"
+        },
+        "output_index": {
+          "$ref": "#/properties/output_index"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        },
+        "token_type_ids": {
+          "$ref": "#/properties/token_type_ids"
+        }
+      }
+    },
+    "embed_hybrid": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/properties/artifact"
+        },
+        "max_batch_size": {
+          "$ref": "#/properties/max_batch_size"
+        },
+        "execution_providers": {
+          "$ref": "#/properties/execution_providers"
+        },
+        "graph_optimization_level": {
+          "$ref": "#/properties/graph_optimization_level"
+        },
+        "inter_op_num_threads": {
+          "$ref": "#/properties/inter_op_num_threads"
+        },
+        "intra_op_num_threads": {
+          "$ref": "#/properties/intra_op_num_threads"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        },
+        "tokenizer_path": {
+          "$ref": "#/properties/tokenizer_path"
+        },
+        "max_seq_len": {
+          "$ref": "#/properties/max_seq_len"
+        },
+        "token_type_ids": {
+          "$ref": "#/properties/token_type_ids"
+        },
+        "top_k": {
+          "$ref": "#/properties/top_k"
+        }
+      }
     }
   }
 }

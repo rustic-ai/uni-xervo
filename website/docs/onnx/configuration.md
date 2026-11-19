@@ -151,7 +151,7 @@ Uni-Xervo validates ONNX options at runtime build/register time.
 
 It rejects:
 
-- unknown option keys,
+- unknown option keys, and keys that belong to another task,
 - wrong value types,
 - unsupported execution provider names,
 - invalid batch/thread counts.
@@ -159,4 +159,4 @@ It rejects:
 Schema files:
 
 - `schemas/model-catalog.schema.json`
-- `schemas/provider-options/onnx.schema.json`
+- `schemas/provider-options/onnx.schema.json` (one schema per task under `$defs/<task>`)

@@ -4,7 +4,48 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`uni_xervo::schemas` publishes the catalog rules for configuration
+  tools.** `MODEL_CATALOG` and `provider_options_schema(id)` return the JSON
+  Schemas this crate version validates against; `bundled_providers()`,
+  `supported_tasks(id)` and `option_keys(id, task)` return the table the
+  runtime checks; `validate_options(id, task, options)` runs the runtime's own
+  check on one alias. None of it needs a provider feature, a runtime or a model
+  load. (#62)
+
+### Changed
+
+- **A catalog entry naming a task its bundled provider does not support is
+  rejected when the catalog is built.** Before, only the multimodal tasks were
+  checked there; `remote/anthropic` with `embed`, say, was accepted and failed
+  on first use. The error lists the tasks the provider does support.
+- **A key that belongs to another task is named as such for every bundled
+  provider:** `Option 'embedding_dimensions' for provider 'remote/cohere'
+  applies only to task 'embed' (got 'rerank')`. This replaces "only valid for
+  embed tasks" on the remote providers, and "Unknown option" for, say, an
+  ONNX OCR key on an embed alias.
+- **`local/onnx` checks values it used to pass through:** `max_seq_len` on
+  rerank, the `embed_hybrid` keys (`tokenizer_path`, `max_seq_len`, `top_k`,
+  `token_type_ids`), and the OCR `det_*` keys even when `det_onnx_path` is not
+  set.
+
 ### Fixed
+
+- **The shipped JSON Schemas match runtime validation again (#62).** The
+  catalog schema accepted only 4 of the 14 tasks, so any sparse, hybrid, NLP,
+  OCR, transcription or document-extraction catalog failed it. The ONNX schema
+  set `additionalProperties: false` while missing most of the keys the runtime
+  accepts (every per-task key, `cache_dir`, all OCR keys), so it rejected valid
+  configs; it also required a non-empty `execution_providers`, which the
+  runtime does not. There was no `local/whisper-cpp` schema. Each provider file
+  now has one schema per task under `$defs/<task>`, the catalog schema routes
+  every `(provider_id, task)` pair to it and rejects unsupported tasks, every
+  document has a `$id`, and URL keys check for an `http(s)://` prefix as the
+  runtime does instead of using `format: uri`. A new test fails when a schema,
+  the runtime's key table, or a provider's `capabilities()` disagree, and runs
+  over 500 generated accept/reject cases through both the schema and the
+  runtime validator.
 
 - **Loading the same cached model from several processes no longer fails at
   random.** `hf-hub` 1.0 rewrites `refs/main` on every cached download with a

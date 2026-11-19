@@ -172,7 +172,7 @@ async fn rejects_non_string_api_key_env() {
 async fn rejects_unsupported_tasks() {
     assert_rejects(
         build(ModelTask::Raw, valid()).await,
-        "supports tasks 'embed', 'generate', 'rerank' and 'document_extract'",
+        "supports 'embed', 'generate', 'rerank', 'document_extract'",
     );
 }
 

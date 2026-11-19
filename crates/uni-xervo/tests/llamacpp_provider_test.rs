@@ -635,7 +635,7 @@ async fn an_unsupported_task_is_rejected_at_catalog_validation() {
     };
     assert!(
         err.to_string()
-            .contains("supports tasks 'embed', 'generate', 'rerank' and 'document_extract'"),
+            .contains("supports 'embed', 'generate', 'rerank', 'document_extract'"),
         "{err}"
     );
 }

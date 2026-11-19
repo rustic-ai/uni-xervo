@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/whisper-cpp.schema.json",
+  "title": "whisper.cpp Provider Options",
+  "description": "Options for the local/whisper-cpp provider. `$defs/<task>` holds the schema for one task; the top-level schema accepts the keys of any task.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "model_path": {
+      "type": "string",
+      "description": "GGML model file within the Hugging Face repo (default: ggml-base.bin)."
+    },
+    "default_language": {
+      "type": "string",
+      "description": "ISO 639-1 language code applied when a transcription request does not name one."
+    },
+    "cache_dir": {
+      "type": "string",
+      "description": "Overrides UNI_CACHE_DIR and the default cache location for downloaded models."
+    }
+  },
+  "$defs": {
+    "transcribe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model_path": {
+          "$ref": "#/properties/model_path"
+        },
+        "default_language": {
+          "$ref": "#/properties/default_language"
+        },
+        "cache_dir": {
+          "$ref": "#/properties/cache_dir"
+        }
+      }
+    }
+  }
+}

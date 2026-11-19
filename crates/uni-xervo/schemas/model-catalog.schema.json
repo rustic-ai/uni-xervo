@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/model-catalog.schema.json",
   "title": "Xervo Model Catalog",
   "type": "array",
   "items": {
@@ -22,7 +23,17 @@
           "embed",
           "rerank",
           "generate",
-          "raw"
+          "raw",
+          "embed_image",
+          "embed_audio",
+          "embed_multimodal",
+          "embed_sparse",
+          "embed_multi_vector",
+          "embed_hybrid",
+          "nlp",
+          "document_extract",
+          "transcribe",
+          "ocr"
         ]
       },
       "provider_id": {
@@ -89,32 +100,6 @@
         "if": {
           "properties": {
             "provider_id": {
-              "const": "local/onnx"
-            }
-          },
-          "required": [
-            "provider_id"
-          ]
-        },
-        "then": {
-          "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/onnx.schema.json"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          }
-        }
-      },
-      {
-        "if": {
-          "properties": {
-            "provider_id": {
               "const": "remote/openai"
             }
           },
@@ -124,91 +109,67 @@
         },
         "then": {
           "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/openai.schema.json"
-                },
-                {
-                  "type": "null"
-                }
+            "task": {
+              "enum": [
+                "embed",
+                "generate"
               ]
             }
-          }
-        }
-      },
-      {
-        "if": {
-          "properties": {
-            "provider_id": {
-              "const": "remote/llamacpp"
-            }
           },
-          "required": [
-            "provider_id"
-          ]
-        },
-        "then": {
-          "required": [
-            "options"
-          ],
-          "properties": {
-            "options": {
-              "$ref": "./provider-options/llamacpp.schema.json"
-            }
-          }
-        }
-      },
-      {
-        "if": {
-          "properties": {
-            "provider_id": {
-              "const": "remote/gemini"
-            }
-          },
-          "required": [
-            "provider_id"
-          ]
-        },
-        "then": {
-          "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/gemini.schema.json"
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
                 },
-                {
-                  "type": "null"
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/openai.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
                 }
-              ]
-            }
-          }
-        }
-      },
-      {
-        "if": {
-          "properties": {
-            "provider_id": {
-              "const": "remote/vertexai"
-            }
-          },
-          "required": [
-            "provider_id"
-          ]
-        },
-        "then": {
-          "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/vertexai.schema.json"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
                 },
-                {
-                  "type": "null"
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/openai.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
                 }
-              ]
+              }
             }
-          }
+          ]
         }
       },
       {
@@ -224,43 +185,67 @@
         },
         "then": {
           "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/mistral.schema.json"
-                },
-                {
-                  "type": "null"
-                }
+            "task": {
+              "enum": [
+                "embed",
+                "generate"
               ]
-            }
-          }
-        }
-      },
-      {
-        "if": {
-          "properties": {
-            "provider_id": {
-              "const": "remote/anthropic"
             }
           },
-          "required": [
-            "provider_id"
-          ]
-        },
-        "then": {
-          "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/anthropic.schema.json"
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
                 },
-                {
-                  "type": "null"
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/mistral.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
                 }
-              ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/mistral.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
             }
-          }
+          ]
         }
       },
       {
@@ -276,17 +261,219 @@
         },
         "then": {
           "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/voyageai.schema.json"
-                },
-                {
-                  "type": "null"
-                }
+            "task": {
+              "enum": [
+                "embed",
+                "rerank"
               ]
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/voyageai.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "rerank"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/voyageai.schema.json#/$defs/rerank"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
+              "const": "remote/gemini"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "task": {
+              "enum": [
+                "embed",
+                "embed_multimodal",
+                "generate"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/gemini.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed_multimodal"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/gemini.schema.json#/$defs/embed_multimodal"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/gemini.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
+              "const": "remote/anthropic"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "task": {
+              "enum": [
+                "generate"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/anthropic.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       {
@@ -302,17 +489,121 @@
         },
         "then": {
           "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/cohere.schema.json"
-                },
-                {
-                  "type": "null"
-                }
+            "task": {
+              "enum": [
+                "embed",
+                "embed_multimodal",
+                "generate",
+                "rerank"
               ]
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/cohere.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed_multimodal"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/cohere.schema.json#/$defs/embed_multimodal"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/cohere.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "rerank"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/cohere.schema.json#/$defs/rerank"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       {
@@ -328,17 +619,248 @@
         },
         "then": {
           "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/azure-openai.schema.json"
-                },
-                {
-                  "type": "null"
-                }
+            "task": {
+              "enum": [
+                "embed",
+                "generate"
               ]
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/azure-openai.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/azure-openai.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
+              "const": "remote/vertexai"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "task": {
+              "enum": [
+                "embed",
+                "generate"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/vertexai.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/vertexai.schema.json#/$defs/generate"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
+              "const": "remote/llamacpp"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "task": {
+              "enum": [
+                "embed",
+                "generate",
+                "rerank",
+                "document_extract"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "$ref": "./provider-options/llamacpp.schema.json#/$defs/embed"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "generate"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "$ref": "./provider-options/llamacpp.schema.json#/$defs/generate"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "rerank"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "$ref": "./provider-options/llamacpp.schema.json#/$defs/rerank"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "document_extract"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "$ref": "./provider-options/llamacpp.schema.json#/$defs/document_extract"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "options"
+          ]
         }
       },
       {
@@ -354,17 +876,381 @@
         },
         "then": {
           "properties": {
-            "options": {
-              "anyOf": [
-                {
-                  "$ref": "./provider-options/candle.schema.json"
-                },
-                {
-                  "type": "null"
-                }
+            "task": {
+              "enum": [
+                "embed"
               ]
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/candle.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
+              "const": "local/whisper-cpp"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "task": {
+              "enum": [
+                "transcribe"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "transcribe"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/whisper-cpp.schema.json#/$defs/transcribe"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "provider_id": {
+              "const": "local/onnx"
+            }
+          },
+          "required": [
+            "provider_id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "task": {
+              "enum": [
+                "embed",
+                "rerank",
+                "raw",
+                "nlp",
+                "embed_image",
+                "ocr",
+                "document_extract",
+                "embed_sparse",
+                "embed_multi_vector",
+                "embed_hybrid"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/embed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "rerank"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/rerank"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "raw"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/raw"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "nlp"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/nlp"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed_image"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/embed_image"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "ocr"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/ocr"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "document_extract"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/document_extract"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed_sparse"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/embed_sparse"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed_multi_vector"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/embed_multi_vector"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "task": {
+                    "const": "embed_hybrid"
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "options": {
+                    "anyOf": [
+                      {
+                        "$ref": "./provider-options/onnx.schema.json#/$defs/embed_hybrid"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
         }
       }
     ]

@@ -36,7 +36,6 @@ flowchart LR
 
 ## Design notes for contributors
 
-- `options_validation` should be updated whenever new provider options are added.
-- Provider option schemas under `schemas/provider-options/` should mirror runtime validation.
+- A new provider option or task goes in `BUNDLED_PROVIDERS` in `options_validation.rs` (the accepted `(provider, task)` pairs and keys), with its value check in that provider's validator, and in the provider's file under `schemas/provider-options/` (the key under `$defs/<task>`, its type under `properties`). `tests/option_schemas_test.rs` fails until the table, the schemas and each provider's `capabilities()` agree, and runs generated accept/reject cases through both the schema and the validator.
 - Remote providers should use shared helpers in `provider/remote_common.rs` for consistent auth resolution, HTTP status mapping, and circuit breaker behavior.
 - New providers must declare accurate `capabilities()` so runtime task resolution remains correct.
