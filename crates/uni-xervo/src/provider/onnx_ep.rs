@@ -297,7 +297,9 @@ impl SessionConfig {
             .map(|_| ())
     }
 
-    /// The execution providers a session built from this config uses:
+    /// The execution providers a session built from this config would
+    /// request (what the load-time probe starts from; a built session reports
+    /// the providers that actually registered, see [`BuiltSession`]):
     /// the requested list minus any whose feature is not compiled in.
     pub(crate) fn effective_execution_providers(&self) -> Vec<OnnxExecutionProvider> {
         effective_ep_list(self.execution_providers.as_deref())
@@ -338,18 +340,57 @@ pub(crate) fn build_session(
         Err(CommitError::AfterRegistration { error, attached })
             if retry_commit_on_cpu(&plan, &attached) =>
         {
-            tracing::warn!(
-                alias = %alias,
-                attached = %join_eps(&attached),
-                error = %error,
-                "ONNX session failed to build on the requested execution providers; \
-                 falling back to CPU"
-            );
-            commit_session(path, alias, cfg, &[(OnnxExecutionProvider::Cpu, false)])
-                .map_err(CommitError::into_error)
+            let on_cpu = commit_session(path, alias, cfg, &[(OnnxExecutionProvider::Cpu, false)])
+                .map_err(CommitError::into_error);
+            resolve_cpu_retry(alias, &attached, error, on_cpu)
         }
         Err(e) => Err(e.into_error()),
     }
+}
+
+/// Settle a CPU retry after a session failed to commit on `attached`.
+///
+/// A commit error does not say whether the accelerator caused it, so the
+/// retry is attempted for any failure. If CPU succeeds, the accelerator was
+/// the problem: warn and use the CPU session. If CPU fails too, the model
+/// itself is at fault (corrupt file, missing sidecar), so return the
+/// original error, which names the cause, and log nothing about a fallback.
+fn resolve_cpu_retry<T>(
+    alias: &str,
+    attached: &[OnnxExecutionProvider],
+    original: RuntimeError,
+    on_cpu: Result<T>,
+) -> Result<T> {
+    match on_cpu {
+        Ok(session) => {
+            tracing::warn!(
+                alias = %alias,
+                failed = %join_eps(attached),
+                error = %original,
+                "ONNX session failed to build on the requested execution providers; \
+                 built it on CPU instead"
+            );
+            Ok(session)
+        }
+        Err(_) => Err(original),
+    }
+}
+
+/// The providers a session reports, from those that registered: everything
+/// up to and including `cpu`.
+///
+/// ORT gives each node to the first provider in the list that claims it, and
+/// the CPU provider claims every standard operator, so a provider listed
+/// after `cpu` runs nothing. Reporting it would let `["cpu", "coreml"]` look
+/// accelerated.
+fn reported_providers(mut attached: Vec<OnnxExecutionProvider>) -> Vec<OnnxExecutionProvider> {
+    if let Some(cpu) = attached
+        .iter()
+        .position(|ep| *ep == OnnxExecutionProvider::Cpu)
+    {
+        attached.truncate(cpu + 1);
+    }
+    attached
 }
 
 /// A failed [`commit_session`], telling apart a failure once providers had
@@ -416,7 +457,7 @@ fn commit_session(
     if let Some(e) = dispatch_err {
         return Err(before(e));
     }
-    let mut attached = registration.attached;
+    let mut attached = reported_providers(registration.attached);
     if attached.is_empty() {
         // Nothing registered (every entry skipped): ORT runs the graph on its
         // built-in CPU provider.
@@ -580,14 +621,14 @@ pub(crate) fn resolve_ep_list(
         .unwrap_or_else(default_execution_providers)
 }
 
-/// The EP list a session will *actually* be built with: [`resolve_ep_list`]
-/// minus any entry whose backing feature is not compiled in.
+/// The EP list a session will try to register: [`resolve_ep_list`] minus any
+/// entry whose backing feature is not compiled in.
 ///
-/// This is what [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
-/// reports, so a caller can tell that a list resolved to `["cpu"]` only
-/// because the build lacks `gpu-cuda` / `gpu-metal`.
+/// An upper bound on what [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
+/// reports, which is the subset that actually registered (see
+/// [`build_session`]).
 ///
-/// Deliberately infallible. Reporting happens *before* the fail-fast
+/// Deliberately infallible. It is computed *before* the fail-fast
 /// validation probe at each load site, and making this fallible would move
 /// the origin of EP errors and blur the "validate before any I/O" ordering
 /// that `onnx_ep_resolution_test.rs` pins. An empty return is unreachable in
@@ -1235,6 +1276,42 @@ mod tests {
             assert!(!retry_commit_on_cpu(&with_cpu, &[Cpu]));
             // No cpu entry: the caller asked for the accelerator or nothing.
             assert!(!retry_commit_on_cpu(&[(Cuda, true)], &[Cuda]));
+        }
+
+        #[test]
+        fn providers_after_cpu_are_not_reported() {
+            assert_eq!(reported_providers(vec![Cpu, CoreMl]), [Cpu]);
+            assert_eq!(reported_providers(vec![CoreMl, Cpu]), [CoreMl, Cpu]);
+            assert_eq!(reported_providers(vec![Cuda]), [Cuda]);
+        }
+
+        fn load_failure(cause: &str) -> RuntimeError {
+            RuntimeError::OnnxLoadFailure {
+                alias: "a".into(),
+                path: "m.onnx".into(),
+                cause: cause.into(),
+            }
+        }
+
+        #[test]
+        fn a_cpu_retry_that_succeeds_is_used() {
+            let got = resolve_cpu_retry("a", &[CoreMl, Cpu], load_failure("coreml"), Ok(7));
+            assert_eq!(got.unwrap(), 7);
+        }
+
+        /// A model that fails on CPU too (corrupt file) is reported with the
+        /// first attempt's error, not the retry's.
+        #[test]
+        fn a_cpu_retry_that_fails_returns_the_original_error() {
+            let got: Result<()> = resolve_cpu_retry(
+                "a",
+                &[CoreMl, Cpu],
+                load_failure("Protobuf parsing failed"),
+                Err(load_failure("second attempt")),
+            );
+            let msg = got.unwrap_err().to_string();
+            assert!(msg.contains("Protobuf parsing failed"), "{msg}");
+            assert!(!msg.contains("second attempt"), "{msg}");
         }
 
         #[test]

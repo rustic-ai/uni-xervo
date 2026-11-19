@@ -254,3 +254,60 @@ async fn raw_model_reports_cpu() {
     let model = rt.raw_tensor_model("test/model").await.unwrap();
     assert_eq!(model.active_execution_providers(), DEFAULT_EPS);
 }
+
+/// A raw alias on a local model file with the given provider list.
+#[cfg(feature = "gpu-metal")]
+async fn raw_with(path: &Path, eps: Value) -> uni_xervo::error::Result<Vec<String>> {
+    let spec = ModelAliasSpec {
+        alias: "test/model".to_string(),
+        task: ModelTask::Raw,
+        provider_id: "local/onnx".to_string(),
+        model_id: path.to_str().unwrap().to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options: json!({ "execution_providers": eps }),
+    };
+    let rt = ModelRuntime::builder()
+        .register_provider(LocalOnnxProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await?;
+    Ok(rt
+        .raw_tensor_model("test/model")
+        .await?
+        .active_execution_providers())
+}
+
+/// Nothing listed after `cpu` is reported: CPU claims every node first.
+#[cfg(feature = "gpu-metal")]
+#[tokio::test]
+async fn providers_after_cpu_are_not_reported() {
+    let model = fixture("dynamic_batch_linear.onnx");
+    assert_eq!(
+        raw_with(&model, json!(["cpu", "coreml"])).await.unwrap(),
+        ["cpu"]
+    );
+    assert_eq!(
+        raw_with(&model, json!(["coreml", "cpu"])).await.unwrap(),
+        ["coreml", "cpu"]
+    );
+}
+
+/// A model that cannot load on any provider fails with its own error, not a
+/// CPU-retry's.
+#[cfg(feature = "gpu-metal")]
+#[tokio::test]
+async fn a_broken_model_fails_with_its_own_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("garbage.onnx");
+    std::fs::write(&model, b"not an onnx model").unwrap();
+    let err = raw_with(&model, json!(["coreml", "cpu"]))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.to_lowercase().contains("protobuf"), "{err}");
+}

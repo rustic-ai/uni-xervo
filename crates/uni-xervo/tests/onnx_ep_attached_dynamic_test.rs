@@ -49,3 +49,39 @@ async fn an_accelerator_that_fails_to_register_is_not_reported() {
     let raw = runtime.raw_tensor_model("raw/linear").await.unwrap();
     assert_eq!(raw.active_execution_providers(), ["cpu"]);
 }
+
+/// A CPU-free list whose accelerator fails to register is a load error, not a
+/// silent CPU session.
+#[tokio::test]
+async fn a_strict_accelerator_that_fails_to_register_fails_the_load() {
+    if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+        eprintln!("Skipping test - set ORT_DYLIB_PATH to an ONNX Runtime library");
+        return;
+    }
+    let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/onnx/dynamic_batch_linear.onnx");
+    let spec = ModelAliasSpec {
+        alias: "raw/strict".to_string(),
+        task: ModelTask::Raw,
+        provider_id: "local/onnx".to_string(),
+        model_id: model.to_str().unwrap().to_string(),
+        revision: None,
+        warmup: WarmupPolicy::Lazy,
+        required: false,
+        timeout: None,
+        load_timeout: None,
+        retry: None,
+        options: serde_json::json!({ "execution_providers": ["directml"] }),
+    };
+    let runtime = ModelRuntime::builder()
+        .register_provider(LocalOnnxProvider::new())
+        .catalog(vec![spec])
+        .build()
+        .await
+        .unwrap();
+    let err = match runtime.raw_tensor_model("raw/strict").await {
+        Ok(_) => panic!("a CPU-free list whose provider cannot register must fail"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("\"directml\" failed to register"), "{err}");
+}

@@ -128,10 +128,15 @@ pub trait ModelInfo: Send + Sync {
     /// raw) do not, so an accelerator that attaches but fails at inference is
     /// not reflected for them.
     ///
+    /// Nothing listed after `cpu` is reported: ORT gives each node to the first
+    /// provider that claims it and CPU claims every standard operator, so
+    /// `["cpu", "coreml"]` reports `["cpu"]`.
+    ///
     /// A model built from several sessions reports the providers all of them
     /// attached: OCR with a detector lists only those both stages have, and a
     /// kniv v7 model starts from its `plain` graph and narrows if a graph
-    /// built later attached fewer.
+    /// built later attached fewer. So for kniv v7 the list can shrink after
+    /// load, on the first request that needs a new graph; it never grows.
     fn active_execution_providers(&self) -> Vec<String> {
         Vec::new()
     }
