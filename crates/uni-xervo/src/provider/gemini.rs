@@ -24,6 +24,14 @@ pub struct RemoteGeminiProvider {
 }
 
 impl RemoteGeminiProvider {
+    /// A provider whose verification requests go to `url` (a test stub).
+    #[cfg(test)]
+    pub(crate) fn with_endpoint_override(url: &str) -> Self {
+        let provider = Self::new();
+        provider.base.set_endpoint_override(url);
+        provider
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -137,6 +145,30 @@ impl ModelProvider for RemoteGeminiProvider {
 
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
+    }
+
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::provider::remote_common::{
+            credential_env_name, missing_credential, option_or, verify_send,
+        };
+        let env = credential_env_name(&spec.options, "api_key_env", "GEMINI_API_KEY");
+        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        let version = option_or(&spec.options, "api_version", "v1beta");
+        let url = format!(
+            "{}/{version}/models/{}",
+            self.base.root("https://generativelanguage.googleapis.com"),
+            spec.model_id
+        );
+        // The key rides in the query, so it is added here and never appears
+        // in `url`, which is what errors show.
+        verify_send(
+            self.base.client.get(&url).query(&[("key", key)]),
+            &crate::inspect::redact_url(&url),
+        )
+        .await
     }
 
     fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {

@@ -30,6 +30,14 @@ impl Default for RemoteAzureOpenAIProvider {
 }
 
 impl RemoteAzureOpenAIProvider {
+    /// A provider whose verification requests go to `url` (a test stub).
+    #[cfg(test)]
+    pub(crate) fn with_endpoint_override(url: &str) -> Self {
+        let provider = Self::new();
+        provider.base.set_endpoint_override(url);
+        provider
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -162,6 +170,48 @@ impl ModelProvider for RemoteAzureOpenAIProvider {
 
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
+    }
+
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::provider::remote_common::{
+            credential_env_name, missing_credential, verify_send_empty_body,
+        };
+        let env = credential_env_name(&spec.options, "api_key_env", "AZURE_OPENAI_API_KEY");
+        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        let Some(resource) = spec.options.get("resource_name").and_then(|v| v.as_str()) else {
+            return Err(crate::inspect::VerifyFailure::new(
+                crate::inspect::VerifyErrorKind::Config,
+                "option 'resource_name' is not set",
+            ));
+        };
+        let api_version = spec
+            .options
+            .get("api_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("2024-10-21");
+        // The data plane has no read-only call for a deployment, so post an
+        // empty body to it: a 400 proves the key and the deployment.
+        let operation = match spec.task {
+            ModelTask::Embed => "embeddings",
+            _ => "chat/completions",
+        };
+        let path = format!("/openai/deployments/{}/{operation}", spec.model_id);
+        let root = self
+            .base
+            .root(&format!("https://{resource}.openai.azure.com"));
+        let url = format!("{root}{path}");
+        verify_send_empty_body(
+            self.base
+                .client
+                .post(&url)
+                .query(&[("api-version", api_version)])
+                .header("api-key", key),
+            &crate::inspect::redact_url(&url),
+        )
+        .await
     }
 
     fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {

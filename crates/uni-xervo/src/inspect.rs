@@ -107,6 +107,97 @@ impl ProviderDescription {
     }
 }
 
+/// What [`ModelProvider::verify`](crate::traits::ModelProvider::verify)
+/// found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VerifyOutcome {
+    /// The endpoint answered and accepted the credential.
+    Verified,
+    /// Nothing to check: a local provider, or one that does not implement
+    /// verification.
+    NotApplicable,
+}
+
+/// Why a verification failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VerifyErrorKind {
+    /// The endpoint rejected the credential (HTTP 401 or 403). A 403 can
+    /// also mean a valid credential that lacks a permission.
+    Unauthorized,
+    /// The endpoint could not be reached (connection refused, DNS failure).
+    Unreachable,
+    /// The endpoint answered 404: the model or deployment does not exist, or
+    /// an OpenAI-compatible server has no `/models` route.
+    NotFound,
+    /// The endpoint answered 429.
+    RateLimited,
+    /// No answer within the alias's `load_timeout`.
+    Timeout,
+    /// The endpoint answered 5xx, or (llama.cpp) is still loading its model.
+    Unavailable,
+    /// The alias is misconfigured, e.g. its credential's environment
+    /// variable is not set.
+    Config,
+    /// Any other failure.
+    Other,
+}
+
+impl std::fmt::Display for VerifyErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unauthorized => "unauthorized",
+            Self::Unreachable => "unreachable",
+            Self::NotFound => "not found",
+            Self::RateLimited => "rate limited",
+            Self::Timeout => "timed out",
+            Self::Unavailable => "unavailable",
+            Self::Config => "configuration error",
+            Self::Other => "failed",
+        })
+    }
+}
+
+/// A failed verification, as a provider reports it.
+///
+/// `detail` never holds a credential: providers build it from status codes
+/// and redacted URLs only, never from request headers or response bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerifyFailure {
+    pub kind: VerifyErrorKind,
+    pub detail: String,
+}
+
+impl VerifyFailure {
+    pub fn new(kind: VerifyErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// An alias's last verification, for [`AliasSnapshot::verification`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum VerificationStatus {
+    /// [`ModelRuntime::verify`](crate::runtime::ModelRuntime::verify) has
+    /// not been called for this alias.
+    NotRequested,
+    /// Verification does not apply to this alias's provider.
+    NotApplicable { at: SystemTime },
+    /// The endpoint was reachable and accepted the credential.
+    Verified { at: SystemTime },
+    /// The last verification failed.
+    Failed {
+        kind: VerifyErrorKind,
+        detail: String,
+        at: SystemTime,
+    },
+}
+
 /// `url` with any userinfo (`user:pass@`), query (`?…`) and fragment (`#…`)
 /// removed, so it can be shown without leaking a credential.
 ///

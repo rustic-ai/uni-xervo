@@ -123,6 +123,17 @@ pub enum RuntimeError {
     /// The service is currently unavailable (HTTP 5xx, circuit breaker open, etc.).
     #[error("Unavailable")]
     Unavailable,
+
+    /// An opt-in verification of a remote alias failed: see
+    /// [`ModelRuntime::verify`](crate::runtime::ModelRuntime::verify). The
+    /// message never contains a credential.
+    #[error("Verification failed for alias '{alias}' (provider '{provider_id}'): {kind}: {detail}")]
+    Verification {
+        alias: String,
+        provider_id: String,
+        kind: crate::inspect::VerifyErrorKind,
+        detail: String,
+    },
 }
 
 impl RuntimeError {
@@ -130,6 +141,14 @@ impl RuntimeError {
     /// [`RateLimited`](Self::RateLimited), [`Timeout`](Self::Timeout), and
     /// [`Unavailable`](Self::Unavailable).
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::Timeout | Self::Unavailable)
+        use crate::inspect::VerifyErrorKind as K;
+        match self {
+            Self::RateLimited | Self::Timeout | Self::Unavailable => true,
+            Self::Verification { kind, .. } => matches!(
+                kind,
+                K::RateLimited | K::Timeout | K::Unavailable | K::Unreachable
+            ),
+            _ => false,
+        }
     }
 }

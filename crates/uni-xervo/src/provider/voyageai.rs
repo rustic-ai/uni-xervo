@@ -28,6 +28,14 @@ impl Default for RemoteVoyageAIProvider {
 }
 
 impl RemoteVoyageAIProvider {
+    /// A provider whose verification requests go to `url` (a test stub).
+    #[cfg(test)]
+    pub(crate) fn with_endpoint_override(url: &str) -> Self {
+        let provider = Self::new();
+        provider.base.set_endpoint_override(url);
+        provider
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -109,6 +117,32 @@ impl ModelProvider for RemoteVoyageAIProvider {
 
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
+    }
+
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::provider::remote_common::{
+            credential_env_name, missing_credential, verify_send_empty_body,
+        };
+        let env = credential_env_name(&spec.options, "api_key_env", "VOYAGE_API_KEY");
+        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        // Voyage has no models endpoint, so post an empty body to the
+        // alias's own endpoint: a 400 proves the key, at no token cost.
+        let operation = match spec.task {
+            ModelTask::Rerank => "rerank",
+            _ => "embeddings",
+        };
+        let url = format!(
+            "{}/v1/{operation}",
+            self.base.root("https://api.voyageai.com")
+        );
+        verify_send_empty_body(
+            self.base.client.post(&url).bearer_auth(key),
+            &crate::inspect::redact_url(&url),
+        )
+        .await
     }
 
     fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {

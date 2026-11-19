@@ -28,6 +28,14 @@ impl Default for RemoteAnthropicProvider {
 }
 
 impl RemoteAnthropicProvider {
+    /// A provider whose verification requests go to `url` (a test stub).
+    #[cfg(test)]
+    pub(crate) fn with_endpoint_override(url: &str) -> Self {
+        let provider = Self::new();
+        provider.base.set_endpoint_override(url);
+        provider
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -95,6 +103,36 @@ impl ModelProvider for RemoteAnthropicProvider {
 
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
+    }
+
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::provider::remote_common::{
+            credential_env_name, missing_credential, verify_send,
+        };
+        let env = credential_env_name(&spec.options, "api_key_env", "ANTHROPIC_API_KEY");
+        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        let version = spec
+            .options
+            .get("anthropic_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("2023-06-01");
+        let url = format!(
+            "{}/v1/models/{}",
+            self.base.root("https://api.anthropic.com"),
+            spec.model_id
+        );
+        verify_send(
+            self.base
+                .client
+                .get(&url)
+                .header("x-api-key", key)
+                .header("anthropic-version", version),
+            &crate::inspect::redact_url(&url),
+        )
+        .await
     }
 
     fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {

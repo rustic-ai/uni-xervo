@@ -40,6 +40,36 @@ pub mod candle;
 ))]
 pub(crate) mod remote_common;
 
+#[cfg(all(
+    test,
+    any(
+        feature = "provider-openai",
+        feature = "provider-gemini",
+        feature = "provider-vertexai",
+        feature = "provider-mistral",
+        feature = "provider-anthropic",
+        feature = "provider-voyageai",
+        feature = "provider-cohere",
+        feature = "provider-azure-openai",
+        feature = "provider-llamacpp",
+    )
+))]
+pub(crate) mod stub_http;
+
+#[cfg(all(
+    test,
+    feature = "provider-openai",
+    feature = "provider-gemini",
+    feature = "provider-vertexai",
+    feature = "provider-mistral",
+    feature = "provider-anthropic",
+    feature = "provider-voyageai",
+    feature = "provider-cohere",
+    feature = "provider-azure-openai",
+    feature = "provider-llamacpp",
+))]
+mod verify_tests;
+
 #[cfg(feature = "provider-openai")]
 pub mod openai;
 

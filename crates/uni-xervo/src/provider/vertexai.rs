@@ -147,6 +147,14 @@ pub struct RemoteVertexAIProvider {
 }
 
 impl RemoteVertexAIProvider {
+    /// A provider whose verification requests go to `url` (a test stub).
+    #[cfg(test)]
+    pub(crate) fn with_endpoint_override(url: &str) -> Self {
+        let provider = Self::new();
+        provider.base.set_endpoint_override(url);
+        provider
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -225,6 +233,34 @@ impl ModelProvider for RemoteVertexAIProvider {
 
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
+    }
+
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::provider::remote_common::{
+            credential_env_name, missing_credential, option_or, verify_send,
+        };
+        let env = credential_env_name(&spec.options, "api_token_env", "VERTEX_AI_TOKEN");
+        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        let location = option_or(&spec.options, "location", "us-central1");
+        let publisher = option_or(&spec.options, "publisher", "google");
+        let host = if location == "global" {
+            "aiplatform.googleapis.com".to_string()
+        } else {
+            format!("{location}-aiplatform.googleapis.com")
+        };
+        let url = format!(
+            "{}/v1/publishers/{publisher}/models/{}",
+            self.base.root(&format!("https://{host}")),
+            spec.model_id
+        );
+        verify_send(
+            self.base.client.get(&url).bearer_auth(key),
+            &crate::inspect::redact_url(&url),
+        )
+        .await
     }
 
     fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {

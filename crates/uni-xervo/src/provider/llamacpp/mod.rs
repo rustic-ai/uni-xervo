@@ -169,6 +169,53 @@ impl ModelProvider for RemoteLlamaCppProvider {
         ProviderHealth::Healthy
     }
 
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::inspect::{VerifyErrorKind, VerifyFailure};
+        use crate::provider::remote_common::{missing_credential, verify_send};
+        let Some(base) = spec
+            .options
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+        else {
+            return Err(VerifyFailure::new(
+                VerifyErrorKind::Config,
+                "option 'base_url' is not set",
+            ));
+        };
+        // `/health` is unauthenticated and answers 503 until the model has
+        // loaded, so it says whether the server can serve.
+        let health = format!("{}/health", resolve_tokenizer_base_url(base));
+        verify_send(
+            self.base.client.get(&health),
+            &crate::inspect::redact_url(&health),
+        )
+        .await
+        .map_err(|f| match f.kind {
+            VerifyErrorKind::Unavailable => VerifyFailure::new(
+                VerifyErrorKind::Unavailable,
+                format!("{} (llama-server may still be loading its model)", f.detail),
+            ),
+            _ => f,
+        })?;
+        // The key is checked only when the alias has one: llama-server runs
+        // without --api-key by default.
+        let Some(env) = spec.options.get("api_key_env").and_then(|v| v.as_str()) else {
+            return Ok(crate::inspect::VerifyOutcome::Verified);
+        };
+        let key = std::env::var(env).map_err(|_| missing_credential(env))?;
+        let models = format!("{base}/models");
+        verify_send(
+            self.base.client.get(&models).bearer_auth(key),
+            &crate::inspect::redact_url(&models),
+        )
+        .await
+    }
+
     fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
         let mut description = crate::inspect::ProviderDescription::new();
         if let Some(base) = spec.options.get("base_url").and_then(|v| v.as_str()) {

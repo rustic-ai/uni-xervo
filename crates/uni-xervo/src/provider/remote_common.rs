@@ -4,6 +4,7 @@
 
 use crate::api::{ModelAliasSpec, ModelRuntimeKey};
 use crate::error::{Result, RuntimeError};
+use crate::inspect::{VerifyErrorKind, VerifyFailure, VerifyOutcome};
 use crate::reliability::{CircuitBreakerConfig, CircuitBreakerWrapper};
 use crate::traits::{EmbedResult, TokenUsage};
 use reqwest::Client;
@@ -232,11 +233,91 @@ struct BreakerEntry {
     last_access: Instant,
 }
 
+/// Send a provider's verification request and classify the answer.
+///
+/// `display_url` is the request URL as it may be shown: redacted, and never
+/// carrying a credential. Neither request headers nor the response body are
+/// read into the result, and a transport error drops its URL
+/// (`reqwest::Error`'s message includes it, which would leak a key sent in
+/// the query string).
+#[allow(dead_code)] // Unused only in builds with no remote provider but llama.cpp.
+pub(crate) async fn verify_send(
+    request: reqwest::RequestBuilder,
+    display_url: &str,
+) -> std::result::Result<VerifyOutcome, VerifyFailure> {
+    verify_send_inner(request, display_url, false).await
+}
+
+/// [`verify_send`] for a provider with no read-only endpoint, which sends an
+/// empty body to a real one instead.
+///
+/// The server checks the credential (and for Azure, that the deployment
+/// exists) before it validates the body, so a 400 or 422 means the request
+/// got through: verified, without generating or embedding anything.
+#[allow(dead_code)]
+pub(crate) async fn verify_send_empty_body(
+    request: reqwest::RequestBuilder,
+    display_url: &str,
+) -> std::result::Result<VerifyOutcome, VerifyFailure> {
+    verify_send_inner(request.json(&json!({})), display_url, true).await
+}
+
+async fn verify_send_inner(
+    request: reqwest::RequestBuilder,
+    display_url: &str,
+    body_rejection_is_success: bool,
+) -> std::result::Result<VerifyOutcome, VerifyFailure> {
+    use VerifyErrorKind as K;
+    let response = request.send().await.map_err(|e| {
+        if e.is_timeout() {
+            VerifyFailure::new(K::Timeout, format!("no answer from {display_url}"))
+        } else if e.is_connect() {
+            VerifyFailure::new(K::Unreachable, format!("cannot connect to {display_url}"))
+        } else {
+            VerifyFailure::new(K::Other, e.without_url().to_string())
+        }
+    })?;
+    let status = response.status();
+    let code = status.as_u16();
+    if status.is_success() || (body_rejection_is_success && matches!(code, 400 | 422)) {
+        return Ok(VerifyOutcome::Verified);
+    }
+    Err(match code {
+        401 | 403 => VerifyFailure::new(
+            K::Unauthorized,
+            format!("credential rejected (HTTP {code})"),
+        ),
+        404 => VerifyFailure::new(
+            K::NotFound,
+            format!("not found at {display_url} (HTTP 404)"),
+        ),
+        429 => VerifyFailure::new(K::RateLimited, "rate limited (HTTP 429)"),
+        500..=599 => VerifyFailure::new(K::Unavailable, format!("server error (HTTP {code})")),
+        _ => VerifyFailure::new(
+            K::Other,
+            format!("unexpected HTTP {code} from {display_url}"),
+        ),
+    })
+}
+
+/// A missing credential, as a verification failure naming the variable.
+#[allow(dead_code)]
+pub(crate) fn missing_credential(env_var: &str) -> VerifyFailure {
+    VerifyFailure::new(
+        VerifyErrorKind::Config,
+        format!("{env_var} env var not set"),
+    )
+}
+
 /// Shared circuit-breaker management for all remote providers.
 pub(crate) struct RemoteProviderBase {
     pub(crate) client: Client,
     breakers: Mutex<HashMap<ModelRuntimeKey, BreakerEntry>>,
     last_cleanup: Mutex<Instant>,
+    /// Test-only: send verification requests here instead of the provider's
+    /// real host, so they can run against a local stub server.
+    #[cfg(test)]
+    endpoint_override: Mutex<Option<String>>,
 }
 
 impl RemoteProviderBase {
@@ -249,7 +330,27 @@ impl RemoteProviderBase {
             client: Client::new(),
             breakers: Mutex::new(HashMap::new()),
             last_cleanup: Mutex::new(now),
+            #[cfg(test)]
+            endpoint_override: Mutex::new(None),
         }
+    }
+
+    /// The scheme and host verification requests go to: `default` (e.g.
+    /// `https://api.anthropic.com`), or a test stub's address.
+    #[allow(dead_code)] // Used by the providers whose host is fixed.
+    pub(crate) fn root(&self, default: &str) -> String {
+        #[cfg(test)]
+        if let Some(url) = self.endpoint_override.lock().unwrap().clone() {
+            return url;
+        }
+        default.to_string()
+    }
+
+    /// Point verification requests at `url` (a local stub) in tests.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn set_endpoint_override(&self, url: impl Into<String>) {
+        *self.endpoint_override.lock().unwrap() = Some(url.into());
     }
 
     pub(crate) fn circuit_breaker_for(&self, spec: &ModelAliasSpec) -> CircuitBreakerWrapper {

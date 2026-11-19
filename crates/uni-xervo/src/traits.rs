@@ -93,6 +93,22 @@ pub trait ModelProvider: Send + Sync {
         Ok(())
     }
 
+    /// Check that `spec`'s endpoint is reachable and accepts its credential,
+    /// with one cheap authenticated request.
+    ///
+    /// Opt-in and network-touching: only
+    /// [`ModelRuntime::verify`](crate::runtime::ModelRuntime::verify) calls
+    /// it, never load, prefetch or `health()`. It loads no model. The default
+    /// returns [`VerifyOutcome::NotApplicable`](crate::inspect::VerifyOutcome::NotApplicable),
+    /// which suits local providers. A failure's detail must never contain a
+    /// credential.
+    async fn verify(
+        &self,
+        _spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        Ok(crate::inspect::VerifyOutcome::NotApplicable)
+    }
+
     /// Describe an alias for [`ModelRuntime::aliases`](crate::runtime::ModelRuntime::aliases):
     /// where it sends requests and which environment variable holds its
     /// credential.
