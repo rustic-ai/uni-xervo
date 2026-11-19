@@ -26,7 +26,12 @@ options schema per task under `$defs/<task>`, and its top-level schema accepts
 the keys of any of the provider's tasks. The catalog schema routes each entry
 by `provider_id` and `task`: it rejects a task the provider does not support,
 and checks `options` against that task's definition. Entries for providers
-that are not bundled with Uni-Xervo get no `options` checks, as at runtime.
+that are not bundled with Uni-Xervo get no `options` checks, as at runtime:
+their options may be any JSON value.
+
+Integer options may be written as whole-number floats (`128.0`), as Python's
+`json` writes them: JSON Schema's `integer` accepts them, and the runtime reads
+them as the integer.
 
 A test in the crate keeps the schemas in step with runtime validation: each
 schema must declare exactly the keys the runtime accepts per task, and

@@ -32,7 +32,9 @@
 
 use crate::api::ModelTask;
 use crate::error::Result;
-use crate::options_validation::{BUNDLED_PROVIDERS, bundled_provider, validate_provider_options};
+use crate::options_validation::{
+    BUNDLED_PROVIDERS, bundled_provider, normalize_whole_floats, validate_provider_options,
+};
 
 /// JSON Schema for a model catalog: an array of alias specs.
 pub const MODEL_CATALOG: &str = include_str!("../schemas/model-catalog.schema.json");
@@ -134,7 +136,8 @@ pub fn option_keys(provider_id: &str, task: ModelTask) -> Option<Vec<&'static st
 ///
 /// For a bundled provider this rejects an unsupported task, unknown or
 /// misplaced keys, and bad values. Options for any other provider id are
-/// accepted, as the runtime accepts them.
+/// accepted, as the runtime accepts them. A whole-number float such as `128.0`
+/// counts as the integer `128`, as it does at runtime.
 ///
 /// # Errors
 /// [`RuntimeError::Config`](crate::error::RuntimeError::Config) naming the
@@ -144,7 +147,9 @@ pub fn validate_options(
     task: ModelTask,
     options: &serde_json::Value,
 ) -> Result<()> {
-    validate_provider_options(provider_id, task, options)
+    let mut options = options.clone();
+    normalize_whole_floats(&mut options);
+    validate_provider_options(provider_id, task, &options)
 }
 
 #[cfg(test)]

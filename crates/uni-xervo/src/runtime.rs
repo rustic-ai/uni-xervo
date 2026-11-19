@@ -4,7 +4,7 @@ mod hybrid_adapter;
 
 use crate::api::{ModelAliasSpec, ModelRuntimeKey};
 use crate::error::{Result, RuntimeError};
-use crate::options_validation::validate_provider_options;
+use crate::options_validation::{normalize_whole_floats, validate_provider_options};
 use crate::reliability::{
     InstrumentedAudioEmbeddingModel, InstrumentedDocumentExtractionModel,
     InstrumentedEmbeddingModel, InstrumentedGeneratorModel, InstrumentedHybridEmbeddingModel,
@@ -94,8 +94,9 @@ impl ModelRuntime {
     }
 
     /// Register a new model alias at runtime.
-    pub async fn register(&self, spec: ModelAliasSpec) -> Result<()> {
+    pub async fn register(&self, mut spec: ModelAliasSpec) -> Result<()> {
         spec.validate()?;
+        normalize_whole_floats(&mut spec.options);
         if !self.providers.contains_key(&spec.provider_id) {
             return Err(RuntimeError::Config(format!(
                 "Unknown provider '{}' for alias '{}'",
@@ -1046,8 +1047,9 @@ impl ModelRuntimeBuilder {
     /// invalid options, or if a required eager warmup fails.
     pub async fn build(self) -> Result<Arc<ModelRuntime>> {
         let mut catalog_map = HashMap::new();
-        for spec in self.catalog {
+        for mut spec in self.catalog {
             spec.validate()?;
+            normalize_whole_floats(&mut spec.options);
             if !self.providers.contains_key(&spec.provider_id) {
                 return Err(RuntimeError::Config(format!(
                     "Unknown provider '{}' for alias '{}'",

@@ -88,11 +88,8 @@
         }
       },
       "options": {
-        "type": [
-          "object",
-          "null"
-        ],
-        "default": null
+        "default": null,
+        "description": "Provider-specific options. For a bundled provider_id these are checked against that provider's schema for the entry's task; for any other provider they are passed through unchecked."
       }
     },
     "allOf": [

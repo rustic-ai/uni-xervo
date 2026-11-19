@@ -391,6 +391,17 @@ fn schema_and_runtime_agree_on_generated_cases() {
                 let mut opts = base.clone();
                 opts.insert(key.to_string(), valid_sample(schema));
                 checker.accepts(id, &t, Value::Object(opts));
+                // A whole-number float is the same JSON number (`8.0` = `8`).
+                if schema["type"] == "integer" {
+                    let mut opts = base.clone();
+                    let n = valid_sample(schema).as_i64().unwrap();
+                    opts.insert(key.to_string(), json!(n as f64));
+                    checker.accepts(id, &t, Value::Object(opts));
+                    let mut opts = base.clone();
+                    opts.insert(key.to_string(), json!(n as f64 + 0.5));
+                    checker.rejects(id, &t, Value::Object(opts));
+                    cases += 2;
+                }
                 for bad in invalid_samples(schema) {
                     let mut opts = base.clone();
                     opts.insert(key.to_string(), bad);
@@ -559,6 +570,18 @@ fn schema_and_runtime_agree_on_cross_key_rules() {
     );
     c.rejects("local/onnx", "nlp", json!({ "generation": "v9" }));
 
-    // Third-party providers: anything goes for options.
+    // Third-party providers: anything goes for options, objects or not.
     c.accepts("acme/custom", "embed", json!({ "whatever": [1, 2, 3] }));
+    c.accepts("acme/custom", "embed", json!("opaque-string"));
+    c.accepts("acme/custom", "embed", json!([1, 2]));
+    c.accepts("acme/custom", "embed", Value::Null);
+
+    // Whole-number floats count as integers, as Python's json writes them.
+    c.accepts("local/onnx", "embed", json!({ "max_seq_len": 128.0 }));
+    c.accepts(
+        "remote/llamacpp",
+        "embed",
+        json!({ "base_url": url, "max_input_tokens": 512.0, "embedding_dimensions": 384.0 }),
+    );
+    c.rejects("local/onnx", "embed", json!({ "max_seq_len": 0.0 }));
 }

@@ -16,6 +16,13 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **OCR rejects a recognizer whose class count does not match its
+  dictionary.** A model must output blank + dictionary classes, or blank +
+  dictionary + a space class; any other count is now a configuration error at
+  load, or on the first run when the graph leaves the count dynamic, where
+  before the unmatched classes were silently dropped from the text. A
+  `blank_class` that is not a non-negative integer is now rejected when the
+  catalog is built instead of being read as 0. (#68)
 - **A catalog entry naming a task its bundled provider does not support is
   rejected when the catalog is built.** Before, only the multimodal tasks were
   checked there; `remote/anthropic` with `embed`, say, was accepted and failed
@@ -25,6 +32,10 @@ All notable changes to this project are documented in this file.
   applies only to task 'embed' (got 'rerank')`. This replaces "only valid for
   embed tasks" on the remote providers, and "Unknown option" for, say, an
   ONNX OCR key on an embed alias.
+- **Integer options written as whole-number floats are read as integers.**
+  `"max_seq_len": 128.0`, as Python's `json` writes it, used to be rejected as
+  "must be a positive integer"; the runtime now reads it as `128` everywhere,
+  matching the schemas, where JSON Schema's `integer` accepts it.
 - **`local/onnx` checks values it used to pass through:** `max_seq_len` on
   rerank, the `embed_hybrid` keys (`tokenizer_path`, `max_seq_len`, `top_k`,
   `token_type_ids`), and the OCR `det_*` keys even when `det_onnx_path` is not
@@ -57,7 +68,13 @@ All notable changes to this project are documented in this file.
   under `<cache>/.locks/`, a ref holding no commit hash is removed before
   downloading so the revision is resolved afresh, and a path outside
   `snapshots/<commit>/` is retried once and then reported as an error. A
-  cache already left in that state recovers on its next load. (#67)
+  cache already left in that state recovers on its next load. The wait for
+  another process's lock is capped at 60 seconds, after which the download
+  goes ahead unlocked, and a cache where the lock cannot be taken (read-only,
+  or a filesystem without file locks) is used unlocked with a warning; a
+  pinned commit whose file is already cached is read without locking, so
+  read-only caches baked into images keep working. A revision that is a path
+  (`../x`, `/abs`) is rejected. (#67)
 
 - **OCR keeps the spaces between words.** PaddleOCR recognizers trained with
   `use_space_char=True` output blank + dictionary + space classes, with the
@@ -76,9 +93,10 @@ All notable changes to this project are documented in this file.
   PaddleOCR does, up to the new `max_image_width` option (default 3200);
   `image_width` becomes the narrowest a batch is. Lines are recognized six at
   a time, grouped by aspect ratio, instead of one session run per line. A
-  recognizer whose graph fixes its input width gets lines fitted to that
-  width, and one whose fixed height differs from `image_height` fails at load.
-  (#69)
+  recognizer whose graph fixes its batch (paddle2onnx's `[1, 3, 48, 320]` is
+  common) gets exactly that many lines per run, one whose graph fixes its
+  input width gets lines fitted to that width, and one whose fixed height
+  differs from `image_height` fails at load. (#69)
 
 ## [0.19.2] - 2026-11-13
 

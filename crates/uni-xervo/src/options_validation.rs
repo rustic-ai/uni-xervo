@@ -298,6 +298,34 @@ fn task_list(tasks: impl IntoIterator<Item = ModelTask>) -> String {
         .join(", ")
 }
 
+/// Rewrite whole-number floats in `options` (`128.0`) as integers (`128`).
+///
+/// JSON does not distinguish the two and JSON Schema's `integer` accepts both,
+/// but `serde_json` keeps `128.0` a float, so every integer option read with
+/// `as_u64` would reject it. Tools that write numbers as floats (Python's
+/// `json`, many YAML loaders) would pass the published schema and then fail at
+/// startup. The runtime applies this once, where a spec enters it, so
+/// validation, providers and the model cache key all see the same value.
+/// Fractional floats are left alone.
+pub(crate) fn normalize_whole_floats(options: &mut Value) {
+    match options {
+        Value::Number(n) if n.is_f64() => {
+            let f = n.as_f64().unwrap_or(f64::NAN);
+            if f.is_finite() && f.fract() == 0.0 {
+                // `as` saturates, so check the round trip before converting.
+                if f >= 0.0 && f <= u64::MAX as f64 && (f as u64) as f64 == f {
+                    *options = Value::from(f as u64);
+                } else if f < 0.0 && f >= i64::MIN as f64 && (f as i64) as f64 == f {
+                    *options = Value::from(f as i64);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(normalize_whole_floats),
+        Value::Object(map) => map.values_mut().for_each(normalize_whole_floats),
+        _ => {}
+    }
+}
+
 /// Validate provider-specific options for the given `provider_id` and `task`.
 ///
 /// Returns `Ok(())` if the options are valid or the provider is unknown (unknown
@@ -1095,4 +1123,45 @@ fn validate_execution_provider_array(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn whole_floats_become_integers() {
+        let mut v = json!({
+            "max_seq_len": 128.0,
+            "neg": -2.0,
+            "ratio": 1.5,
+            "big": 1e300,
+            "nested": [3.0, {"k": 4.0}],
+            "already": 7,
+            "s": "8.0"
+        });
+        normalize_whole_floats(&mut v);
+        assert_eq!(
+            v,
+            json!({
+                "max_seq_len": 128,
+                "neg": -2,
+                "ratio": 1.5,
+                "big": 1e300,
+                "nested": [3, {"k": 4}],
+                "already": 7,
+                "s": "8.0"
+            })
+        );
+        assert!(v["max_seq_len"].is_u64());
+    }
+
+    #[test]
+    fn validation_accepts_whole_floats_once_normalized() {
+        let mut options = json!({"embedding_dimensions": 256.0});
+        assert!(validate_provider_options("remote/openai", ModelTask::Embed, &options).is_err());
+        normalize_whole_floats(&mut options);
+        assert!(validate_provider_options("remote/openai", ModelTask::Embed, &options).is_ok());
+    }
 }
