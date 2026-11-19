@@ -31,6 +31,24 @@ silently ignored will now run with them. No function signature changed.
 
 ### Added
 
+- **A reproducible acceptance matrix for the local backends (#63).**
+  `scripts/acceptance.sh cpu|coreml|cuda` runs every opt-in real-model suite
+  for one platform target:
+  - ONNX embedding, reranking, sparse, multi-vector, the BGE-M3 hybrid (its
+    widths pinned), kniv NLP v1 and v7, OCR, PDF to OCR, execution-provider
+    reporting and skips, whisper.cpp, and the GPU inference tests.
+  - It writes `target/acceptance/<target>/report.md`: each suite's result,
+    test counts, time, peak memory and exact command, plus the model
+    revisions the run used.
+  - A manual GitHub Actions workflow (Acceptance) runs the CPU target.
+  - `docs/TEST_MATRIX.md` holds the first results (macOS arm64, CPU and
+    CoreML), which found two CoreML defects now documented in the GPU setup
+    guide: PP-OCR recognition reads text wrong without error, and ModernBERT
+    ColBERT models fail at inference.
+  - `scripts/test-integration.sh` no longer passes `--all-features`, which
+    needed a CUDA toolchain to build. It runs the remote-provider tests and
+    points to the matrix for the local ones.
+
 - **`ModelRuntime` can be inspected without loading anything.** A readiness
   report or capability listing no longer needs its own copy of the catalog
   (#61):

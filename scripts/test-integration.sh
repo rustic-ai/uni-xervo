@@ -27,18 +27,18 @@ if [[ "${missing_keys}" -eq 1 ]]; then
   echo
 fi
 
-echo "Running ignored integration tests with all provider features..."
+# Remote providers, which the default features all include. `--all-features`
+# would also turn on gpu-cuda, which needs a CUDA toolchain to build.
+echo "Running the remote-provider integration tests..."
 if command -v cargo-nextest >/dev/null 2>&1; then
   echo "Using cargo-nextest."
-  cargo nextest run -p uni-xervo --all-features --test real_providers_test --run-ignored all
-  cargo nextest run -p uni-xervo --features provider-onnx \
-    --test onnx_models_expensive_test --run-ignored all
+  cargo nextest run -p uni-xervo --test real_providers_test --run-ignored all
 else
   echo "cargo-nextest not found. Falling back to cargo test."
-  cargo test -p uni-xervo --all-features --test real_providers_test -- --ignored
-  cargo test -p uni-xervo --features provider-onnx \
-    --test onnx_models_expensive_test -- --ignored
+  cargo test -p uni-xervo --test real_providers_test -- --ignored
 fi
 
 echo
-echo "Integration tests finished."
+echo "Remote-provider tests finished. For the local-model suites (ONNX, OCR,"
+echo "BGE-M3, kniv, whisper.cpp, GPU), run the acceptance matrix:"
+echo "  scripts/acceptance.sh [cpu|coreml|cuda]"

@@ -99,6 +99,21 @@ bundled ORT and the candle Metal kernels are
 self-contained. macOS 13 (Ventura) or later is recommended for
 current CoreML feature coverage.
 
+### Models to keep off CoreML
+
+The acceptance matrix (`scripts/acceptance.sh coreml`, results in
+`docs/TEST_MATRIX.md`) found two model families that CoreML runs wrongly.
+On `gpu-metal` builds, give these aliases `"execution_providers": ["cpu"]`:
+
+- **PP-OCR recognition** (`ocr` aliases). CoreML returns wrong text and
+  reports no error.
+- **ModernBERT ColBERT models** (`lightonai/GTE-ModernColBERT-v1`,
+  `mixedbread-ai/mxbai-edge-colbert-v0-*`). They pass the load-time probe,
+  then fail at inference on real input.
+
+Every other model the matrix covers runs correctly on CoreML: BGE, Qwen3,
+the rerankers, SPLADE, BGE-M3 and kniv.
+
 ## Verifying the GPU EP actually loaded
 
 ORT's CUDA EP is built with `fail_silently()`, so a failed CUDA init
