@@ -56,6 +56,27 @@ session costs one extra CPU session build and one forward pass. Set
   - `scripts/test-integration.sh` no longer passes `--all-features`, which
     needed a CUDA toolchain to build. It runs the remote-provider tests and
     points to the matrix for the local ones.
+  - On `cuda` and `coreml`, every model a suite loads must report that
+    accelerator first, so a model that fell back to CPU fails its suite
+    instead of passing unmeasured (the models CoreML moves to CPU by design
+    are allowed: the OCR recognizer, the ModernBERT ColBERT models, and
+    Qwen3 0.6B, whose empty past-key-values input CoreML rejects). Tests run one at a time there: in parallel, the models
+    loading at once exhausted an 8 GB GPU and fell back. A suite that fails
+    to build now fails the run; one whose tool is missing (cmake for
+    whisper) is skipped.
+  - The kniv v7 suites run the golden comparisons on both xlarge releases,
+    from Hugging Face at the goldens' pinned revision, instead of only the
+    model-agnostic tests on the tiny release. The goldens are regenerated
+    for v7.1.2 with their provenance recorded. The comparison is exact on
+    the goldens' own ONNX Runtime library (`nlp-kniv-v7-exact`, through
+    `provider-onnx-dynamic`) and allows 2% of decisions to differ on other
+    builds, which round some INT8 shapes differently. INT8 kernels also
+    differ by CPU architecture, so macOS on Apple Silicon has its own golden
+    set (`<tag>/darwin-arm64/`), which the test picks on that platform:
+    against the linux-x86_64 goldens 2.65% of UltraBERT's decisions differed
+    there; against its own, none do, in tolerant or exact mode.
+  - The report's model list includes revision-pinned downloads (the kniv v7
+    xlarge releases), which have a snapshot but no ref and were left out.
 
 - **`local/onnx` checks an accelerator's output against CPU at load.** When
   a session attaches CUDA, CoreML or DirectML, the load runs a fixed probe
@@ -162,6 +183,15 @@ session costs one extra CPU session build and one forward pass. Set
   set.
 
 ### Documentation
+
+- **The GPU setup guide names CUDA 13.** Since 0.19.0 the bundled ONNX
+  Runtime (`ort` rc.15, ONNX Runtime 1.31) ships only a CUDA 13 build, but
+  the guide still described CUDA 12: following it left the CUDA provider
+  unable to register, and models ran on CPU. The guide now lists the CUDA 13
+  libraries, recipes (including a pip snippet that works with the
+  namespace-package wheels), the R580 driver minimum, and what a missing
+  cuDNN or exhausted GPU memory looks like. Its account of
+  `active_execution_providers()` now matches the fix below.
 
 - **One BGE-M3 alias serves every head (#60).** The multi-vector guide now
   shows that `embedding`, `sparse_embedder` and `multi_vector_embedder` all

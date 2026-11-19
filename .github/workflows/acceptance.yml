@@ -35,7 +35,7 @@ jobs:
       - name: Cache models
         uses: actions/cache@v4
         with:
-          path: crates/uni-xervo/.uni_cache
+          path: .uni_cache
           key: acceptance-models-${{ hashFiles('crates/uni-xervo/src/provider/local_onnx/presets.rs') }}
           restore-keys: acceptance-models-
 

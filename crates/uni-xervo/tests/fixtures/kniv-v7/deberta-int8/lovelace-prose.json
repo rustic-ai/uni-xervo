@@ -92,7 +92,7 @@
     {
      "head": 3,
      "holder": null,
-     "margin": 0.564,
+     "margin": 0.507,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "uses",
@@ -102,17 +102,7 @@
     {
      "head": 4,
      "holder": null,
-     "margin": 0.19,
-     "modality": "asserted",
-     "polarity": "positive",
-     "relation": "created by",
-     "tail": 0,
-     "time": null
-    },
-    {
-     "head": 4,
-     "holder": null,
-     "margin": 3.058,
+     "margin": 3.113,
      "modality": "asserted",
      "polarity": "positive",
      "relation": "created by",

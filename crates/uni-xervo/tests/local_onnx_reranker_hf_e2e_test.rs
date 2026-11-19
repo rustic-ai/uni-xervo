@@ -11,6 +11,9 @@
 //!     --test local_onnx_reranker_hf_e2e_test
 //! ```
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use std::env;
 use std::sync::Arc;
 
@@ -61,6 +64,7 @@ async fn runtime_with_minilm() -> Arc<ModelRuntime> {
 
 #[tokio::test]
 async fn rerank_orders_relevant_doc_first() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = runtime_with_minilm().await;
@@ -68,6 +72,7 @@ async fn rerank_orders_relevant_doc_first() {
         .reranker("rerank/minilm")
         .await
         .expect("loading rerank/minilm failed");
+    accelerator::expect_accelerator("rerank/minilm", &*reranker);
 
     let docs = vec![
         "Pandas eat bamboo and live in China.", // 0 — clearly relevant
@@ -120,6 +125,7 @@ async fn rerank_orders_relevant_doc_first() {
 
 #[tokio::test]
 async fn rerank_empty_docs_returns_empty() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = runtime_with_minilm().await;
@@ -127,6 +133,7 @@ async fn rerank_empty_docs_returns_empty() {
         .reranker("rerank/minilm")
         .await
         .expect("loading rerank/minilm failed");
+    accelerator::expect_accelerator("rerank/minilm", &*reranker);
 
     let scored = reranker
         .rerank("anything", &[])

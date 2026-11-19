@@ -33,7 +33,10 @@ scripts/acceptance.sh cpu --only ocr,hybrid-bge-m3   # a subset
   - ONNX embedding, reranking, sparse, multi-vector and BGE-M3 hybrid (with
     the widths pinned: 1024-wide dense and per-token outputs, a 250002-term
     sparse vocabulary, parity with the per-task models);
-  - kniv NLP v1 and v7;
+  - kniv NLP v1, and the kniv v7 golden comparisons against the Python
+    reference on both xlarge releases (pinned to the goldens' revision; exact
+    when `ORT_DYLIB_PATH` names the goldens' own ONNX Runtime library, see
+    `crates/uni-xervo/tests/fixtures/kniv-v7/README.md`);
   - PP-OCR detection and recognition, and PDF to OCR;
   - execution-provider reporting, including a real registration skip when
     `ORT_DYLIB_PATH` names an ONNX Runtime library;
@@ -45,10 +48,28 @@ scripts/acceptance.sh cpu --only ocr,hybrid-bge-m3   # a subset
   rerun alone.
 - **Model manifest:** the commit each Hugging Face repository in the cache
   resolved to. Set those as an alias's `revision` to reproduce a run.
-- **Requirements:** network on the first run (models download into the cache),
-  no API keys. A suite this machine cannot build, such as whisper.cpp without
-  cmake, is reported as skipped rather than failed.
-- **Exit status:** non-zero if any suite failed.
+- **Requirements:** network on the first run, no API keys. Models download
+  into `.uni_cache` at the repository root (`UNI_CACHE_DIR` overrides it),
+  not into each crate directory: a Hugging Face cache inside a crate breaks
+  `cargo publish` (see `RELEASE.md`). A suite whose tool is missing, such as
+  whisper.cpp without cmake, is reported as skipped.
+- **Accelerator targets:** a model whose accelerator session fails falls
+  back to CPU and keeps working, so for `coreml` and `cuda` every model a
+  suite loads must report that accelerator first in
+  `active_execution_providers()` (`tests/common/accelerator.rs`), or the
+  suite fails. Models that fall back by design on CoreML (the PP-OCR
+  recognizer, ModernBERT ColBERT) are allowed through
+  `UNI_XERVO_EXPECT_EP_ALLOW_CPU`. Each suite log has an
+  `execution providers for <alias>` line per load, and ONNX Runtime's
+  `E:onnxruntime` lines give the reason for a fallback.
+  - Tests run one at a time (`--test-threads=1`): in parallel, several
+    models loading at once can exhaust a discrete GPU's memory.
+  - `cuda` needs `nvcc` on `PATH`, the CUDA 13 runtime, and cuDNN 9 for
+    CUDA 13 on `LD_LIBRARY_PATH` (see the GPU setup guide). Without cuDNN,
+    the attention and convolution models fall back and their suites fail.
+- **Exit status:** non-zero if any suite failed, including a suite that did
+  not build. A suite whose tool requirement is missing (cmake for whisper)
+  is reported as skipped without being built.
 - **CI:** `.github/workflows/acceptance.yml` runs the `cpu` target on demand
   (Actions → Acceptance), caching models between runs, and uploads the report.
 

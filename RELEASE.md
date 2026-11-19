@@ -17,6 +17,14 @@ This repository uses tag-driven crate publishing.
 
 ## Notes
 
+- If `cargo publish --dry-run` fails with "failed to retrieve git status ...
+  Failed to update the excludes stack", a model cache sits inside a crate
+  directory: running the real-model tests with plain `cargo test` caches into
+  `crates/<crate>/.uni_cache`, and its Hugging Face snapshots hold
+  `.gitattributes` as a symlink, which cargo's git status check rejects even
+  in an ignored directory. Move the cache out (`mv crates/uni-xervo/.uni_cache
+  .uni_cache`, then use `UNI_CACHE_DIR=$PWD/.uni_cache`) or delete it.
+  `scripts/acceptance.sh` already caches at the repository root.
 - `publish.yml` validates that the pushed tag matches `Cargo.toml` version.
 - Publishing uses crates.io trusted publishing via GitHub OIDC (no long-lived token secret).
 - Configure this repository as a trusted publisher on crates.io before tagging a release.

@@ -36,6 +36,9 @@
 
 #![cfg(feature = "provider-onnx")]
 
+#[path = "common/accelerator.rs"]
+mod accelerator;
+
 use std::env;
 
 use uni_xervo::api::{ModelAliasSpec, ModelTask, WarmupPolicy};
@@ -144,6 +147,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 #[tokio::test]
 #[ignore]
 async fn test_bge_small_embedding_via_preset() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -161,6 +165,7 @@ async fn test_bge_small_embedding_via_preset() {
         .embedding("embed/bge-small-preset")
         .await
         .expect("resolve embedding model");
+    accelerator::expect_accelerator("embed/bge-small-preset", &*model);
 
     assert_eq!(model.dimensions(), 384);
 
@@ -181,6 +186,7 @@ async fn test_bge_small_embedding_via_preset() {
 #[tokio::test]
 #[ignore]
 async fn test_bge_small_embedding_via_model_id() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -198,6 +204,7 @@ async fn test_bge_small_embedding_via_model_id() {
         .embedding("embed/bge-small-by-id")
         .await
         .expect("resolve embedding model");
+    accelerator::expect_accelerator("embed/bge-small-by-id", &*model);
 
     let embeddings = model
         .embed(&["one", "two"])
@@ -217,6 +224,7 @@ async fn test_bge_small_embedding_via_model_id() {
 #[tokio::test]
 #[ignore]
 async fn test_bge_large_embedding() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -234,6 +242,7 @@ async fn test_bge_large_embedding() {
         .embedding("embed/bge-large")
         .await
         .expect("resolve embedding model");
+    accelerator::expect_accelerator("embed/bge-large", &*model);
 
     assert_eq!(model.dimensions(), 1024);
 
@@ -255,6 +264,7 @@ async fn test_bge_large_embedding() {
 #[tokio::test]
 #[ignore]
 async fn test_bge_embedding_semantic_similarity() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -272,6 +282,7 @@ async fn test_bge_embedding_semantic_similarity() {
         .embedding("embed/bge-sim")
         .await
         .expect("resolve embedding model");
+    accelerator::expect_accelerator("embed/bge-sim", &*model);
 
     // Two related dog sentences and one unrelated cooking sentence.
     let embeddings = model
@@ -302,6 +313,7 @@ async fn test_bge_embedding_semantic_similarity() {
 #[tokio::test]
 #[ignore]
 async fn test_qwen3_embedding_06b() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -319,6 +331,7 @@ async fn test_qwen3_embedding_06b() {
         .embedding("embed/qwen3-06b")
         .await
         .expect("resolve embedding model");
+    accelerator::expect_accelerator("embed/qwen3-06b", &*model);
 
     assert_eq!(model.dimensions(), 1024);
 
@@ -356,6 +369,7 @@ async fn test_qwen3_embedding_06b() {
 #[tokio::test]
 #[ignore]
 async fn test_bge_m3_dense_via_aapot_export() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -373,6 +387,7 @@ async fn test_bge_m3_dense_via_aapot_export() {
         .embedding("embed/bge-m3-dense")
         .await
         .expect("resolve embedding model");
+    accelerator::expect_accelerator("embed/bge-m3-dense", &*model);
 
     assert_eq!(model.dimensions(), 1024);
 
@@ -413,6 +428,7 @@ async fn test_bge_m3_dense_via_aapot_export() {
 #[tokio::test]
 #[ignore]
 async fn test_bge_reranker_base_orders_relevant_first() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -429,6 +445,7 @@ async fn test_bge_reranker_base_orders_relevant_first() {
         .reranker("rerank/bge-base")
         .await
         .expect("resolve reranker");
+    accelerator::expect_accelerator("rerank/bge-base", &*reranker);
 
     let relevant = "Giant pandas live in the bamboo forests of central China.";
     let docs = vec![
@@ -472,6 +489,7 @@ async fn test_bge_reranker_base_orders_relevant_first() {
 #[tokio::test]
 #[ignore]
 async fn test_qwen3_reranker_06b_orders_relevant_first() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -497,6 +515,7 @@ async fn test_qwen3_reranker_06b_orders_relevant_first() {
         .reranker("rerank/qwen3-06b")
         .await
         .expect("resolve generative reranker");
+    accelerator::expect_accelerator("rerank/qwen3-06b", &*reranker);
 
     let relevant = "Paris is the capital and largest city of France.";
     let docs = vec![
@@ -546,6 +565,7 @@ async fn test_qwen3_reranker_06b_orders_relevant_first() {
 #[tokio::test]
 #[ignore]
 async fn test_bge_reranker_score_ordering_stable_across_permutation() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     let runtime = ModelRuntime::builder()
@@ -562,6 +582,7 @@ async fn test_bge_reranker_score_ordering_stable_across_permutation() {
         .reranker("rerank/bge-stable")
         .await
         .expect("resolve reranker");
+    accelerator::expect_accelerator("rerank/bge-stable", &*reranker);
 
     let query = "What is the capital of France?";
     let relevant = "Paris is the capital and largest city of France.";
@@ -611,6 +632,7 @@ fn nlp_spec(alias: &str, model_id: &str, options: serde_json::Value) -> ModelAli
 #[tokio::test]
 #[ignore]
 async fn kniv_deberta_nlp_cascade_end_to_end() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     use uni_xervo::traits::{NlpRequest, NlpTasks};
@@ -627,6 +649,7 @@ async fn kniv_deberta_nlp_cascade_end_to_end() {
         .expect("build runtime");
 
     let model = runtime.nlp_model("nlp/kniv").await.expect("resolve nlp");
+    accelerator::expect_accelerator("nlp/kniv", &*model);
 
     // One sentence with at least one verb, a named entity, and a clear
     // dependency structure. Each head should populate at least one item.
@@ -769,6 +792,7 @@ async fn kniv_deberta_nlp_cascade_end_to_end() {
 #[tokio::test]
 #[ignore]
 async fn kniv_deberta_nlp_subset_tasks() {
+    accelerator::log_warnings();
     require_expensive_tests!();
 
     use uni_xervo::traits::{NlpRequest, NlpTasks};
@@ -788,6 +812,7 @@ async fn kniv_deberta_nlp_subset_tasks() {
         .nlp_model("nlp/kniv-subset")
         .await
         .expect("resolve nlp");
+    accelerator::expect_accelerator("nlp/kniv-subset", &*model);
 
     // Only POS + NER requested.
     let text = "Marie Curie discovered radium in Paris.";

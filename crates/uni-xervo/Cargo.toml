@@ -197,6 +197,11 @@ anyhow = "1.0"
 criterion = { version = "0.8", features = ["async_tokio"] }
 metrics-util = "0.20"
 tempfile = "3"
+# Identifies the ONNX Runtime library the kniv v7 goldens were generated with.
+sha2 = "0.10"
+# Shows the runtime's own warnings (an accelerator fallback's reason) in the
+# real-model suites' logs.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Checks the shipped JSON Schemas agree with runtime option validation.
 jsonschema = { version = "0.61", default-features = false }
 reqwest = { version = "0.13", features = ["rustls"] }
