@@ -4,6 +4,273 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-19
+
+### Upgrading from 0.19
+
+Catalog validation is stricter, so a catalog that built under 0.19 can now
+fail when the runtime is built. Each of these was a misconfiguration that
+0.19 accepted and then failed on, or got wrong, later:
+
+- a task the bundled provider does not support (`remote/anthropic` with
+  `embed`), which used to fail on first use;
+- a value that used to go unchecked: `local/onnx` rerank `max_seq_len`, the
+  `embed_hybrid` keys, OCR `det_*` keys without `det_onnx_path`, and an OCR
+  `blank_class` that is not a non-negative integer;
+- an OCR recognizer whose class count does not match its dictionary, which
+  used to decode silently to the wrong text, now fails at load;
+- a model `revision` that is a path (`../x`).
+
+`RuntimeError`, `ProviderHealth` and `WarmupPolicy` are now
+`#[non_exhaustive]`, so a `match` on them outside this crate needs a wildcard
+arm. Error messages for an unsupported task, for a key that belongs to another
+task, and for a duplicate alias in a catalog (which now names the alias) have
+new wording. `graph_optimization_level` and the thread-count options
+now take effect for every `local/onnx` task, so an alias that set them and was
+silently ignored will now run with them. No function signature changed.
+
+On `gpu-cuda` and `gpu-metal` builds, each accelerated `local/onnx` session
+is now checked against CPU at load (`accelerator_check`, below). A model
+whose accelerator output disagrees now loads on CPU and reports `["cpu"]`
+instead of returning wrong results; one with no `cpu` in its
+`execution_providers` fails to load instead. Loading an accelerated
+session costs one extra CPU session build and one forward pass. Set
+`"accelerator_check": "probe"` on an alias to get 0.19's behaviour back.
+
+### Added
+
+- **A reproducible acceptance matrix for the local backends (#63).**
+  `scripts/acceptance.sh cpu|coreml|cuda` runs every opt-in real-model suite
+  for one platform target:
+  - ONNX embedding, reranking, sparse, multi-vector, the BGE-M3 hybrid (its
+    widths pinned), kniv NLP v1 and v7, OCR, PDF to OCR, execution-provider
+    reporting and skips, whisper.cpp, and the GPU inference tests.
+  - It writes `target/acceptance/<target>/report.md`: each suite's result,
+    test counts, time, peak memory and exact command, plus the model
+    revisions the run used.
+  - A manual GitHub Actions workflow (Acceptance) runs the CPU target.
+  - `docs/TEST_MATRIX.md` holds the first results (macOS arm64, CPU and
+    CoreML), which found two CoreML defects: PP-OCR recognition reads text
+    wrong without error, and ModernBERT ColBERT models fail at inference.
+    The accelerator check below handles both.
+  - `scripts/test-integration.sh` no longer passes `--all-features`, which
+    needed a CUDA toolchain to build. It runs the remote-provider tests and
+    points to the matrix for the local ones.
+
+- **`local/onnx` checks an accelerator's output against CPU at load.** When
+  a session attaches CUDA, CoreML or DirectML, the load runs a fixed probe
+  input through it and through a CPU session of the same model, and keeps
+  the accelerator only if the outputs agree (relative L2 error at most 0.2
+  per output). A session that disagrees falls back to CPU with a `warn`
+  giving the error, or fails to load when its `execution_providers` has no
+  `cpu`. This replaces the per-model advice for the CoreML defects the
+  matrix found: PP-OCR's recognizer now moves to CPU on its own while the
+  detector stays on CoreML (correct text, about 2.7x faster than CPU alone),
+  and the ModernBERT ColBERT models fall back to CPU instead of failing at
+  inference. Models that run correctly stay accelerated; when CoreML or ONNX
+  Runtime fixes a defect, the model moves back with no configuration change.
+  - The new `accelerator_check` option (`"compare"`, the default; `"probe"`,
+    which only checks the probe runs, as before; `"off"`) controls it per
+    alias. CPU-only sessions never run it.
+  - It covers dense, sparse, multi-vector and hybrid embedding, both
+    rerankers and both OCR stages, each OCR stage checked separately.
+  - Encoder probes now use a two-input batch of different lengths, which
+    exercises padding.
+  - The cost is one extra CPU session build and one forward pass per
+    accelerated session at load.
+
+- **`ModelRuntime` can be inspected without loading anything.** A readiness
+  report or capability listing no longer needs its own copy of the catalog
+  (#61):
+  - `aliases()` and `alias(name)` return an `AliasSnapshot` per alias: task,
+    provider, model, revision, warmup policy, whether it is required, its
+    `LoadState` (`Registered`, `Loading`, `Loaded`, or `Failed` with the
+    error and when), the execution providers once loaded, and, for remote
+    aliases, the endpoint with credentials and query stripped and the name
+    of the environment variable holding its credential. `options` are never
+    exposed.
+  - `providers()` lists the registered providers and the tasks each supports.
+  - `prefetch_report(&[alias])` and `prefetch_all_report()` load aliases one
+    at a time like `prefetch`, but carry on past failures and return every
+    alias's result.
+  - Load failures, including timeouts, model-warmup errors and background
+    warmup, are now recorded per model until a later load succeeds; before,
+    they were only logged. A model-warmup error is now also logged.
+  - `ModelProvider::describe(&spec)` (defaulted) is how a provider fills in
+    the endpoint and credential name; every bundled remote provider
+    implements it.
+- **Remote aliases can be checked for reachability and a valid key, on
+  request (#66).** `ModelRuntime::verify(&[alias])` and `verify_all()` make
+  one cheap authenticated request per remote alias, at most eight at a time:
+  a models or model lookup for OpenAI, Anthropic, Cohere, Gemini and Mistral,
+  `/health` (then `/tokenize` with a key) for llama.cpp, and an empty body
+  posted to the alias's own endpoint for Azure OpenAI, Voyage AI and Vertex
+  AI (a 400 proves the key, and for Vertex the project, without generating
+  anything; Azure's `OperationNotSupported` is reported as a misconfigured
+  alias). Nothing else
+  contacts a remote provider: building, prefetching and `health()` are
+  unchanged.
+  - A failure is the new `RuntimeError::Verification { alias, provider_id,
+    kind, detail }`, classed as `Unauthorized`, `NotFound`, `Unreachable`,
+    `Timeout`, `RateLimited`, `Unavailable` or `Config`; its message never
+    contains a key. Each check waits at most the alias's `load_timeout`,
+    capped at 30 seconds.
+  - Results show up as each alias's `verification` in `aliases()`, and
+    `provider_health(id)` folds them in (`Degraded` when some verified
+    aliases failed, `Unhealthy` when all did, never better than the
+    provider's own `health()`), returning `health()` itself until one is
+    verified.
+  - `ModelProvider::verify(&spec)` is defaulted to `NotApplicable`, so
+    third-party providers keep compiling.
+  - `remote/gemini` no longer puts its API key into error messages: a
+    transport error's text included the request URL, which carries the key.
+  - See the new Startup Readiness guide.
+
+- **`uni_xervo::schemas` publishes the catalog rules for configuration
+  tools.** `MODEL_CATALOG` and `provider_options_schema(id)` return the JSON
+  Schemas this crate version validates against; `bundled_providers()`,
+  `supported_tasks(id)` and `option_keys(id, task)` return the table the
+  runtime checks; `validate_options(id, task, options)` runs the runtime's own
+  check on one alias. None of it needs a provider feature, a runtime or a model
+  load. (#62)
+
+### Changed
+
+- **OCR rejects a recognizer whose class count does not match its
+  dictionary.** A model must output blank + dictionary classes, or blank +
+  dictionary + a space class; any other count is now a configuration error at
+  load, or on the first run when the graph leaves the count dynamic, where
+  before the unmatched classes were silently dropped from the text. A
+  `blank_class` that is not a non-negative integer is now rejected when the
+  catalog is built instead of being read as 0. (#68)
+- **A catalog entry naming a task its bundled provider does not support is
+  rejected when the catalog is built.** Before, only the multimodal tasks were
+  checked there; `remote/anthropic` with `embed`, say, was accepted and failed
+  on first use. The error lists the tasks the provider does support.
+- **A key that belongs to another task is named as such for every bundled
+  provider:** `Option 'embedding_dimensions' for provider 'remote/cohere'
+  applies only to task 'embed' (got 'rerank')`. This replaces "only valid for
+  embed tasks" on the remote providers, and "Unknown option" for, say, an
+  ONNX OCR key on an embed alias.
+- **Integer options written as whole-number floats are read as integers.**
+  `"max_seq_len": 128.0`, as Python's `json` writes it, used to be rejected as
+  "must be a positive integer"; the runtime now reads it as `128` everywhere,
+  matching the schemas, where JSON Schema's `integer` accepts it.
+- **`local/onnx` checks values it used to pass through:** `max_seq_len` on
+  rerank, the `embed_hybrid` keys (`tokenizer_path`, `max_seq_len`, `top_k`,
+  `token_type_ids`), and the OCR `det_*` keys even when `det_onnx_path` is not
+  set.
+
+### Documentation
+
+- **One BGE-M3 alias serves every head (#60).** The multi-vector guide now
+  shows that `embedding`, `sparse_embedder` and `multi_vector_embedder` all
+  accept an `embed_hybrid` alias and share its one loaded model, so a
+  service needs one BGE-M3 load rather than one per task. It also warns
+  against mixing vectors from the BAAI `BGEM3` export and the
+  `aapot/bge-m3-onnx` hybrid in one index.
+
+### Fixed
+
+- **`active_execution_providers()` reports the providers a session
+  attached, not the ones requested.** A provider that was compiled in but
+  failed to register (its library or driver missing) was still reported, so
+  a `gpu-cuda` build on a host without a usable GPU said `["cuda", "cpu"]`
+  while running on CPU. Sessions now register providers one at a time and
+  report only those that registered, logging each one skipped. Nothing
+  listed after `cpu` is reported either, since ORT's CPU provider claims every
+  node before a provider listed after it: `["cpu", "coreml"]` reports
+  `["cpu"]`. A session that registers an accelerator but then fails to build
+  on it, with `cpu` in the list, is rebuilt on CPU and reports `["cpu"]`, with
+  a warning; before, that was a load error. If the model fails on CPU too
+  (a corrupt file, a missing sidecar), the load fails with the first
+  attempt's error and no fallback is logged. A CPU-free list whose
+  accelerator fails is still a load error. OCR with a detector and kniv v7's lazily built graphs report
+  only the providers every session attached. (#64)
+
+- **Loading two aliases of a repo with an external-data sidecar at once no
+  longer fails with "External data path escapes model directory".** A cached
+  download through `hf-hub` recreates the file's snapshot links, and ONNX
+  Runtime resolving `model.onnx.data` through one of them at that moment saw
+  a path outside the model's directory. BGE-M3's dense, sparse and hybrid
+  aliases loading together hit it about one time in three. A file resolved
+  once is now reused for the rest of the process without asking `hf-hub`
+  again, so loads in one process no longer relink each other's files; and
+  building a session holds a shared lock on the repository, which downloads
+  take exclusively, so a download in another process waits for it. That wait
+  is capped at 60 seconds, after which the session builds unlocked.
+- **Every `local/onnx` model reports its execution providers.**
+  `active_execution_providers()` returned an empty list for NLP (kniv v1 and
+  v7), OCR, image embedding, and the sparse, multi-vector and hybrid
+  embedders, so a caller who asked for CUDA could not see what those sessions
+  were built with. All seven session builders are now one, which returns the
+  list it built with, and every model reports it. A kniv v7 model now builds
+  its `plain` graph at load, rather than on the first request, so a session
+  that fails to build fails `nlp_model()` instead of the first `analyze`.
+  `local/onnx` document extraction still reports none: it runs no session
+  yet. (#65)
+- **`graph_optimization_level`, `intra_op_num_threads` and
+  `inter_op_num_threads` take effect for every `local/onnx` task.** They were
+  accepted for all tasks but read only by `raw` and kniv v7: embedding,
+  reranking, kniv v1, OCR, image embedding and the sparse, multi-vector and
+  hybrid embedders ignored them. Unset, each task keeps the level it used
+  before. kniv v7 also read `"all"` as ORT's layout level; it now means
+  `All`, as it already did for `raw`.
+- **The shipped JSON Schemas match runtime validation again (#62).** The
+  catalog schema accepted only 4 of the 14 tasks, so any sparse, hybrid, NLP,
+  OCR, transcription or document-extraction catalog failed it. The ONNX schema
+  set `additionalProperties: false` while missing most of the keys the runtime
+  accepts (every per-task key, `cache_dir`, all OCR keys), so it rejected valid
+  configs; it also required a non-empty `execution_providers`, which the
+  runtime does not. There was no `local/whisper-cpp` schema. Each provider file
+  now has one schema per task under `$defs/<task>`, the catalog schema routes
+  every `(provider_id, task)` pair to it and rejects unsupported tasks, every
+  document has a `$id`, and URL keys check for an `http(s)://` prefix as the
+  runtime does instead of using `format: uri`. A new test fails when a schema,
+  the runtime's key table, or a provider's `capabilities()` disagree, and runs
+  over 500 generated accept/reject cases through both the schema and the
+  runtime validator.
+
+- **Loading the same cached model from several processes no longer fails at
+  random.** `hf-hub` 1.0 rewrites `refs/main` on every cached download with a
+  truncate-then-write, so a process reading it at the wrong moment got an
+  empty commit hash and a path such as `snapshots/tokenizer.json` that does
+  not exist. That call also wrote the empty ref back, and later loads kept
+  returning the bad path. It showed up when several processes share one cache,
+  as `cargo nextest` runs do. Downloads now hold a per-repository lock file
+  under `<cache>/.locks/`, a ref holding no commit hash is removed before
+  downloading so the revision is resolved afresh, and a path outside
+  `snapshots/<commit>/` is retried once and then reported as an error. A
+  cache already left in that state recovers on its next load. The wait for
+  another process's lock is capped at 60 seconds, after which the download
+  goes ahead unlocked, and a cache where the lock cannot be taken (read-only,
+  or a filesystem without file locks) is used unlocked with a warning; a
+  pinned commit whose file is already cached is read without locking, so
+  read-only caches baked into images keep working. A revision that is a path
+  (`../x`, `/abs`) is rejected. (#67)
+
+- **OCR keeps the spaces between words.** PaddleOCR recognizers trained with
+  `use_space_char=True` output blank + dictionary + space classes, with the
+  space past the end of the dictionary file. The decoder found no dictionary
+  entry for that last class and dropped it, so `Pump Station Maintenance Log`
+  came back as `PumpStationMaintenanceLog`. The space class is now detected
+  from the model's class count, or set with the new `use_space_char` option.
+  A class count that fits neither layout is now a configuration error naming
+  both counts, instead of silently decoding the wrong characters. A
+  `blank_class` other than 0 now maps the classes on either side of it
+  correctly. (#68)
+- **OCR reads long lines in full.** Every text line was stretched to a fixed
+  `image_height` × `image_width` (48 × 320), so a long line had fewer CTC time
+  steps than characters: `The north pump was replaced on March 12.` came back
+  as `Thenoa.`. Lines now keep their aspect ratio and are right-padded, as
+  PaddleOCR does, up to the new `max_image_width` option (default 3200);
+  `image_width` becomes the narrowest a batch is. Lines are recognized six at
+  a time, grouped by aspect ratio, instead of one session run per line. A
+  recognizer whose graph fixes its batch (paddle2onnx's `[1, 3, 48, 320]` is
+  common) gets exactly that many lines per run, one whose graph fixes its
+  input width gets lines fitted to that width, and one whose fixed height
+  differs from `image_height` fails at load. (#69)
+
 ## [0.19.2] - 2026-11-13
 
 ### Fixed

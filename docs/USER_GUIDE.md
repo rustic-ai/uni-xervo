@@ -29,7 +29,7 @@ The default build gives you both local backends and all nine remote API provider
 
 ```toml
 [dependencies]
-uni-xervo = "0.19"
+uni-xervo = "0.20"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -76,19 +76,19 @@ For other GPU vendors (AMD ROCm, Intel OpenVINO, Microsoft DirectML, Qualcomm QN
 
 ```toml
 # Defaults — everything except GPU.
-uni-xervo = "0.19"
+uni-xervo = "0.20"
 
 # Add NVIDIA GPU.
-uni-xervo = { version = "0.19", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.20", features = ["gpu-cuda"] }
 
 # Add Apple GPU + Neural Engine.
-uni-xervo = { version = "0.19", features = ["gpu-metal"] }
+uni-xervo = { version = "0.20", features = ["gpu-metal"] }
 
 # Lean local-only build.
-uni-xervo = { version = "0.19", default-features = false, features = ["provider-candle"] }
+uni-xervo = { version = "0.20", default-features = false, features = ["provider-candle"] }
 
 # Remote-only — no native deps.
-uni-xervo = { version = "0.19", default-features = false, features = [
+uni-xervo = { version = "0.20", default-features = false, features = [
     "provider-openai",
     "provider-anthropic",
 ] }
@@ -148,7 +148,7 @@ llama.cpp `llama-server` for generation in a single runtime.
 
 **Dependencies:**
 ```toml
-uni-xervo = { version = "0.19", features = ["provider-candle", "provider-llamacpp"] }
+uni-xervo = { version = "0.20", features = ["provider-candle", "provider-llamacpp"] }
 ```
 
 Start the generation server first:

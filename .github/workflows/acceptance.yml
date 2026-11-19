@@ -1,0 +1,57 @@
+name: Acceptance
+
+# The deployment acceptance matrix (scripts/acceptance.sh) on a Linux CPU
+# runner. Manual only: it downloads several GB of real models and takes far
+# longer than the per-commit CI. Run it from the Actions tab before a release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated suites to run (blank for all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache models
+        uses: actions/cache@v4
+        with:
+          path: crates/uni-xervo/.uni_cache
+          key: acceptance-models-${{ hashFiles('crates/uni-xervo/src/provider/local_onnx/presets.rs') }}
+          restore-keys: acceptance-models-
+
+      - name: Run the acceptance matrix
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ -n "$ONLY" ]; then
+            ./scripts/acceptance.sh cpu --only "$ONLY"
+          else
+            ./scripts/acceptance.sh cpu
+          fi
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-cpu
+          path: target/acceptance/cpu/

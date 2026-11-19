@@ -22,13 +22,11 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use ndarray::{Array1, Array2, Array3, ArrayD, ArrayViewD, IxDyn};
 use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{DynTensor, Tensor};
 
-use crate::api::ModelAliasSpec;
 use crate::error::{Result, RuntimeError};
 use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, new_session_builder,
+    OnnxExecutionProvider, SessionConfig, build_session, common_execution_providers,
 };
 
 /// The graph names a release ships, in the order the pipeline reaches them.
@@ -257,38 +255,38 @@ pub(crate) struct Graphs {
     paths: GraphPaths,
     sessions: DashMap<String, Arc<Mutex<Session>>>,
     alias: String,
-    execution_providers: Option<Vec<OnnxExecutionProvider>>,
-    optimization_level: Option<String>,
-    intra_threads: Option<usize>,
-    inter_threads: Option<usize>,
+    session_cfg: SessionConfig,
+    /// The execution providers every graph built so far runs on, in priority
+    /// order; `None` until the first session is built.
+    execution_providers: Mutex<Option<Vec<OnnxExecutionProvider>>>,
 }
 
 impl Graphs {
     /// Hold the resolved paths; sessions are built on demand.
-    pub fn new(
-        paths: GraphPaths,
-        spec: &ModelAliasSpec,
-        execution_providers: Option<Vec<OnnxExecutionProvider>>,
-    ) -> Self {
-        let opts = &spec.options;
+    pub fn new(paths: GraphPaths, alias: &str, session_cfg: SessionConfig) -> Self {
         Self {
             paths,
             sessions: DashMap::new(),
-            alias: spec.alias.clone(),
-            execution_providers,
-            optimization_level: opts
-                .get("graph_optimization_level")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            intra_threads: opts
-                .get("intra_op_num_threads")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
-            inter_threads: opts
-                .get("inter_op_num_threads")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize),
+            alias: alias.to_string(),
+            session_cfg,
+            execution_providers: Mutex::new(None),
         }
+    }
+
+    /// Build `graph`'s session now rather than on first use.
+    pub fn build(&self, graph: &str) -> Result<()> {
+        self.session(graph).map(|_| ())
+    }
+
+    /// The execution providers every graph built so far attached. Graphs
+    /// share one [`SessionConfig`], but an accelerator can attach to one
+    /// graph and fail on another, so a graph built later can narrow the
+    /// list. Empty before any session is built.
+    pub fn execution_providers(&self) -> Vec<OnnxExecutionProvider> {
+        self.execution_providers
+            .lock()
+            .map(|eps| eps.clone().unwrap_or_default())
+            .unwrap_or_default()
     }
 
     /// The file `graph` loads from.
@@ -317,38 +315,14 @@ impl Graphs {
     }
 
     fn build_session(&self, path: &Path) -> Result<Session> {
-        let load_err = |e: &dyn std::fmt::Display| RuntimeError::OnnxLoadFailure {
-            alias: self.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        };
-        let mut builder = new_session_builder()?.map_err(|e| load_err(&e))?;
-        // Unlike the v1 path, the configured optimization level and thread
-        // counts are honoured rather than validated and dropped.
-        let level = match self.optimization_level.as_deref() {
-            Some("disable") => GraphOptimizationLevel::Disable,
-            Some("basic") => GraphOptimizationLevel::Level1,
-            Some("extended") => GraphOptimizationLevel::Level2,
-            _ => GraphOptimizationLevel::Level3,
-        };
-        builder = builder
-            .with_optimization_level(level)
-            .map_err(|e| load_err(&e))?;
-        if let Some(n) = self.intra_threads {
-            builder = builder.with_intra_threads(n).map_err(|e| load_err(&e))?;
+        let built = build_session(path, &self.alias, &self.session_cfg)?;
+        if let Ok(mut eps) = self.execution_providers.lock() {
+            *eps = Some(match eps.take() {
+                None => built.execution_providers,
+                Some(prev) => common_execution_providers(&prev, &built.execution_providers),
+            });
         }
-        if let Some(n) = self.inter_threads {
-            builder = builder.with_inter_threads(n).map_err(|e| load_err(&e))?;
-        }
-        let dispatch = build_execution_providers(
-            self.execution_providers.as_deref(),
-            &self.alias,
-            "local/onnx",
-        )?;
-        builder = builder
-            .with_execution_providers(dispatch)
-            .map_err(|e| load_err(&e))?;
-        builder.commit_from_file(path).map_err(|e| load_err(&e))
+        Ok(built.session)
     }
 
     /// Run `graph`, feeding only the inputs it declares.

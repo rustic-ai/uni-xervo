@@ -169,3 +169,38 @@ async fn ppocr_blank_image_yields_empty_result() {
         results[0].blocks.len()
     );
 }
+
+/// Long lines keep their characters and their spaces (rustic-ai/uni-xervo#68,
+/// #69): each detected line must read back exactly as rendered.
+///
+/// The fixture is Arial at 92 px (44 pt at 150 dpi). Stretched to a fixed
+/// 48×320, the longer lines had fewer CTC time steps than characters and came
+/// back cut short, and the recognizer's trailing space class was dropped.
+#[tokio::test]
+#[ignore]
+async fn ppocr_reads_long_lines_with_spaces() {
+    require_expensive_tests!();
+
+    let runtime = ocr_runtime().await;
+    let ocr = runtime
+        .ocr_model("ocr/ppocr-en")
+        .await
+        .expect("load ocr model");
+
+    let input = ImageInput::Bytes {
+        data: image_bytes("maintenance_log.png"),
+        media_type: "image/png".to_string(),
+    };
+    let results = ocr.recognize(vec![input]).await.expect("recognize");
+    let lines: Vec<&str> = results[0].blocks.iter().map(|b| b.text.as_str()).collect();
+    eprintln!("lines: {lines:#?}");
+    assert_eq!(
+        lines,
+        [
+            "Pump Station Maintenance Log",
+            "The north pump was replaced on March 12.",
+            "Inspector Mira Okafor signed off the repair.",
+            "Next inspection is due in September.",
+        ]
+    );
+}

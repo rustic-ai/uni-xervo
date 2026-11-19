@@ -49,8 +49,9 @@ recognition of images that are already cropped to a text line.
 
 See the [local/onnx provider reference](../reference/providers/onnx.md#ocr-only-keys-task-ocr)
 for the full option list. In short: recognition keys (`onnx_path`,
-`char_dict_path`, `image_height`, `image_width`, `normalization`, `blank_class`)
-are always required, and the optional `det_*` keys turn on the detection stage —
+`char_dict_path`, `image_height`, `image_width`, `max_image_width`,
+`normalization`, `blank_class`, `use_space_char`) configure the recognizer
+(only `onnx_path` and `char_dict_path` are required), and the optional `det_*` keys turn on the detection stage —
 the presence of `det_onnx_path` is what switches single-stage recognition into
 two-stage detect → recognize.
 

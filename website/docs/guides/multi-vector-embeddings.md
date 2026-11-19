@@ -134,6 +134,34 @@ One weight load, one pass, three retrieval signals. See
 `crates/uni-xervo/examples/embed_hybrid.rs`. `HeadSet` selects a subset (e.g.
 `HeadSet::DENSE | HeadSet::SPARSE`) when you don't need every head.
 
+### One alias for every head
+
+Code that wants a plain `EmbeddingModel`, `SparseEmbeddingModel` or
+`MultiVectorEmbeddingModel` doesn't need a per-task alias next to the hybrid
+one. The single-head accessors also accept an `embed_hybrid` alias:
+
+```rust
+// One catalog entry: { "alias": "embed/bgem3", "task": "embed_hybrid",
+//                      "provider_id": "local/onnx", "model_id": "BGEM3Hybrid" }
+let dense = runtime.embedding("embed/bgem3").await?;               // dense head
+let sparse = runtime.sparse_embedder("embed/bgem3").await?;        // lexical head
+let colbert = runtime.multi_vector_embedder("embed/bgem3").await?; // ColBERT head
+```
+
+All three share the hybrid alias's one loaded model, so BGE-M3's weights are in
+memory once. Registering separate `embed`, `embed_sparse` and `embed_multi_vector`
+aliases for the same model loads it three times. Each single-head call runs one
+pass and returns only its head. Timeouts, retries and metrics are attributed
+to the alias you resolved. To get two heads at once, call `hybrid_embedder` with
+a `HeadSet` instead: that is one pass, where two single-head calls would be two.
+
+Keep one export per index. The `BGEM3` preset (`BAAI/bge-m3`) is BAAI's own
+dense-only export, which is a different graph from `aapot/bge-m3-onnx`. Its
+vectors are close to the hybrid's dense head but not guaranteed identical, so
+don't mix vectors from the two in one index. `BGEM3Dense` reads the same graph
+as `BGEM3Hybrid`, but there's no reason to register it beside a hybrid alias,
+which already serves dense.
+
 ## See also
 
 - [Sparse embeddings](sparse-embeddings.md) — the learned-sparse sibling head.

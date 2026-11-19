@@ -121,18 +121,114 @@ pub(crate) fn new_session_builder() -> Result<ort::Result<ort::session::builder:
 // ---------------------------------------------------------------------------
 
 /// One small, real inference that proves a freshly built model runs on the
-/// execution providers its session was built with.
+/// execution providers its session was built with, and runs them correctly.
 ///
 /// ORT's own fallback happens once, at session creation: each node goes to
 /// the first EP that *claims* it. An accelerator that accepts a node and then
 /// fails to execute it (CoreML on a zero-length KV cache, for one) is never
-/// retried on CPU — the inference call just errors. A probe moves that
-/// failure to load time, where [`verify_execution_providers`] can still fall
-/// back. It catches compile and op-support failures, not every shape: a model
-/// that runs the probe can still fail on an input the probe did not cover.
+/// retried on CPU — the inference call just errors. Worse, one can execute it
+/// and return wrong numbers: CoreML's NeuralNetwork conversion of PP-OCR's
+/// recognizer reads text wrong without any error. A probe returns the
+/// model's numeric output for a fixed input, so [`verify_execution_providers`]
+/// can both catch an error and compare the answer with CPU's. It covers the
+/// probe's input only: a model that agrees on it can still fail on an input
+/// it did not cover.
 #[async_trait::async_trait]
 pub(crate) trait EpProbe: Sync {
-    async fn probe(&self) -> Result<()>;
+    /// Run the fixed probe input and return the model's numeric outputs, in
+    /// a fixed order, for comparison across execution providers.
+    async fn probe(&self) -> Result<ProbeOutput>;
+}
+
+/// A probe's numeric outputs: one flattened tensor per output, in a fixed
+/// order.
+pub(crate) type ProbeOutput = Vec<Vec<f32>>;
+
+/// The text the encoder probes run: a batch of two inputs of different
+/// lengths, so a longer sequence and padding are both exercised. A single
+/// short word passed on models that then failed on real input.
+pub(crate) const PROBE_TEXTS: [&str; 2] = [
+    "The quick brown fox jumps over the lazy dog near the riverbank at dawn.",
+    "probe",
+];
+
+/// Scores in input order, for a reranker's probe output.
+pub(crate) fn scores_in_input_order(docs: &[crate::traits::ScoredDoc]) -> ProbeOutput {
+    let mut by_index: Vec<(usize, f32)> = docs.iter().map(|d| (d.index, d.score)).collect();
+    by_index.sort_by_key(|(i, _)| *i);
+    vec![by_index.into_iter().map(|(_, s)| s).collect()]
+}
+
+/// What the load-time check does when a session runs on an accelerator,
+/// from the alias's `accelerator_check` option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AcceleratorCheck {
+    /// Run the probe on the accelerator and on CPU, and keep CPU if the
+    /// outputs disagree (or the accelerator errors). The default.
+    #[default]
+    Compare,
+    /// Run the probe on the accelerator only, falling back to CPU if it
+    /// errors. Catches errors, not wrong answers.
+    Probe,
+    /// No load-time check.
+    Off,
+}
+
+impl AcceleratorCheck {
+    fn from_option(value: Option<&str>) -> Self {
+        match value {
+            Some("probe") => Self::Probe,
+            Some("off") => Self::Off,
+            // Option validation rejects anything else first.
+            _ => Self::Compare,
+        }
+    }
+}
+
+/// Largest relative error, `‖accel − cpu‖ / ‖cpu‖` per output tensor, at
+/// which an accelerator's output still counts as agreeing with CPU's.
+///
+/// Measured on CoreML (M2 Max, macOS 27.2.1; see `docs/TEST_MATRIX.md`):
+/// the text encoders and rerankers land between 1e-7 and 1e-5, BGE-M3 at 0,
+/// and PP-OCR's detector at 0.052 while finding the same boxes. The one model
+/// CoreML computes wrongly, PP-OCR's recognizer, lands at 0.66. 0.2 sits
+/// well clear of both.
+pub(crate) const PROBE_REL_TOL: f32 = 0.2;
+
+/// Whether an accelerator's probe output agrees with CPU's: `Err` carries the
+/// worst relative error (infinite when the outputs differ in shape or the
+/// accelerator produced a non-finite value CPU did not).
+pub(crate) fn outputs_agree(
+    accel: &ProbeOutput,
+    cpu: &ProbeOutput,
+) -> std::result::Result<f32, f32> {
+    if accel.len() != cpu.len() {
+        return Err(f32::INFINITY);
+    }
+    let mut worst = 0.0f32;
+    for (a, c) in accel.iter().zip(cpu) {
+        if a.len() != c.len() {
+            return Err(f32::INFINITY);
+        }
+        let mut diff = 0.0f64;
+        let mut norm = 0.0f64;
+        for (&x, &y) in a.iter().zip(c) {
+            if !x.is_finite() && y.is_finite() {
+                return Err(f32::INFINITY);
+            }
+            if x.is_finite() && y.is_finite() {
+                diff += f64::from(x - y).powi(2);
+                norm += f64::from(y).powi(2);
+            }
+        }
+        let rel = (diff.sqrt() / norm.sqrt().max(1e-6)) as f32;
+        worst = worst.max(rel);
+    }
+    if worst > PROBE_REL_TOL {
+        Err(worst)
+    } else {
+        Ok(worst)
+    }
 }
 
 /// Whether a session built on `eps` needs a probe: only when something other
@@ -141,86 +237,414 @@ pub(crate) fn needs_probe(eps: &[OnnxExecutionProvider]) -> bool {
     eps.iter().any(|ep| *ep != OnnxExecutionProvider::Cpu)
 }
 
-/// Probe `model` and, if its accelerator fails, fall back to CPU.
+/// Check the session in `slot` with `probe`, falling back to CPU if its
+/// accelerator errors or (under [`AcceleratorCheck::Compare`]) answers
+/// differently from CPU.
 ///
-/// `eps` is the session's effective list ([`effective_ep_list`]). Returns the
-/// list the model now runs on, for [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers):
+/// `eps` is the providers the session attached. Returns the list it runs on
+/// afterwards, for [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers):
 ///
-/// - no probe needed (CPU only) → `eps` unchanged;
-/// - probe passes → `eps` unchanged;
-/// - probe fails and `eps` contains `cpu` → `rebuild_on_cpu` swaps in a
-///   CPU-only session, the probe runs again on it, and the result is `[cpu]`.
-///   Logged at `warn`, naming the EPs that failed and why;
-/// - probe fails and `eps` has no `cpu` → a load error. A CPU-free list is
-///   the caller asking for that accelerator or nothing (the same contract as
-///   `error_on_failure()` in [`build_execution_providers`]), and failing here
-///   beats failing on the first query.
-pub(crate) async fn verify_execution_providers<M: EpProbe>(
-    model: &M,
+/// - CPU only, or `check` is `Off` → `eps`, untouched;
+/// - the probe errors → a CPU session from `build_cpu` replaces it, the
+///   probe runs again on CPU, and the result is `[cpu]`;
+/// - `Probe` and the probe runs → `eps`;
+/// - `Compare` → a CPU session from `build_cpu` runs the probe too. If the
+///   outputs agree within [`PROBE_REL_TOL`], the accelerator session goes back
+///   in and the CPU one is dropped, returning `eps`; if not, the CPU session
+///   stays and the result is `[cpu]`.
+///
+/// Each fallback is logged at `warn`. A list with no `cpu` entry is the
+/// caller asking for that accelerator or nothing (the same contract as
+/// `error_on_failure()` in [`build_execution_providers`]), so there a failed
+/// check is a load error instead of a fallback.
+///
+/// Generic over the session type so tests can drive it without ONNX Runtime.
+pub(crate) async fn verify_execution_providers<P: EpProbe, S: Send>(
+    probe: &P,
+    slot: &std::sync::Mutex<S>,
     eps: Vec<OnnxExecutionProvider>,
+    check: AcceleratorCheck,
     alias: &str,
     model_path: &std::path::Path,
-    rebuild_on_cpu: impl FnOnce(&M) -> Result<()> + Send,
+    build_cpu: impl FnOnce() -> Result<S> + Send,
 ) -> Result<Vec<OnnxExecutionProvider>> {
-    if !needs_probe(&eps) {
+    if check == AcceleratorCheck::Off || !needs_probe(&eps) {
         return Ok(eps);
     }
-    let Err(probe_err) = model.probe().await else {
-        return Ok(eps);
-    };
-    let failed: Vec<OnnxExecutionProvider> = eps
+    let accelerators: Vec<OnnxExecutionProvider> = eps
         .iter()
         .copied()
         .filter(|ep| *ep != OnnxExecutionProvider::Cpu)
         .collect();
-    if !eps.contains(&OnnxExecutionProvider::Cpu) {
-        return Err(RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: model_path.to_path_buf(),
-            cause: format!(
-                "load-time probe failed on execution providers [{}] and the list has no \
-                 \"cpu\" entry to fall back to: {probe_err}",
-                join_eps(&eps)
-            ),
-        });
+    let has_cpu = eps.contains(&OnnxExecutionProvider::Cpu);
+    let load_failure = |cause: String| RuntimeError::OnnxLoadFailure {
+        alias: alias.to_string(),
+        path: model_path.to_path_buf(),
+        cause,
+    };
+
+    let accel_out = match probe.probe().await {
+        Ok(out) => out,
+        Err(probe_err) => {
+            if !has_cpu {
+                return Err(load_failure(format!(
+                    "load-time probe failed on execution providers [{}] and the list has no \
+                     \"cpu\" entry to fall back to: {probe_err}",
+                    join_eps(&eps)
+                )));
+            }
+            tracing::warn!(
+                alias = %alias,
+                failed = %join_eps(&accelerators),
+                error = %probe_err,
+                "ONNX model failed its load-time probe on the requested execution providers; \
+                 falling back to CPU"
+            );
+            replace_session(slot, build_cpu()?, alias)?;
+            probe.probe().await.map_err(|e| {
+                load_failure(format!(
+                    "load-time probe failed on CPU after [{}] failed: {e}",
+                    join_eps(&accelerators)
+                ))
+            })?;
+            return Ok(vec![OnnxExecutionProvider::Cpu]);
+        }
+    };
+    if check == AcceleratorCheck::Probe {
+        return Ok(eps);
     }
-    tracing::warn!(
-        alias = %alias,
-        failed = %join_eps(&failed),
-        error = %probe_err,
-        "ONNX model failed its load-time probe on the requested execution providers; \
-         falling back to CPU"
-    );
-    rebuild_on_cpu(model)?;
-    model
-        .probe()
-        .await
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: alias.to_string(),
-            path: model_path.to_path_buf(),
-            cause: format!(
-                "load-time probe failed on CPU after [{}] failed: {e}",
-                join_eps(&failed)
-            ),
-        })?;
-    Ok(vec![OnnxExecutionProvider::Cpu])
+
+    // Run the same probe on CPU. The CPU session is needed anyway if the
+    // outputs disagree, so build it in place and keep the accelerator's aside.
+    let accel_session = replace_session(slot, build_cpu()?, alias)?;
+    let cpu_out = match probe.probe().await {
+        Ok(out) => out,
+        Err(e) => {
+            // No reference to compare with: keep the accelerator, which did
+            // run the probe.
+            tracing::warn!(
+                alias = %alias,
+                error = %e,
+                "ONNX model's load-time probe failed on CPU; keeping the accelerator unchecked"
+            );
+            replace_session(slot, accel_session, alias)?;
+            return Ok(eps);
+        }
+    };
+    match outputs_agree(&accel_out, &cpu_out) {
+        Ok(rel) => {
+            tracing::debug!(
+                alias = %alias,
+                providers = %join_eps(&accelerators),
+                relative_error = rel,
+                "ONNX model's accelerator output agrees with CPU"
+            );
+            replace_session(slot, accel_session, alias)?;
+            Ok(eps)
+        }
+        Err(rel) => {
+            if !has_cpu {
+                return Err(load_failure(format!(
+                    "output on execution providers [{}] differs from CPU's (relative error \
+                     {rel:.3}, limit {PROBE_REL_TOL}) and the list has no \"cpu\" entry to \
+                     fall back to; set accelerator_check to \"probe\" to use it anyway",
+                    join_eps(&eps)
+                )));
+            }
+            tracing::warn!(
+                alias = %alias,
+                failed = %join_eps(&accelerators),
+                relative_error = rel,
+                limit = PROBE_REL_TOL,
+                "ONNX model's output on the requested execution providers differs from CPU's; \
+                 using CPU"
+            );
+            drop(accel_session);
+            Ok(vec![OnnxExecutionProvider::Cpu])
+        }
+    }
 }
 
-/// Replace the session behind `slot`, for a [`verify_execution_providers`]
-/// `rebuild_on_cpu` callback.
-pub(crate) fn replace_session(
-    slot: &std::sync::Mutex<ort::session::Session>,
-    session: ort::session::Session,
-    alias: &str,
-) -> Result<()> {
+/// Put `session` in `slot` and return the one it replaces.
+pub(crate) fn replace_session<S>(slot: &std::sync::Mutex<S>, session: S, alias: &str) -> Result<S> {
     let mut guard = slot
         .lock()
         .map_err(|e| RuntimeError::OnnxInvocationFailure {
             alias: alias.to_string(),
             cause: format!("Session lock poisoned: {e}"),
         })?;
-    *guard = session;
-    Ok(())
+    Ok(std::mem::replace(&mut *guard, session))
+}
+
+// ---------------------------------------------------------------------------
+// Session building
+// ---------------------------------------------------------------------------
+
+/// How to build an ORT session for one alias, read once from its options.
+///
+/// Every `local/onnx` task builds its sessions through [`build_session`] with
+/// one of these, so the shared session options (`execution_providers`,
+/// `graph_optimization_level`, `intra_op_num_threads`,
+/// `inter_op_num_threads`) mean the same thing for every task.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionConfig {
+    /// The caller's list, or `None` for the feature-aware default.
+    pub(crate) execution_providers: Option<Vec<OnnxExecutionProvider>>,
+    pub(crate) optimization_level: ort::session::builder::GraphOptimizationLevel,
+    pub(crate) intra_threads: Option<usize>,
+    pub(crate) inter_threads: Option<usize>,
+    /// The load-time check on an accelerator session (`accelerator_check`).
+    pub(crate) accelerator_check: AcceleratorCheck,
+}
+
+impl SessionConfig {
+    /// Read the shared session options from an alias's options.
+    ///
+    /// `default_level` applies when `graph_optimization_level` is unset, so
+    /// each task keeps the level it has always used: `Level3` for most,
+    /// `Level1` (`"basic"`) for `raw`.
+    pub(crate) fn from_options(
+        options: &serde_json::Value,
+        default_level: ort::session::builder::GraphOptimizationLevel,
+    ) -> Result<Self> {
+        use ort::session::builder::GraphOptimizationLevel as Level;
+        let execution_providers =
+            parse_execution_providers_option(options.get("execution_providers"))?;
+        let optimization_level = match options
+            .get("graph_optimization_level")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("disable") => Level::Disable,
+            Some("basic") => Level::Level1,
+            Some("extended") => Level::Level2,
+            Some("all") => Level::All,
+            // Option validation rejects any other string first.
+            _ => default_level,
+        };
+        let threads = |key: &str| {
+            options
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .map(|v| v as usize)
+        };
+        Ok(Self {
+            execution_providers,
+            optimization_level,
+            intra_threads: threads("intra_op_num_threads"),
+            inter_threads: threads("inter_op_num_threads"),
+            accelerator_check: AcceleratorCheck::from_option(
+                options
+                    .get("accelerator_check")
+                    .and_then(serde_json::Value::as_str),
+            ),
+        })
+    }
+
+    /// The same settings on CPU only: the rebuild [`verify_execution_providers`]
+    /// falls back to.
+    pub(crate) fn cpu_only(&self) -> Self {
+        Self {
+            execution_providers: Some(vec![OnnxExecutionProvider::Cpu]),
+            ..self.clone()
+        }
+    }
+
+    /// Fail fast on an execution-provider list this build cannot honour,
+    /// before any download or session build. The same check
+    /// [`build_session`] makes, moved to the start of a load.
+    pub(crate) fn check_execution_providers(&self, alias: &str) -> Result<()> {
+        build_execution_providers(self.execution_providers.as_deref(), alias, "local/onnx")
+            .map(|_| ())
+    }
+
+    /// The execution providers a session built from this config would
+    /// request (what the load-time probe starts from; a built session reports
+    /// the providers that actually registered, see [`BuiltSession`]):
+    /// the requested list minus any whose feature is not compiled in.
+    pub(crate) fn effective_execution_providers(&self) -> Vec<OnnxExecutionProvider> {
+        effective_ep_list(self.execution_providers.as_deref())
+    }
+}
+
+/// A built session and the execution providers it was built with.
+pub(crate) struct BuiltSession {
+    pub(crate) session: ort::session::Session,
+    /// The providers that registered with the session, in priority order
+    /// (`[cpu]` after a CPU rebuild). What
+    /// [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
+    /// reports, until a load-time probe falls back to CPU.
+    pub(crate) execution_providers: Vec<OnnxExecutionProvider>,
+}
+
+/// Build one ORT session from `path` with `cfg`.
+///
+/// The one place a `local/onnx` session is built, so every task honours the
+/// same options and reports the execution providers it ended up with.
+///
+/// Providers are registered one at a time and only those that registered are
+/// reported (an accelerator whose library or device is missing is skipped,
+/// with a warning, unless it is the strict last entry of a CPU-free list).
+/// If the session then fails to commit with an accelerator attached and the
+/// list has a `cpu` entry, it is built again on CPU alone and reports
+/// `["cpu"]`: some accelerators register fine and only fail once the model is
+/// placed on them.
+pub(crate) fn build_session(
+    path: &std::path::Path,
+    alias: &str,
+    cfg: &SessionConfig,
+) -> Result<BuiltSession> {
+    let plan =
+        planned_execution_providers(cfg.execution_providers.as_deref(), alias, "local/onnx")?;
+    match commit_session(path, alias, cfg, &plan) {
+        Ok(built) => Ok(built),
+        Err(CommitError::AfterRegistration { error, attached })
+            if retry_commit_on_cpu(&plan, &attached) =>
+        {
+            let on_cpu = commit_session(path, alias, cfg, &[(OnnxExecutionProvider::Cpu, false)])
+                .map_err(CommitError::into_error);
+            resolve_cpu_retry(alias, &attached, error, on_cpu)
+        }
+        Err(e) => Err(e.into_error()),
+    }
+}
+
+/// Settle a CPU retry after a session failed to commit on `attached`.
+///
+/// A commit error does not say whether the accelerator caused it, so the
+/// retry is attempted for any failure. If CPU succeeds, the accelerator was
+/// the problem: warn and use the CPU session. If CPU fails too, the model
+/// itself is at fault (corrupt file, missing sidecar), so return the
+/// original error, which names the cause, and log nothing about a fallback.
+fn resolve_cpu_retry<T>(
+    alias: &str,
+    attached: &[OnnxExecutionProvider],
+    original: RuntimeError,
+    on_cpu: Result<T>,
+) -> Result<T> {
+    match on_cpu {
+        Ok(session) => {
+            tracing::warn!(
+                alias = %alias,
+                failed = %join_eps(attached),
+                error = %original,
+                "ONNX session failed to build on the requested execution providers; \
+                 built it on CPU instead"
+            );
+            Ok(session)
+        }
+        Err(_) => Err(original),
+    }
+}
+
+/// The providers a session reports, from those that registered: everything
+/// up to and including `cpu`.
+///
+/// ORT gives each node to the first provider in the list that claims it, and
+/// the CPU provider claims every standard operator, so a provider listed
+/// after `cpu` runs nothing. Reporting it would let `["cpu", "coreml"]` look
+/// accelerated.
+fn reported_providers(mut attached: Vec<OnnxExecutionProvider>) -> Vec<OnnxExecutionProvider> {
+    if let Some(cpu) = attached
+        .iter()
+        .position(|ep| *ep == OnnxExecutionProvider::Cpu)
+    {
+        attached.truncate(cpu + 1);
+    }
+    attached
+}
+
+/// A failed [`commit_session`], telling apart a failure once providers had
+/// registered, which a CPU retry may fix.
+enum CommitError {
+    Before(RuntimeError),
+    AfterRegistration {
+        error: RuntimeError,
+        attached: Vec<OnnxExecutionProvider>,
+    },
+}
+
+impl CommitError {
+    fn into_error(self) -> RuntimeError {
+        match self {
+            Self::Before(e) | Self::AfterRegistration { error: e, .. } => e,
+        }
+    }
+}
+
+fn commit_session(
+    path: &std::path::Path,
+    alias: &str,
+    cfg: &SessionConfig,
+    plan: &[(OnnxExecutionProvider, bool)],
+) -> std::result::Result<BuiltSession, CommitError> {
+    let load_err = |e: &dyn std::fmt::Display| RuntimeError::OnnxLoadFailure {
+        alias: alias.to_string(),
+        path: path.to_path_buf(),
+        cause: e.to_string(),
+    };
+    let before = |e: RuntimeError| CommitError::Before(e);
+    let mut builder = new_session_builder()
+        .map_err(before)?
+        .map_err(|e| before(load_err(&e)))?;
+    builder = builder
+        .with_optimization_level(cfg.optimization_level)
+        .map_err(|e| before(load_err(&e)))?;
+    if let Some(n) = cfg.intra_threads {
+        builder = builder
+            .with_intra_threads(n)
+            .map_err(|e| before(load_err(&e)))?;
+    }
+    if let Some(n) = cfg.inter_threads {
+        builder = builder
+            .with_inter_threads(n)
+            .map_err(|e| before(load_err(&e)))?;
+    }
+    let mut dispatch_err = None;
+    let registration = register_execution_providers(plan, alias, path, |provider, strict| {
+        let dispatch = match execution_provider_dispatch(provider, strict, alias, "local/onnx") {
+            Ok(d) => d,
+            Err(e) => {
+                // Unreachable after planning: the plan holds only compiled-in
+                // providers. Kept as an error rather than a panic.
+                let message = e.to_string();
+                dispatch_err = Some(e);
+                return Err(message);
+            }
+        };
+        dispatch.register(&mut builder).map_err(|e| e.to_string())
+    })
+    .map_err(before)?;
+    if let Some(e) = dispatch_err {
+        return Err(before(e));
+    }
+    let mut attached = reported_providers(registration.attached);
+    if attached.is_empty() {
+        // Nothing registered (every entry skipped): ORT runs the graph on its
+        // built-in CPU provider.
+        attached.push(OnnxExecutionProvider::Cpu);
+    }
+    // Keep downloads of the same repo from recreating the snapshot links
+    // ORT is resolving (the graph's external-data sidecar among them).
+    let _read_lock = crate::hf::lock_cached_repo_for_reading(path);
+    match builder.commit_from_file(path) {
+        Ok(session) => Ok(BuiltSession {
+            session,
+            execution_providers: attached,
+        }),
+        Err(e) => Err(CommitError::AfterRegistration {
+            error: load_err(&e),
+            attached,
+        }),
+    }
+}
+
+/// The providers in `a` that are also in `b`, in `a`'s order: what a model
+/// built from several sessions runs on end to end.
+pub(crate) fn common_execution_providers(
+    a: &[OnnxExecutionProvider],
+    b: &[OnnxExecutionProvider],
+) -> Vec<OnnxExecutionProvider> {
+    a.iter().copied().filter(|ep| b.contains(ep)).collect()
 }
 
 /// EP ids as strings, the shape [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers) reports.
@@ -357,14 +781,14 @@ pub(crate) fn resolve_ep_list(
         .unwrap_or_else(default_execution_providers)
 }
 
-/// The EP list a session will *actually* be built with: [`resolve_ep_list`]
-/// minus any entry whose backing feature is not compiled in.
+/// The EP list a session will try to register: [`resolve_ep_list`] minus any
+/// entry whose backing feature is not compiled in.
 ///
-/// This is what [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
-/// reports, so a caller can tell that a list resolved to `["cpu"]` only
-/// because the build lacks `gpu-cuda` / `gpu-metal`.
+/// An upper bound on what [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
+/// reports, which is the subset that actually registered (see
+/// [`build_session`]).
 ///
-/// Deliberately infallible. Reporting happens *before* the fail-fast
+/// Deliberately infallible. It is computed *before* the fail-fast
 /// validation probe at each load site, and making this fallible would move
 /// the origin of EP errors and blur the "validate before any I/O" ordering
 /// that `onnx_ep_resolution_test.rs` pins. An empty return is unreachable in
@@ -432,6 +856,24 @@ pub(crate) fn build_execution_providers(
     alias: &str,
     provider_label: &str,
 ) -> Result<Vec<ExecutionProviderDispatch>> {
+    planned_execution_providers(configured, alias, provider_label)?
+        .into_iter()
+        .map(|(provider, strict)| {
+            execution_provider_dispatch(provider, strict, alias, provider_label)
+        })
+        .collect()
+}
+
+/// The providers a session registers, in order, each paired with whether its
+/// registration failure is an error (`strict`) rather than a skip.
+///
+/// The filtering and strictness rules of [`build_execution_providers`]
+/// (see this module's header), without building the dispatches.
+fn planned_execution_providers(
+    configured: Option<&[OnnxExecutionProvider]>,
+    alias: &str,
+    provider_label: &str,
+) -> Result<Vec<(OnnxExecutionProvider, bool)>> {
     let requested = resolve_ep_list(configured);
     let (kept, dropped) = partition_available(&requested);
 
@@ -461,13 +903,74 @@ pub(crate) fn build_execution_providers(
 
     let strict_at = strict_index(&kept, configured.is_some());
 
-    kept.into_iter()
+    Ok(kept
+        .into_iter()
         .enumerate()
-        .map(|(index, provider)| {
-            let strict = strict_at == Some(index);
-            execution_provider_dispatch(provider, strict, alias, provider_label)
-        })
-        .collect()
+        .map(|(index, provider)| (provider, strict_at == Some(index)))
+        .collect())
+}
+
+/// Which planned providers registered with a session builder.
+#[derive(Debug, Default, PartialEq)]
+struct Registration {
+    /// Registered, in priority order.
+    attached: Vec<OnnxExecutionProvider>,
+    /// Failed to register and were skipped, with ORT's reason.
+    skipped: Vec<(OnnxExecutionProvider, String)>,
+}
+
+/// Register each planned provider in order through `register`, recording
+/// which attached.
+///
+/// ORT's own `with_execution_providers` does the same loop but only logs a
+/// skipped provider, so the session could not say what it runs on. Doing it
+/// here keeps the module's strictness rules: a strict entry that fails is a
+/// load error, any other is skipped with a warning.
+fn register_execution_providers(
+    plan: &[(OnnxExecutionProvider, bool)],
+    alias: &str,
+    path: &std::path::Path,
+    mut register: impl FnMut(OnnxExecutionProvider, bool) -> std::result::Result<(), String>,
+) -> Result<Registration> {
+    let mut registration = Registration::default();
+    for &(provider, strict) in plan {
+        match register(provider, strict) {
+            Ok(()) => registration.attached.push(provider),
+            Err(cause) if strict => {
+                return Err(RuntimeError::OnnxLoadFailure {
+                    alias: alias.to_string(),
+                    path: path.to_path_buf(),
+                    cause: format!(
+                        "execution provider \"{}\" failed to register and the list has no \
+                         \"cpu\" entry to fall back to: {cause}",
+                        provider.as_str()
+                    ),
+                });
+            }
+            Err(cause) => {
+                tracing::warn!(
+                    alias = %alias,
+                    provider = provider.as_str(),
+                    error = %cause,
+                    "ONNX execution provider failed to register; continuing without it"
+                );
+                registration.skipped.push((provider, cause));
+            }
+        }
+    }
+    Ok(registration)
+}
+
+/// Whether a session whose commit failed should be built again on CPU alone:
+/// an accelerator attached (so it may be what failed, e.g. CUDA with no usable
+/// device), the plan has a `cpu` fallback, and the attempt was not already
+/// CPU-only.
+fn retry_commit_on_cpu(
+    plan: &[(OnnxExecutionProvider, bool)],
+    attached: &[OnnxExecutionProvider],
+) -> bool {
+    plan.iter().any(|(ep, _)| *ep == OnnxExecutionProvider::Cpu)
+        && attached.iter().any(|ep| *ep != OnnxExecutionProvider::Cpu)
 }
 
 /// Comma-separated EP ids, for log fields and error messages.
@@ -761,109 +1264,484 @@ pub(crate) fn preflight_ort_dylib(alias: &str, provider_label: &str) -> Result<(
 mod tests {
     use super::*;
 
+    mod session_config {
+        use super::*;
+        use ort::session::builder::GraphOptimizationLevel as Level;
+        use serde_json::json;
+
+        fn level_of(options: serde_json::Value, default: Level) -> String {
+            format!(
+                "{:?}",
+                SessionConfig::from_options(&options, default)
+                    .unwrap()
+                    .optimization_level
+            )
+        }
+
+        #[test]
+        fn optimization_level_maps_every_value() {
+            let d = Level::Level3;
+            for (value, expected) in [
+                ("disable", Level::Disable),
+                ("basic", Level::Level1),
+                ("extended", Level::Level2),
+                ("all", Level::All),
+            ] {
+                assert_eq!(
+                    level_of(json!({ "graph_optimization_level": value }), d),
+                    format!("{expected:?}"),
+                    "{value}"
+                );
+            }
+        }
+
+        #[test]
+        fn unset_level_keeps_the_task_default() {
+            assert_eq!(
+                level_of(json!({}), Level::Level3),
+                format!("{:?}", Level::Level3)
+            );
+            assert_eq!(
+                level_of(json!(null), Level::Level1),
+                format!("{:?}", Level::Level1)
+            );
+        }
+
+        #[test]
+        fn threads_and_providers_are_read() {
+            let cfg = SessionConfig::from_options(
+                &json!({
+                    "intra_op_num_threads": 4,
+                    "inter_op_num_threads": 2,
+                    "execution_providers": ["cpu"],
+                }),
+                Level::Level3,
+            )
+            .unwrap();
+            assert_eq!(cfg.intra_threads, Some(4));
+            assert_eq!(cfg.inter_threads, Some(2));
+            assert_eq!(
+                cfg.execution_providers,
+                Some(vec![OnnxExecutionProvider::Cpu])
+            );
+            let unset = SessionConfig::from_options(&json!({}), Level::Level3).unwrap();
+            assert_eq!(unset.intra_threads, None);
+            assert_eq!(unset.execution_providers, None);
+        }
+
+        #[test]
+        fn cpu_only_keeps_everything_but_the_providers() {
+            let cfg = SessionConfig::from_options(
+                &json!({ "graph_optimization_level": "basic", "intra_op_num_threads": 3 }),
+                Level::Level3,
+            )
+            .unwrap();
+            let cpu = cfg.cpu_only();
+            assert_eq!(
+                cpu.execution_providers,
+                Some(vec![OnnxExecutionProvider::Cpu])
+            );
+            assert_eq!(cpu.intra_threads, Some(3));
+            assert_eq!(
+                format!("{:?}", cpu.optimization_level),
+                format!("{:?}", Level::Level1)
+            );
+            assert_eq!(
+                cpu.effective_execution_providers(),
+                [OnnxExecutionProvider::Cpu]
+            );
+        }
+
+        #[test]
+        fn common_providers_keep_the_first_lists_order() {
+            use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+            assert_eq!(
+                common_execution_providers(&[Cuda, CoreMl, Cpu], &[Cpu, Cuda]),
+                [Cuda, Cpu]
+            );
+            assert!(common_execution_providers(&[Cuda], &[Cpu]).is_empty());
+        }
+    }
+
+    mod registration {
+        use super::*;
+        use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+        use std::path::Path;
+
+        fn register(
+            plan: &[(OnnxExecutionProvider, bool)],
+            failing: &[OnnxExecutionProvider],
+        ) -> Result<Registration> {
+            register_execution_providers(plan, "a", Path::new("m.onnx"), |ep, _| {
+                if failing.contains(&ep) {
+                    Err(format!("{} library not found", ep.as_str()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        #[test]
+        fn all_register() {
+            let r = register(&[(Cuda, false), (Cpu, false)], &[]).unwrap();
+            assert_eq!(r.attached, [Cuda, Cpu]);
+            assert!(r.skipped.is_empty());
+        }
+
+        /// The #64 case: CUDA compiled in but unusable reports CPU only.
+        #[test]
+        fn a_skipped_accelerator_is_not_reported() {
+            let r = register(&[(Cuda, false), (Cpu, false)], &[Cuda]).unwrap();
+            assert_eq!(r.attached, [Cpu]);
+            assert_eq!(r.skipped.len(), 1);
+            assert_eq!(r.skipped[0].0, Cuda);
+            assert!(r.skipped[0].1.contains("library not found"));
+        }
+
+        #[test]
+        fn order_is_kept_around_a_skip() {
+            let r = register(&[(Cuda, false), (CoreMl, false), (Cpu, false)], &[Cuda]).unwrap();
+            assert_eq!(r.attached, [CoreMl, Cpu]);
+        }
+
+        #[test]
+        fn a_strict_entry_that_fails_is_a_load_error() {
+            let err = register(&[(CoreMl, false), (Cuda, true)], &[Cuda]).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("\"cuda\" failed to register"), "{msg}");
+            assert!(msg.contains("library not found"), "{msg}");
+        }
+
+        #[test]
+        fn strictness_is_passed_to_the_registrar() {
+            let mut seen = Vec::new();
+            register_execution_providers(
+                &[(Cuda, false), (Cpu, true)],
+                "a",
+                Path::new("m.onnx"),
+                |ep, strict| {
+                    seen.push((ep, strict));
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(seen, [(Cuda, false), (Cpu, true)]);
+        }
+
+        #[test]
+        fn a_failed_commit_retries_on_cpu_only_with_a_cpu_fallback() {
+            let with_cpu = [(Cuda, false), (Cpu, false)];
+            assert!(retry_commit_on_cpu(&with_cpu, &[Cuda, Cpu]));
+            // Already on CPU alone: retrying would fail the same way.
+            assert!(!retry_commit_on_cpu(&with_cpu, &[Cpu]));
+            // No cpu entry: the caller asked for the accelerator or nothing.
+            assert!(!retry_commit_on_cpu(&[(Cuda, true)], &[Cuda]));
+        }
+
+        #[test]
+        fn providers_after_cpu_are_not_reported() {
+            assert_eq!(reported_providers(vec![Cpu, CoreMl]), [Cpu]);
+            assert_eq!(reported_providers(vec![CoreMl, Cpu]), [CoreMl, Cpu]);
+            assert_eq!(reported_providers(vec![Cuda]), [Cuda]);
+        }
+
+        fn load_failure(cause: &str) -> RuntimeError {
+            RuntimeError::OnnxLoadFailure {
+                alias: "a".into(),
+                path: "m.onnx".into(),
+                cause: cause.into(),
+            }
+        }
+
+        #[test]
+        fn a_cpu_retry_that_succeeds_is_used() {
+            let got = resolve_cpu_retry("a", &[CoreMl, Cpu], load_failure("coreml"), Ok(7));
+            assert_eq!(got.unwrap(), 7);
+        }
+
+        /// A model that fails on CPU too (corrupt file) is reported with the
+        /// first attempt's error, not the retry's.
+        #[test]
+        fn a_cpu_retry_that_fails_returns_the_original_error() {
+            let got: Result<()> = resolve_cpu_retry(
+                "a",
+                &[CoreMl, Cpu],
+                load_failure("Protobuf parsing failed"),
+                Err(load_failure("second attempt")),
+            );
+            let msg = got.unwrap_err().to_string();
+            assert!(msg.contains("Protobuf parsing failed"), "{msg}");
+            assert!(!msg.contains("second attempt"), "{msg}");
+        }
+
+        #[test]
+        fn plan_marks_the_strict_entry() {
+            let plan = planned_execution_providers(Some(&[Cpu]), "a", "local/onnx").unwrap();
+            assert_eq!(plan, [(Cpu, false)]);
+            assert_eq!(
+                planned_execution_providers(None, "a", "local/onnx")
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, strict)| *strict)
+                    .count(),
+                0,
+                "the default list is never strict"
+            );
+        }
+    }
+
     mod probe_fallback {
         use super::*;
         use std::path::Path;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        /// Stand-in for a loaded model: its probe fails until "rebuilt on
-        /// CPU" when `accel_broken`, and always when `cpu_broken`.
-        #[derive(Default)]
+        /// Which session the fake slot holds.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Fake {
+            Accel,
+            Cpu,
+        }
+
+        /// Stand-in for a loaded model. Its probe reads which session is in
+        /// `slot` and answers with that provider's output, or fails.
         struct FakeModel {
-            accel_broken: bool,
-            cpu_broken: bool,
-            on_cpu: AtomicBool,
+            slot: Mutex<Fake>,
+            accel: std::result::Result<Vec<f32>, ()>,
+            cpu: std::result::Result<Vec<f32>, ()>,
             probes: AtomicUsize,
-            rebuilds: AtomicUsize,
+            cpu_builds: AtomicUsize,
+        }
+
+        impl FakeModel {
+            fn new(
+                accel: std::result::Result<Vec<f32>, ()>,
+                cpu: std::result::Result<Vec<f32>, ()>,
+            ) -> Self {
+                Self {
+                    slot: Mutex::new(Fake::Accel),
+                    accel,
+                    cpu,
+                    probes: AtomicUsize::new(0),
+                    cpu_builds: AtomicUsize::new(0),
+                }
+            }
+
+            fn in_slot(&self) -> Fake {
+                *self.slot.lock().unwrap()
+            }
         }
 
         #[async_trait::async_trait]
         impl EpProbe for FakeModel {
-            async fn probe(&self) -> Result<()> {
+            async fn probe(&self) -> Result<ProbeOutput> {
                 self.probes.fetch_add(1, Ordering::SeqCst);
-                let on_cpu = self.on_cpu.load(Ordering::SeqCst);
-                if (on_cpu && self.cpu_broken) || (!on_cpu && self.accel_broken) {
-                    return Err(RuntimeError::Config("probe exploded".into()));
-                }
-                Ok(())
+                let answer = match self.in_slot() {
+                    Fake::Accel => &self.accel,
+                    Fake::Cpu => &self.cpu,
+                };
+                answer
+                    .clone()
+                    .map(|v| vec![v])
+                    .map_err(|()| RuntimeError::Config("probe exploded".into()))
             }
         }
 
         async fn verify(
             model: &FakeModel,
             eps: Vec<OnnxExecutionProvider>,
+            check: AcceleratorCheck,
         ) -> Result<Vec<OnnxExecutionProvider>> {
-            verify_execution_providers(model, eps, "embed/test", Path::new("m.onnx"), |m| {
-                m.rebuilds.fetch_add(1, Ordering::SeqCst);
-                m.on_cpu.store(true, Ordering::SeqCst);
-                Ok(())
-            })
+            verify_execution_providers(
+                model,
+                &model.slot,
+                eps,
+                check,
+                "embed/test",
+                Path::new("m.onnx"),
+                || {
+                    model.cpu_builds.fetch_add(1, Ordering::SeqCst);
+                    Ok(Fake::Cpu)
+                },
+            )
             .await
         }
 
+        use AcceleratorCheck::{Compare, Off, Probe};
         use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+
+        const GOOD: [f32; 3] = [0.6, -0.2, 0.75];
 
         #[tokio::test]
         async fn cpu_only_list_skips_the_probe() {
-            let model = FakeModel {
-                accel_broken: true,
-                ..Default::default()
-            };
-            assert_eq!(verify(&model, vec![Cpu]).await.unwrap(), vec![Cpu]);
+            let model = FakeModel::new(Err(()), Err(()));
+            assert_eq!(verify(&model, vec![Cpu], Compare).await.unwrap(), vec![Cpu]);
+            assert_eq!(model.probes.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                model.cpu_builds.load(Ordering::SeqCst),
+                0,
+                "no second session"
+            );
+        }
+
+        #[tokio::test]
+        async fn agreeing_accelerator_is_kept_and_its_session_restored() {
+            // fp16-like noise: well inside the tolerance.
+            let noisy: Vec<f32> = GOOD.iter().map(|x| x * 1.001).collect();
+            let model = FakeModel::new(Ok(noisy), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Compare).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
+            assert_eq!(
+                model.in_slot(),
+                Fake::Accel,
+                "accelerator session back in place"
+            );
+            assert_eq!(
+                model.probes.load(Ordering::SeqCst),
+                2,
+                "accelerator, then CPU"
+            );
+            assert_eq!(model.cpu_builds.load(Ordering::SeqCst), 1);
+        }
+
+        /// The CoreML PP-OCR case: runs without error, answers wrongly.
+        #[tokio::test]
+        async fn disagreeing_accelerator_is_replaced_by_cpu() {
+            let model = FakeModel::new(Ok(vec![0.1, 0.9, -0.4]), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Compare).await.unwrap(),
+                vec![Cpu]
+            );
+            assert_eq!(model.in_slot(), Fake::Cpu, "CPU session kept");
+        }
+
+        #[tokio::test]
+        async fn disagreement_on_a_cpu_free_list_is_a_load_error() {
+            let model = FakeModel::new(Ok(vec![0.1, 0.9, -0.4]), Ok(GOOD.to_vec()));
+            let err = verify(&model, vec![CoreMl], Compare).await.unwrap_err();
+            assert!(
+                matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
+                    if cause.contains("differs from CPU") && cause.contains("accelerator_check")),
+                "unexpected error: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn probe_mode_checks_errors_only() {
+            let model = FakeModel::new(Ok(vec![0.1, 0.9, -0.4]), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Probe).await.unwrap(),
+                vec![CoreMl, Cpu],
+                "a wrong answer passes when only errors are checked"
+            );
+            assert_eq!(model.cpu_builds.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn off_mode_checks_nothing() {
+            let model = FakeModel::new(Err(()), Err(()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Off).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
             assert_eq!(model.probes.load(Ordering::SeqCst), 0);
         }
 
         #[tokio::test]
-        async fn working_accelerator_is_kept() {
-            let model = FakeModel::default();
-            assert_eq!(
-                verify(&model, vec![CoreMl, Cpu]).await.unwrap(),
-                vec![CoreMl, Cpu]
-            );
-            assert_eq!(model.probes.load(Ordering::SeqCst), 1);
-            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 0);
-        }
-
-        #[tokio::test]
         async fn failing_accelerator_falls_back_to_cpu() {
-            let model = FakeModel {
-                accel_broken: true,
-                ..Default::default()
-            };
-            assert_eq!(verify(&model, vec![Cuda, Cpu]).await.unwrap(), vec![Cpu]);
-            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 1);
+            let model = FakeModel::new(Err(()), Ok(GOOD.to_vec()));
+            assert_eq!(
+                verify(&model, vec![Cuda, Cpu], Compare).await.unwrap(),
+                vec![Cpu]
+            );
+            assert_eq!(model.in_slot(), Fake::Cpu);
             // Once on the accelerator, once more on the rebuilt CPU session.
             assert_eq!(model.probes.load(Ordering::SeqCst), 2);
         }
 
         #[tokio::test]
         async fn cpu_free_list_fails_the_load_instead_of_falling_back() {
-            let model = FakeModel {
-                accel_broken: true,
-                ..Default::default()
-            };
-            let err = verify(&model, vec![CoreMl]).await.unwrap_err();
+            let model = FakeModel::new(Err(()), Ok(GOOD.to_vec()));
+            let err = verify(&model, vec![CoreMl], Compare).await.unwrap_err();
             assert!(
                 matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
                     if cause.contains("no \"cpu\" entry") && cause.contains("probe exploded")),
                 "unexpected error: {err:?}"
             );
-            assert_eq!(model.rebuilds.load(Ordering::SeqCst), 0);
+            assert_eq!(model.cpu_builds.load(Ordering::SeqCst), 0);
         }
 
         #[tokio::test]
         async fn failure_on_cpu_after_fallback_is_a_load_error() {
-            let model = FakeModel {
-                accel_broken: true,
-                cpu_broken: true,
-                ..Default::default()
-            };
-            let err = verify(&model, vec![CoreMl, Cpu]).await.unwrap_err();
+            let model = FakeModel::new(Err(()), Err(()));
+            let err = verify(&model, vec![CoreMl, Cpu], Compare)
+                .await
+                .unwrap_err();
             assert!(
                 matches!(&err, RuntimeError::OnnxLoadFailure { cause, .. }
                     if cause.contains("failed on CPU after [coreml] failed")),
                 "unexpected error: {err:?}"
             );
+        }
+
+        /// No CPU reference to compare with: keep the accelerator, which ran.
+        #[tokio::test]
+        async fn a_cpu_reference_that_fails_keeps_the_accelerator() {
+            let model = FakeModel::new(Ok(GOOD.to_vec()), Err(()));
+            assert_eq!(
+                verify(&model, vec![CoreMl, Cpu], Compare).await.unwrap(),
+                vec![CoreMl, Cpu]
+            );
+            assert_eq!(model.in_slot(), Fake::Accel);
+        }
+    }
+
+    mod output_comparison {
+        use super::*;
+
+        #[test]
+        fn identical_and_fp16_noise_agree() {
+            let a = vec![vec![1.0, -2.0, 3.0], vec![0.5]];
+            assert_eq!(outputs_agree(&a, &a), Ok(0.0));
+            let noisy: ProbeOutput = a
+                .iter()
+                .map(|t| t.iter().map(|x| x * (1.0 + 1e-3)).collect())
+                .collect();
+            assert!(outputs_agree(&noisy, &a).is_ok());
+        }
+
+        #[test]
+        fn large_or_structural_differences_disagree() {
+            let cpu = vec![vec![1.0, -2.0, 3.0]];
+            let off_by_30pct: ProbeOutput = vec![cpu[0].iter().map(|x| x * 1.3).collect()];
+            let rel = outputs_agree(&off_by_30pct, &cpu).unwrap_err();
+            assert!((rel - 0.3).abs() < 1e-3, "{rel}");
+            // The CoreML PP-OCR detector's measured 5% drift still agrees.
+            let off_by_5pct: ProbeOutput = vec![cpu[0].iter().map(|x| x * 1.05).collect()];
+            assert!(outputs_agree(&off_by_5pct, &cpu).is_ok());
+            assert!(
+                outputs_agree(&vec![vec![3.0, 1.0, -2.0]], &cpu).is_err(),
+                "garbled"
+            );
+            assert_eq!(
+                outputs_agree(&vec![vec![1.0, -2.0]], &cpu),
+                Err(f32::INFINITY)
+            );
+            assert_eq!(outputs_agree(&vec![], &cpu), Err(f32::INFINITY));
+            assert_eq!(
+                outputs_agree(&vec![vec![1.0, f32::NAN, 3.0]], &cpu),
+                Err(f32::INFINITY),
+                "a NaN only the accelerator produced"
+            );
+        }
+
+        #[test]
+        fn an_all_zero_reference_does_not_divide_by_zero() {
+            let zeros = vec![vec![0.0; 4]];
+            assert!(outputs_agree(&zeros, &zeros).is_ok());
+            assert!(outputs_agree(&vec![vec![1.0; 4]], &zeros).is_err());
         }
     }
 

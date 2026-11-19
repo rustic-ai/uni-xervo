@@ -9,9 +9,52 @@
 # Run standard quality gates
 ./scripts/test.sh
 
-# Run ignored integration tests (expensive, real providers)
+# Run the remote-provider integration tests (expensive, needs API keys)
 ./scripts/test-integration.sh
+
+# Run the local-model acceptance matrix for one platform (downloads models)
+./scripts/acceptance.sh cpu
 ```
+
+## Deployment Acceptance Matrix
+
+`scripts/acceptance.sh` runs every opt-in real-model suite for one platform
+target and writes a report of what passed, what each suite cost, and which
+model revisions the run used:
+
+```bash
+scripts/acceptance.sh cpu       # default features; any machine
+scripts/acceptance.sh coreml    # local/onnx with gpu-metal, plus the CoreML tests (macOS)
+scripts/acceptance.sh cuda      # local/onnx with gpu-cuda, plus the CUDA tests (needs nvcc)
+scripts/acceptance.sh cpu --only ocr,hybrid-bge-m3   # a subset
+```
+
+- **Suites:**
+  - ONNX embedding, reranking, sparse, multi-vector and BGE-M3 hybrid (with
+    the widths pinned: 1024-wide dense and per-token outputs, a 250002-term
+    sparse vocabulary, parity with the per-task models);
+  - kniv NLP v1 and v7;
+  - PP-OCR detection and recognition, and PDF to OCR;
+  - execution-provider reporting, including a real registration skip when
+    `ORT_DYLIB_PATH` names an ONNX Runtime library;
+  - whisper.cpp;
+  - and, for `coreml` or `cuda`, the accelerator inference tests.
+- **Output:** the report is `target/acceptance/<target>/report.md`, with one
+  log per suite beside it. Each suite records passed, failed and skipped
+  counts, wall time, peak memory, and the exact command, so any row can be
+  rerun alone.
+- **Model manifest:** the commit each Hugging Face repository in the cache
+  resolved to. Set those as an alias's `revision` to reproduce a run.
+- **Requirements:** network on the first run (models download into the cache),
+  no API keys. A suite this machine cannot build, such as whisper.cpp without
+  cmake, is reported as skipped rather than failed.
+- **Exit status:** non-zero if any suite failed.
+- **CI:** `.github/workflows/acceptance.yml` runs the `cpu` target on demand
+  (Actions → Acceptance), caching models between runs, and uploads the report.
+
+The latest recorded results are in [`docs/TEST_MATRIX.md`](docs/TEST_MATRIX.md).
+The matrix covers the local backends; remote providers need keys and are
+exercised by `scripts/test-integration.sh`.
 
 ## Recommended Runner: cargo-nextest
 

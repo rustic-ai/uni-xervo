@@ -128,7 +128,7 @@ async fn builder_rejects_gemini_embedding_dimensions_for_generate() {
             .err()
             .unwrap()
             .to_string()
-            .contains("only valid for embed tasks")
+            .contains("applies only to task 'embed'")
     );
 }
 

@@ -47,7 +47,10 @@ pub struct ProviderCapabilities {
 }
 
 /// Health status reported by a provider.
+///
+/// `#[non_exhaustive]` so a finer-grained status can be added later.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ProviderHealth {
     /// The provider is fully operational.
     Healthy,
@@ -89,6 +92,33 @@ pub trait ModelProvider: Send + Sync {
     async fn warmup(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Check that `spec`'s endpoint is reachable and accepts its credential,
+    /// with one cheap authenticated request.
+    ///
+    /// Opt-in and network-touching: only
+    /// [`ModelRuntime::verify`](crate::runtime::ModelRuntime::verify) calls
+    /// it, never load, prefetch or `health()`. It loads no model. The default
+    /// returns [`VerifyOutcome::NotApplicable`](crate::inspect::VerifyOutcome::NotApplicable),
+    /// which suits local providers. A failure's detail must never contain a
+    /// credential.
+    async fn verify(
+        &self,
+        _spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        Ok(crate::inspect::VerifyOutcome::NotApplicable)
+    }
+
+    /// Describe an alias for [`ModelRuntime::aliases`](crate::runtime::ModelRuntime::aliases):
+    /// where it sends requests and which environment variable holds its
+    /// credential.
+    ///
+    /// Synchronous and free of I/O, and it must never read a secret's value:
+    /// it is called for every snapshot. The default describes nothing, which
+    /// suits local providers.
+    fn describe(&self, _spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        crate::inspect::ProviderDescription::default()
+    }
 }
 
 /// A type-erased, reference-counted handle to a loaded model instance.
@@ -107,17 +137,36 @@ pub trait ModelInfo: Send + Sync {
     /// The underlying model identifier (e.g. a HuggingFace repo ID or API model name).
     fn model_id(&self) -> &str;
 
-    /// Names of the ONNX Runtime execution providers this session was built
-    /// with, in priority order. Empty for remote and non-ONNX models.
+    /// Names of the ONNX Runtime execution providers this model's session
+    /// attached, in priority order. Every `local/onnx` model reports it once
+    /// loaded; it is empty for remote and non-ONNX models, and for
+    /// `local/onnx` document extraction, which runs no ORT session yet.
     ///
-    /// This is the *requested* list minus any entry whose backing feature
-    /// isn't compiled into this binary — so a list that reads `["cpu"]`
-    /// despite `["cuda", "cpu"]` having been asked for tells you the build
-    /// lacks `gpu-cuda`.
+    /// A provider is listed only if it was requested (or in the build's
+    /// default list), compiled into this binary, and registered with the
+    /// session. So `["cuda", "cpu"]` reads `["cpu"]` when the build lacks
+    /// `gpu-cuda`, when the CUDA library or driver fails to load, or when the
+    /// session fails to build on CUDA (no usable device) and is rebuilt on
+    /// CPU. Each of those logs a warning.
     ///
-    /// It is still not "attached": an EP listed here may yet fail to register
-    /// at session-build time (no device, no driver) and be skipped by ORT.
-    /// The ORT 2.0 Rust binding does not expose the finally-attached set.
+    /// Attached is not the same as used for every node: ORT still places
+    /// operators an accelerator cannot run on CPU, and no API exposes that
+    /// split. Dense embedding, reranking (cross-encoder and generative) and
+    /// the sparse, multi-vector and hybrid embedders also run a short
+    /// inference at load, and fall back to `["cpu"]` if it fails on the
+    /// accelerator; the other `local/onnx` models (NLP, OCR, image embedding,
+    /// raw) do not, so an accelerator that attaches but fails at inference is
+    /// not reflected for them.
+    ///
+    /// Nothing listed after `cpu` is reported: ORT gives each node to the first
+    /// provider that claims it and CPU claims every standard operator, so
+    /// `["cpu", "coreml"]` reports `["cpu"]`.
+    ///
+    /// A model built from several sessions reports the providers all of them
+    /// attached: OCR with a detector lists only those both stages have, and a
+    /// kniv v7 model starts from its `plain` graph and narrows if a graph
+    /// built later attached fewer. So for kniv v7 the list can shrink after
+    /// load, on the first request that needs a new graph; it never grows.
     fn active_execution_providers(&self) -> Vec<String> {
         Vec::new()
     }

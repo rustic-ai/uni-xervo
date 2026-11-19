@@ -4,7 +4,11 @@ mod hybrid_adapter;
 
 use crate::api::{ModelAliasSpec, ModelRuntimeKey};
 use crate::error::{Result, RuntimeError};
-use crate::options_validation::validate_provider_options;
+use crate::inspect::{
+    AliasSnapshot, LoadState, ProviderSnapshot, VerificationStatus, VerifyErrorKind, VerifyFailure,
+    VerifyOutcome, redact_url,
+};
+use crate::options_validation::{normalize_whole_floats, validate_provider_options};
 use crate::reliability::{
     InstrumentedAudioEmbeddingModel, InstrumentedDocumentExtractionModel,
     InstrumentedEmbeddingModel, InstrumentedGeneratorModel, InstrumentedHybridEmbeddingModel,
@@ -15,9 +19,9 @@ use crate::reliability::{
 };
 use crate::traits::{
     AudioEmbeddingModel, DocumentExtractionModel, EmbeddingModel, GeneratorModel,
-    HybridEmbeddingModel, ImageEmbeddingModel, LoadedModelHandle, ModelProvider,
-    MultiVectorEmbeddingModel, MultimodalEmbeddingModel, NlpModel, OcrModel, RawTensorModel,
-    RerankerModel, SparseEmbeddingModel, TranscriptionModel,
+    HybridEmbeddingModel, ImageEmbeddingModel, LoadedModelHandle, ModelInfo, ModelProvider,
+    MultiVectorEmbeddingModel, MultimodalEmbeddingModel, NlpModel, OcrModel, ProviderHealth,
+    RawTensorModel, RerankerModel, SparseEmbeddingModel, TranscriptionModel,
 };
 use dashmap::DashMap;
 use std::any::Any;
@@ -59,6 +63,14 @@ struct HandleCache {
 /// Default load timeout applied when [`ModelAliasSpec::load_timeout`] is `None`.
 const DEFAULT_LOAD_TIMEOUT_SECS: u64 = 600;
 
+/// Longest [`ModelRuntime::verify`] waits for one alias. A reachability
+/// check that takes longer is a failure, so it stays well under the load
+/// timeout; an alias with a shorter `load_timeout` uses that.
+const MAX_VERIFY_TIMEOUT_SECS: u64 = 30;
+
+/// Most aliases [`ModelRuntime::verify`] checks at once.
+const MAX_CONCURRENT_VERIFICATIONS: usize = 8;
+
 /// The central runtime that owns registered providers and a catalog of model
 /// aliases.
 ///
@@ -75,6 +87,8 @@ pub struct ModelRuntime {
     registry: Arc<ModelRegistry>,
     catalog: RwLock<HashMap<String, ModelAliasSpec>>,
     handle_cache: HandleCache,
+    /// Each alias's last [`verify`](Self::verify) result.
+    verifications: RwLock<HashMap<String, VerificationStatus>>,
 }
 
 /// Internal registry that caches loaded model instances and coordinates
@@ -84,6 +98,107 @@ pub struct ModelRegistry {
     instances: RwLock<HashMap<ModelRuntimeKey, LoadedModelHandle>>,
     /// Per-key mutexes to prevent concurrent loads of the same model.
     loader_locks: Mutex<HashMap<ModelRuntimeKey, Arc<Mutex<()>>>>,
+    /// The last failed load of each key, cleared when a later load succeeds.
+    /// Keyed like `instances`, so aliases that share a model share its state.
+    failures: std::sync::Mutex<HashMap<ModelRuntimeKey, LoadFailure>>,
+    /// Loads of each key actually running (calling the provider), for
+    /// [`LoadState::Loading`]. Counted rather than read from `loader_locks`,
+    /// whose entry a finished load removes while a waiter may still be about
+    /// to retry.
+    in_flight: std::sync::Mutex<HashMap<ModelRuntimeKey, usize>>,
+}
+
+/// Counts one running load of a key in [`ModelRegistry::in_flight`] for as
+/// long as it lives, including when the load's future is dropped.
+struct InFlight<'a> {
+    registry: &'a ModelRegistry,
+    key: ModelRuntimeKey,
+}
+
+impl<'a> InFlight<'a> {
+    fn start(registry: &'a ModelRegistry, key: &ModelRuntimeKey) -> Self {
+        *registry
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key.clone())
+            .or_insert(0) += 1;
+        Self {
+            registry,
+            key: key.clone(),
+        }
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .registry
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = in_flight.get_mut(&self.key) {
+            *n -= 1;
+            if *n == 0 {
+                in_flight.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// A load that failed: its error and when.
+#[derive(Debug, Clone)]
+pub(crate) struct LoadFailure {
+    pub(crate) error: String,
+    pub(crate) at: std::time::SystemTime,
+}
+
+/// Run `$body` with `$m` bound to the handle's task-trait object, for
+/// whichever of the task traits the handle holds; `None` if it holds none.
+///
+/// Providers wrap their model as `Arc<dyn TaskTrait>` inside the type-erased
+/// [`LoadedModelHandle`], so reaching anything trait-generic (warmup,
+/// [`ModelInfo`]) means trying each task trait in turn.
+macro_rules! with_task_trait {
+    ($handle:expr, |$m:ident| $body:expr) => {{
+        let handle = $handle;
+        if let Some($m) = handle.downcast_ref::<Arc<dyn EmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn RerankerModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn GeneratorModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn RawTensorModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn ImageEmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn AudioEmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn MultimodalEmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn SparseEmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn MultiVectorEmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn HybridEmbeddingModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn NlpModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn DocumentExtractionModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn TranscriptionModel>>() {
+            Some($body)
+        } else if let Some($m) = handle.downcast_ref::<Arc<dyn OcrModel>>() {
+            Some($body)
+        } else {
+            None
+        }
+    }};
+}
+
+/// The [`ModelInfo`] of a loaded handle, whatever its task.
+fn model_info(handle: &LoadedModelHandle) -> Option<Arc<dyn ModelInfo>> {
+    with_task_trait!(handle, |m| Arc::clone(m) as Arc<dyn ModelInfo>)
 }
 
 impl ModelRuntime {
@@ -94,8 +209,9 @@ impl ModelRuntime {
     }
 
     /// Register a new model alias at runtime.
-    pub async fn register(&self, spec: ModelAliasSpec) -> Result<()> {
+    pub async fn register(&self, mut spec: ModelAliasSpec) -> Result<()> {
         spec.validate()?;
+        normalize_whole_floats(&mut spec.options);
         if !self.providers.contains_key(&spec.provider_id) {
             return Err(RuntimeError::Config(format!(
                 "Unknown provider '{}' for alias '{}'",
@@ -159,6 +275,311 @@ impl ModelRuntime {
             self.resolve_and_load_internal(&spec).await?;
         }
         Ok(())
+    }
+
+    /// Pre-load each of `aliases`, carrying on past failures, and report every
+    /// alias's result in the order given.
+    ///
+    /// Unlike [`prefetch`](Self::prefetch), one failure does not hide the
+    /// rest: a readiness report sees which aliases loaded and which did not.
+    /// An alias not in the catalog reports
+    /// [`AliasNotFound`](RuntimeError::AliasNotFound). Aliases load one at a
+    /// time, as with `prefetch`, so large models do not load all at once.
+    pub async fn prefetch_report(&self, aliases: &[&str]) -> Vec<(String, Result<()>)> {
+        let mut report = Vec::with_capacity(aliases.len());
+        for alias in aliases {
+            let result = match self.lookup_spec(alias).await {
+                Ok(spec) => {
+                    tracing::info!(alias = %alias, "Prefetching model");
+                    self.resolve_and_load_internal(&spec).await.map(|_| ())
+                }
+                Err(e) => Err(e),
+            };
+            report.push(((*alias).to_string(), result));
+        }
+        report
+    }
+
+    /// [`prefetch_report`](Self::prefetch_report) for every alias in the
+    /// catalog, in alias order.
+    pub async fn prefetch_all_report(&self) -> Vec<(String, Result<()>)> {
+        let aliases = self.alias_names().await;
+        let refs: Vec<&str> = aliases.iter().map(String::as_str).collect();
+        self.prefetch_report(&refs).await
+    }
+
+    /// Every alias in the catalog, sorted, with its load state. Loads nothing
+    /// and contacts nothing.
+    ///
+    /// A point-in-time view: a load that finishes while the snapshot is taken
+    /// may show as either state. See [`crate::inspect`].
+    pub async fn aliases(&self) -> Vec<AliasSnapshot> {
+        let mut specs: Vec<ModelAliasSpec> = self.catalog.read().await.values().cloned().collect();
+        specs.sort_by(|a, b| a.alias.cmp(&b.alias));
+        self.snapshots(&specs).await
+    }
+
+    /// One alias's snapshot, or `None` if it is not in the catalog. Loads
+    /// nothing and contacts nothing.
+    pub async fn alias(&self, alias: &str) -> Option<AliasSnapshot> {
+        let spec = self.catalog.read().await.get(alias).cloned()?;
+        self.snapshots(std::slice::from_ref(&spec)).await.pop()
+    }
+
+    /// The providers registered with this runtime, sorted by id, with the
+    /// tasks each supports.
+    pub fn providers(&self) -> Vec<ProviderSnapshot> {
+        let mut providers: Vec<ProviderSnapshot> = self
+            .providers
+            .values()
+            .map(|p| ProviderSnapshot {
+                id: p.provider_id().to_string(),
+                supported_tasks: p.capabilities().supported_tasks,
+            })
+            .collect();
+        providers.sort_by(|a, b| a.id.cmp(&b.id));
+        providers
+    }
+
+    /// Check that each of `aliases` can reach its endpoint with a valid
+    /// credential, by one cheap authenticated request per remote alias.
+    ///
+    /// Opt-in: nothing else in the runtime contacts a remote provider before
+    /// the first request, so `build`, `prefetch` and `health()` stay offline.
+    /// Loads no model. Aliases are checked concurrently and reported in the
+    /// order given (at most eight at a time), and each result is kept for
+    /// [`aliases`](Self::aliases) and [`provider_health`](Self::provider_health).
+    ///
+    /// A local alias returns [`VerifyOutcome::NotApplicable`]. A failure is a
+    /// [`RuntimeError::Verification`] naming the alias, whose message never
+    /// contains a credential. Each check waits at most the alias's
+    /// `load_timeout`, capped at 30 seconds.
+    pub async fn verify(&self, aliases: &[&str]) -> Vec<(String, Result<VerifyOutcome>)> {
+        use futures::StreamExt;
+        // A few at a time: a large catalog sent at once can trip a
+        // provider's rate limit, which would then read as a failure.
+        let results: Vec<Result<VerifyOutcome>> = futures::stream::iter(aliases)
+            .map(|alias| self.verify_one(alias))
+            .buffered(MAX_CONCURRENT_VERIFICATIONS)
+            .collect()
+            .await;
+        aliases
+            .iter()
+            .map(|a| (*a).to_string())
+            .zip(results)
+            .collect()
+    }
+
+    /// [`verify`](Self::verify) every alias in the catalog, in alias order.
+    pub async fn verify_all(&self) -> Vec<(String, Result<VerifyOutcome>)> {
+        let aliases = self.alias_names().await;
+        let refs: Vec<&str> = aliases.iter().map(String::as_str).collect();
+        self.verify(&refs).await
+    }
+
+    async fn verify_one(&self, alias: &str) -> Result<VerifyOutcome> {
+        let spec = self.lookup_spec(alias).await?;
+        let provider = self.providers.get(&spec.provider_id).ok_or_else(|| {
+            RuntimeError::ProviderNotFound(format!("Provider '{}' not found", spec.provider_id))
+        })?;
+        let wait = std::time::Duration::from_secs(
+            spec.load_timeout
+                .map_or(MAX_VERIFY_TIMEOUT_SECS, |t| t.min(MAX_VERIFY_TIMEOUT_SECS)),
+        );
+        let outcome = match tokio::time::timeout(wait, provider.verify(&spec)).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(VerifyFailure::new(
+                VerifyErrorKind::Timeout,
+                format!("no answer within {}s", wait.as_secs()),
+            )),
+        };
+        let at = std::time::SystemTime::now();
+        let status = match &outcome {
+            Ok(VerifyOutcome::Verified) => VerificationStatus::Verified { at },
+            Ok(_) => VerificationStatus::NotApplicable { at },
+            Err(f) => VerificationStatus::Failed {
+                kind: f.kind,
+                detail: f.detail.clone(),
+                at,
+            },
+        };
+        self.verifications
+            .write()
+            .await
+            .insert(alias.to_string(), status);
+        outcome.map_err(|f| {
+            tracing::warn!(
+                alias = %alias,
+                provider = %spec.provider_id,
+                kind = %f.kind,
+                detail = %f.detail,
+                "Alias verification failed"
+            );
+            RuntimeError::Verification {
+                alias: alias.to_string(),
+                provider_id: spec.provider_id.clone(),
+                kind: f.kind,
+                detail: f.detail,
+            }
+        })
+    }
+
+    /// A provider's health, folding in the last [`verify`](Self::verify) of
+    /// its aliases; `None` if no such provider is registered.
+    ///
+    /// Until one of its aliases has been verified this is exactly
+    /// [`ModelProvider::health`]. After that, if some verified aliases failed
+    /// it reads `Degraded`, and if all did, `Unhealthy`, each naming how many.
+    pub async fn provider_health(&self, provider_id: &str) -> Option<ProviderHealth> {
+        let provider = self.providers.get(provider_id)?;
+        let own = provider.health().await;
+        let aliases: Vec<String> = self
+            .catalog
+            .read()
+            .await
+            .values()
+            .filter(|spec| spec.provider_id == provider_id)
+            .map(|spec| spec.alias.clone())
+            .collect();
+        let (checked, failed) = {
+            let verifications = self.verifications.read().await;
+            aliases
+                .iter()
+                .filter_map(|alias| verifications.get(alias))
+                .fold((0usize, 0usize), |(checked, failed), status| match status {
+                    VerificationStatus::Verified { .. } => (checked + 1, failed),
+                    VerificationStatus::Failed { .. } => (checked + 1, failed + 1),
+                    _ => (checked, failed),
+                })
+        };
+        let from_verification = if failed == 0 {
+            None
+        } else if failed == checked {
+            Some(ProviderHealth::Unhealthy(format!(
+                "all {checked} verified aliases failed verification"
+            )))
+        } else {
+            Some(ProviderHealth::Degraded(format!(
+                "{failed} of {checked} aliases failed verification"
+            )))
+        };
+        // Report whichever is worse: the provider's own view or the checks.
+        let rank = |h: &ProviderHealth| match h {
+            ProviderHealth::Healthy => 0,
+            ProviderHealth::Degraded(_) => 1,
+            _ => 2,
+        };
+        Some(match from_verification {
+            Some(v) if rank(&v) > rank(&own) => v,
+            _ => own,
+        })
+    }
+
+    async fn alias_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.catalog.read().await.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Build snapshots for `specs`. Reads the registry's maps one after
+    /// another, never holding two locks at once.
+    ///
+    /// In-flight loads are read first: a load records its outcome (instance
+    /// or failure) before it stops counting as in flight, so reading in that
+    /// order never shows a settling load as untouched.
+    async fn snapshots(&self, specs: &[ModelAliasSpec]) -> Vec<AliasSnapshot> {
+        let keys: Vec<ModelRuntimeKey> = specs.iter().map(ModelRuntimeKey::new).collect();
+        let loading: std::collections::HashSet<&ModelRuntimeKey> = {
+            let in_flight = self
+                .registry
+                .in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            keys.iter()
+                .filter(|key| in_flight.contains_key(*key))
+                .collect()
+        };
+        let loaded: HashMap<&ModelRuntimeKey, Option<Vec<String>>> = {
+            let instances = self.registry.instances.read().await;
+            keys.iter()
+                .filter_map(|key| {
+                    let handle = instances.get(key)?;
+                    // An empty list means the model does not report any
+                    // (remote, or a backend that cannot say), shown as None.
+                    let eps = model_info(handle)
+                        .map(|m| m.active_execution_providers())
+                        .filter(|eps| !eps.is_empty());
+                    Some((key, eps))
+                })
+                .collect()
+        };
+        let verifications: HashMap<String, VerificationStatus> = {
+            let verifications = self.verifications.read().await;
+            specs
+                .iter()
+                .filter_map(|spec| {
+                    verifications
+                        .get(&spec.alias)
+                        .map(|v| (spec.alias.clone(), v.clone()))
+                })
+                .collect()
+        };
+        let failures: HashMap<&ModelRuntimeKey, LoadFailure> = {
+            let failures = self
+                .registry
+                .failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            keys.iter()
+                .filter_map(|key| failures.get(key).map(|f| (key, f.clone())))
+                .collect()
+        };
+
+        specs
+            .iter()
+            .zip(&keys)
+            .map(|(spec, key)| {
+                let (state, execution_providers) = if let Some(eps) = loaded.get(key) {
+                    (LoadState::Loaded, eps.clone())
+                } else if loading.contains(key) {
+                    (LoadState::Loading, None)
+                } else if let Some(f) = failures.get(key) {
+                    (
+                        LoadState::Failed {
+                            error: f.error.clone(),
+                            at: f.at,
+                        },
+                        None,
+                    )
+                } else {
+                    (LoadState::Registered, None)
+                };
+                let description = self
+                    .providers
+                    .get(&spec.provider_id)
+                    .map(|p| p.describe(spec))
+                    .unwrap_or_default();
+                AliasSnapshot {
+                    alias: spec.alias.clone(),
+                    task: spec.task,
+                    provider_id: spec.provider_id.clone(),
+                    model_id: spec.model_id.clone(),
+                    revision: spec.revision.clone(),
+                    warmup: spec.warmup,
+                    required: spec.required,
+                    state,
+                    verification: verifications
+                        .get(&spec.alias)
+                        .cloned()
+                        .unwrap_or(VerificationStatus::NotRequested),
+                    execution_providers,
+                    // Redact again: a third-party provider's `describe` is
+                    // not trusted to have.
+                    endpoint: description.endpoint.as_deref().map(redact_url),
+                    credential_env: description.credential_env,
+                }
+            })
+            .collect()
     }
 
     /// Resolve, load (if necessary), and return an instrumented [`EmbeddingModel`]
@@ -888,6 +1309,10 @@ impl ModelRuntime {
             }
         }
 
+        // Counted until this function returns, after the outcome is
+        // recorded below, so a snapshot sees Loading until then.
+        let _in_flight = InFlight::start(&self.registry, &key);
+
         let load_timeout =
             std::time::Duration::from_secs(spec.load_timeout.unwrap_or(DEFAULT_LOAD_TIMEOUT_SECS));
 
@@ -915,38 +1340,13 @@ impl ModelRuntime {
                 }
             };
 
-            // Model warmup. Dispatch covers every task trait — including the
-            // multimodal surface, which previously fell through to no warmup at
-            // all. The trait default is a no-op, so adding arms only enables
-            // eager weight loading for providers that override `warmup`.
-            if let Some(model) = handle.downcast_ref::<Arc<dyn EmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn RerankerModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn GeneratorModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn RawTensorModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn ImageEmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn AudioEmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn MultimodalEmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn SparseEmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn MultiVectorEmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn HybridEmbeddingModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn NlpModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn DocumentExtractionModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn TranscriptionModel>>() {
-                model.warmup().await?;
-            } else if let Some(model) = handle.downcast_ref::<Arc<dyn OcrModel>>() {
-                model.warmup().await?;
+            // Model warmup, for whichever task trait the handle holds. The
+            // trait default is a no-op, so this only loads weights eagerly for
+            // providers that override `warmup`.
+            if let Some(Err(e)) = with_task_trait!(&handle, |m| m.warmup().await) {
+                metrics::counter!("model_load.total", "status" => "failure").increment(1);
+                tracing::error!(alias = %spec.alias, error = %e, "Model warmup failed");
+                return Err(e);
             }
 
             {
@@ -970,6 +1370,30 @@ impl ModelRuntime {
                 Err(RuntimeError::Timeout)
             }
         };
+
+        // Record the outcome while this load still counts as in flight, so a
+        // snapshot never sees it neither loading nor settled.
+        {
+            let mut failures = self
+                .registry
+                .failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &result {
+                Ok(_) => {
+                    failures.remove(&key);
+                }
+                Err(e) => {
+                    failures.insert(
+                        key.clone(),
+                        LoadFailure {
+                            error: e.to_string(),
+                            at: std::time::SystemTime::now(),
+                        },
+                    );
+                }
+            }
+        }
 
         // Bound loader lock map growth by removing this key once the load path completes.
         // Existing waiters hold cloned lock Arcs, so this is safe.
@@ -1046,8 +1470,9 @@ impl ModelRuntimeBuilder {
     /// invalid options, or if a required eager warmup fails.
     pub async fn build(self) -> Result<Arc<ModelRuntime>> {
         let mut catalog_map = HashMap::new();
-        for spec in self.catalog {
+        for mut spec in self.catalog {
             spec.validate()?;
+            normalize_whole_floats(&mut spec.options);
             if !self.providers.contains_key(&spec.provider_id) {
                 return Err(RuntimeError::Config(format!(
                     "Unknown provider '{}' for alias '{}'",
@@ -1055,10 +1480,11 @@ impl ModelRuntimeBuilder {
                 )));
             }
             validate_provider_options(&spec.provider_id, spec.task, &spec.options)?;
-            if catalog_map.insert(spec.alias.clone(), spec).is_some() {
-                return Err(RuntimeError::Config(
-                    "Duplicate alias in catalog".to_string(),
-                ));
+            let alias = spec.alias.clone();
+            if catalog_map.insert(alias.clone(), spec).is_some() {
+                return Err(RuntimeError::Config(format!(
+                    "Duplicate alias '{alias}' in catalog"
+                )));
             }
         }
 
@@ -1067,6 +1493,7 @@ impl ModelRuntimeBuilder {
             registry: Arc::new(ModelRegistry::default()),
             catalog: RwLock::new(catalog_map),
             handle_cache: HandleCache::default(),
+            verifications: RwLock::new(HashMap::new()),
         });
 
         // Provider Warmup Phase
@@ -1152,6 +1579,181 @@ mod tests {
     use super::*;
     use crate::api::ModelTask;
     use crate::mock::{MockProvider, make_spec};
+
+    mod inspection {
+        use super::*;
+
+        async fn runtime(provider: MockProvider, specs: Vec<ModelAliasSpec>) -> Arc<ModelRuntime> {
+            ModelRuntime::builder()
+                .register_provider(provider)
+                .catalog(specs)
+                .build()
+                .await
+                .unwrap()
+        }
+
+        fn state_of(snapshots: &[AliasSnapshot], alias: &str) -> LoadState {
+            snapshots
+                .iter()
+                .find(|s| s.alias == alias)
+                .unwrap()
+                .state
+                .clone()
+        }
+
+        #[tokio::test]
+        async fn aliases_are_listed_sorted_without_loading() {
+            let provider = MockProvider::embed_only();
+            let rt = runtime(
+                provider,
+                vec![
+                    make_spec("embed/b", ModelTask::Embed, "mock/embed", "m-b"),
+                    make_spec("embed/a", ModelTask::Embed, "mock/embed", "m-a"),
+                ],
+            )
+            .await;
+            let snapshots = rt.aliases().await;
+            let names: Vec<&str> = snapshots.iter().map(|s| s.alias.as_str()).collect();
+            assert_eq!(names, ["embed/a", "embed/b"]);
+            let a = &snapshots[0];
+            assert_eq!(a.task, ModelTask::Embed);
+            assert_eq!(a.provider_id, "mock/embed");
+            assert_eq!(a.model_id, "m-a");
+            assert_eq!(a.state, LoadState::Registered);
+            assert_eq!(a.execution_providers, None);
+            assert_eq!(a.endpoint, None, "local providers describe nothing");
+            assert!(rt.alias("embed/missing").await.is_none());
+            // Taking a snapshot loaded nothing.
+            assert_eq!(
+                rt.alias("embed/a").await.unwrap().state,
+                LoadState::Registered
+            );
+        }
+
+        #[tokio::test]
+        async fn state_goes_registered_loading_loaded() {
+            let rt = runtime(
+                MockProvider::embed_only().with_load_delay(300),
+                vec![make_spec("embed/a", ModelTask::Embed, "mock/embed", "m")],
+            )
+            .await;
+            let loader = {
+                let rt = rt.clone();
+                tokio::spawn(async move { rt.prefetch(&["embed/a"]).await })
+            };
+            // Poll rather than sleep a fixed time, so a slow machine where
+            // the load starts late does not fail the test.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while rt.alias("embed/a").await.unwrap().state != LoadState::Loading {
+                assert!(std::time::Instant::now() < deadline, "never saw Loading");
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            loader.await.unwrap().unwrap();
+            let loaded = rt.alias("embed/a").await.unwrap();
+            assert_eq!(loaded.state, LoadState::Loaded);
+            assert_eq!(loaded.execution_providers, None, "the mock reports none");
+        }
+
+        #[tokio::test]
+        async fn a_failure_is_recorded_then_cleared_by_a_later_load() {
+            let rt = runtime(
+                MockProvider::embed_only().with_failing_first_loads(1),
+                vec![make_spec("embed/a", ModelTask::Embed, "mock/embed", "m")],
+            )
+            .await;
+            assert!(rt.prefetch(&["embed/a"]).await.is_err());
+            match rt.alias("embed/a").await.unwrap().state {
+                LoadState::Failed { error, .. } => {
+                    assert!(error.contains("Mock load failure"), "{error}")
+                }
+                other => panic!("expected Failed, got {other:?}"),
+            }
+            rt.prefetch(&["embed/a"]).await.unwrap();
+            assert_eq!(rt.alias("embed/a").await.unwrap().state, LoadState::Loaded);
+        }
+
+        #[tokio::test]
+        async fn aliases_sharing_a_model_share_its_state() {
+            let rt = runtime(
+                MockProvider::embed_only(),
+                vec![
+                    make_spec("embed/a", ModelTask::Embed, "mock/embed", "same"),
+                    make_spec("embed/b", ModelTask::Embed, "mock/embed", "same"),
+                    make_spec("embed/c", ModelTask::Embed, "mock/embed", "other"),
+                ],
+            )
+            .await;
+            rt.prefetch(&["embed/a"]).await.unwrap();
+            let snapshots = rt.aliases().await;
+            assert_eq!(state_of(&snapshots, "embed/a"), LoadState::Loaded);
+            assert_eq!(state_of(&snapshots, "embed/b"), LoadState::Loaded);
+            assert_eq!(state_of(&snapshots, "embed/c"), LoadState::Registered);
+        }
+
+        #[tokio::test]
+        async fn a_failed_background_warmup_is_visible() {
+            let mut spec = make_spec("embed/a", ModelTask::Embed, "mock/failing", "m");
+            spec.warmup = crate::api::WarmupPolicy::Background;
+            let rt = runtime(MockProvider::failing(), vec![spec]).await;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let LoadState::Failed { .. } = rt.alias("embed/a").await.unwrap().state {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "warmup failure never recorded"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn prefetch_report_keeps_order_and_continues_past_errors() {
+            let rt = ModelRuntime::builder()
+                .register_provider(MockProvider::embed_only())
+                .register_provider(MockProvider::failing())
+                .catalog(vec![
+                    make_spec("embed/ok", ModelTask::Embed, "mock/embed", "m"),
+                    make_spec("embed/bad", ModelTask::Embed, "mock/failing", "m"),
+                ])
+                .build()
+                .await
+                .unwrap();
+            let report = rt
+                .prefetch_report(&["embed/bad", "embed/missing", "embed/ok"])
+                .await;
+            let names: Vec<&str> = report.iter().map(|(a, _)| a.as_str()).collect();
+            assert_eq!(names, ["embed/bad", "embed/missing", "embed/ok"]);
+            assert!(matches!(report[0].1, Err(RuntimeError::Load(_))));
+            assert!(matches!(
+                report[1].1,
+                Err(RuntimeError::AliasNotFound { .. })
+            ));
+            assert!(
+                report[2].1.is_ok(),
+                "a failure earlier does not stop later aliases"
+            );
+
+            let all = rt.prefetch_all_report().await;
+            let names: Vec<&str> = all.iter().map(|(a, _)| a.as_str()).collect();
+            assert_eq!(names, ["embed/bad", "embed/ok"], "alias order");
+        }
+
+        #[tokio::test]
+        async fn providers_are_listed_with_their_tasks() {
+            let rt = ModelRuntime::builder()
+                .register_provider(MockProvider::rerank_only())
+                .register_provider(MockProvider::embed_only())
+                .build()
+                .await
+                .unwrap();
+            let providers = rt.providers();
+            let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(ids, ["mock/embed", "mock/rerank"]);
+            assert_eq!(providers[0].supported_tasks, [ModelTask::Embed]);
+        }
+    }
 
     #[tokio::test]
     async fn loader_lock_entries_cleaned_after_successful_load() {

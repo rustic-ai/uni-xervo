@@ -6,7 +6,7 @@ Add Uni-Xervo to your Rust project.
 
 ```toml
 [dependencies]
-uni-xervo = "0.19"
+uni-xervo = "0.20"
 ```
 
 Defaults give you both local backends (`provider-candle`, `provider-onnx`) and all nine remote providers (`provider-openai`, `provider-gemini`, `provider-vertexai`, `provider-mistral`, `provider-anthropic`, `provider-voyageai`, `provider-cohere`, `provider-azure-openai`, `provider-llamacpp`) on CPU.
@@ -15,7 +15,7 @@ Defaults give you both local backends (`provider-candle`, `provider-onnx`) and a
 
 ```toml
 [dependencies]
-uni-xervo = { version = "0.19", default-features = false, features = [
+uni-xervo = { version = "0.20", default-features = false, features = [
   "provider-candle",
   "provider-onnx",
 ] }
@@ -29,10 +29,10 @@ GPU is opt-in and additive — CPU is always the fallback. Pick one based on you
 
 ```toml
 # NVIDIA on Linux / Windows
-uni-xervo = { version = "0.19", features = ["gpu-cuda"] }
+uni-xervo = { version = "0.20", features = ["gpu-cuda"] }
 
 # Apple GPU + Neural Engine on macOS / iOS
-uni-xervo = { version = "0.19", features = ["gpu-metal"] }
+uni-xervo = { version = "0.20", features = ["gpu-metal"] }
 ```
 
 **Build-time** requirements:

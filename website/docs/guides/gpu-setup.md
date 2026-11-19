@@ -99,6 +99,32 @@ bundled ORT and the candle Metal kernels are
 self-contained. macOS 13 (Ventura) or later is recommended for
 current CoreML feature coverage.
 
+### Accelerator output is checked at load
+
+Some models run wrongly on CoreML with ORT's default NeuralNetwork format.
+The acceptance matrix (`scripts/acceptance.sh coreml`, results in
+`docs/TEST_MATRIX.md`) found two: PP-OCR recognition returns wrong text
+with no error, and the ModernBERT ColBERT models fail on real input. These
+defects come from CoreML's model conversion, not from the GPU: they occur
+on CoreML's CPU compute unit too.
+
+You don't need a per-model list for this. When a `local/onnx` session
+attaches an accelerator, the load runs a fixed probe input through it and
+through a CPU session of the same model, and keeps the accelerator only if
+the outputs agree. A session that disagrees falls back to CPU and logs a
+`warn` with the measured error. For OCR, each stage is checked on its own:
+on CoreML the detector stays accelerated and the recognizer moves to CPU,
+which reads correctly at about 160 ms a page against 430 ms on CPU alone.
+When CoreML or ONNX Runtime fixes a defect, the check passes and the model
+moves back to the accelerator with no configuration change.
+
+`accelerator_check` controls it per alias: `"compare"` (the default),
+`"probe"` (only check that the probe runs) or `"off"`. See the
+[ONNX provider reference](../reference/providers/onnx.md#common-keys-all-tasks).
+Because the alias reports the providers that every one of its sessions
+uses, an OCR alias whose recognizer fell back reports `["cpu"]` even though
+its detector runs on CoreML.
+
 ## Verifying the GPU EP actually loaded
 
 ORT's CUDA EP is built with `fail_silently()`, so a failed CUDA init

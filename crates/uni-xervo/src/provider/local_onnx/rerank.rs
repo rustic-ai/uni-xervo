@@ -30,9 +30,8 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list, ep_ids,
-    new_session_builder, parse_execution_providers_option, replace_session,
-    verify_execution_providers,
+    BuiltSession, EpProbe, PROBE_TEXTS, ProbeOutput, SessionConfig, build_session, ep_ids,
+    scores_in_input_order, verify_execution_providers,
 };
 use crate::traits::{RerankerModel, ScoredDoc};
 
@@ -78,9 +77,10 @@ impl OnnxCrossEncoder {
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_MAX_SEQ_LEN);
 
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
-        let requested_eps: Vec<String> = effective_ep_list(execution_providers.as_deref())
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
+        let requested_eps: Vec<String> = session_cfg
+            .effective_execution_providers()
             .into_iter()
             .map(|ep| ep.as_str().to_string())
             .collect();
@@ -89,8 +89,7 @@ impl OnnxCrossEncoder {
         // Misconfigurations (e.g. CUDA requested without `gpu-cuda` enabled)
         // fail fast with a precise "feature not enabled" error rather than
         // a generic dylib-missing error or a wasted HF download.
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        session_cfg.check_execution_providers(&spec.alias)?;
 
         // Pre-flight (load-dynamic only): verify the ONNX Runtime dylib is
         // loadable before any ort API call. Sidesteps the upstream
@@ -124,7 +123,10 @@ impl OnnxCrossEncoder {
             }
         })?;
 
-        let session = build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: built_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
 
         let expects_token_type_ids = session
             .inputs()
@@ -142,16 +144,12 @@ impl OnnxCrossEncoder {
         };
         let eps = verify_execution_providers(
             &model,
-            effective_ep_list(execution_providers.as_deref()),
+            &model.session,
+            built_eps,
+            session_cfg.accelerator_check,
             &spec.alias,
             &model_path,
-            |m| {
-                replace_session(
-                    &m.session,
-                    build_session(&model_path, spec, Some(&[OnnxExecutionProvider::Cpu]))?,
-                    &spec.alias,
-                )
-            },
+            || Ok(build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session),
         )
         .await?;
         model.requested_eps = ep_ids(&eps);
@@ -223,8 +221,9 @@ impl crate::traits::ModelInfo for OnnxCrossEncoder {
 
 #[async_trait]
 impl EpProbe for OnnxCrossEncoder {
-    async fn probe(&self) -> Result<()> {
-        self.rerank("probe", &["probe"]).await.map(drop)
+    async fn probe(&self) -> Result<ProbeOutput> {
+        let docs = self.rerank("probe", &PROBE_TEXTS).await?;
+        Ok(scores_in_input_order(&docs))
     }
 }
 
@@ -367,50 +366,4 @@ async fn download_model_files(
             })?;
 
     Ok((model_path, tokenizer_path))
-}
-
-/// Build an ORT session with sensible defaults for reranker inference.
-///
-/// Shared between the cross-encoder and generative reranker code paths —
-/// both want the same optimization level and EP-dispatch behaviour.
-///
-/// `execution_providers` is the parsed user-supplied list (or `None` to use
-/// the feature-aware defaults from
-/// [`crate::provider::onnx_ep::default_execution_providers`]).
-pub(super) fn build_session(
-    path: &Path,
-    spec: &ModelAliasSpec,
-    execution_providers: Option<&[OnnxExecutionProvider]>,
-) -> Result<Session> {
-    let builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: spec.alias.clone(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
-
-    let mut builder = builder
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-
-    let dispatch = build_execution_providers(execution_providers, &spec.alias, "local/onnx")?;
-    builder =
-        builder
-            .with_execution_providers(dispatch)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: spec.alias.clone(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-
-    builder
-        .commit_from_file(path)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })
 }

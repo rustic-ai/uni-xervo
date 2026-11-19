@@ -5,6 +5,7 @@ Practical guides for operating Uni-Xervo in production environments.
 - [Provider Selection](provider-selection.md): choose providers by capability, latency, and control.
 - [ONNX Runtime](onnx.md): use `local/onnx` for raw tensor execution, HF snapshots, and ONNX Runtime session management.
 - [Config Validation](config-validation.md): enforce schema correctness in CI and startup.
+- [Startup Readiness](readiness.md): inspect aliases and load state without loading, prefetch with a result per alias, and verify that remote aliases are reachable with a valid key.
 - [Multimodal Generation](multimodal-generation.md): vision generation with `remote/llamacpp`.
 - [Structured NLP](nlp.md): POS / NER / dependency / SRL / dialog-act analysis via `NlpModel` and the kniv-deberta cascade.
 - [Multimodal Trait Surface](multimodal-traits.md): the full task-trait surface — the `ModelInfo` supertrait plus the image / audio / multimodal / sparse / multi-vector embed, NLP, document extract, transcription, and OCR traits.

@@ -149,6 +149,10 @@ impl crate::traits::ModelInfo for OnnxHybridEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
     }
+
+    fn active_execution_providers(&self) -> Vec<String> {
+        self.encoder.execution_providers()
+    }
 }
 
 #[async_trait]

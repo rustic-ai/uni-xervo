@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/llamacpp.schema.json",
   "title": "llama.cpp Server Provider Options",
-  "description": "Options for the remote/llamacpp provider, which targets a llama.cpp `llama-server`. `base_url` is required for every task. The embed task additionally requires `max_input_tokens` and `embedding_dimensions` and runs a tokenizer-aware truncation pre-pass (via the server's native /tokenize endpoint), because llama-server never truncates embedding input. The document_extract task takes one optional key, `style`, naming the output dialect of the loaded document VLM. The generate and rerank tasks take no options of their own: whether generate accepts images depends on the server being started with --mmproj, and rerank needs the server started with --reranking. Both are properties of the server process, not of the alias. Keys marked as belonging to one task are rejected for the others rather than ignored.",
+  "description": "Options for the remote/llamacpp provider, which targets a llama.cpp `llama-server`. `base_url` is required for every task. The embed task additionally requires `max_input_tokens` and `embedding_dimensions` and runs a tokenizer-aware truncation pre-pass (via the server's native /tokenize endpoint), because llama-server never truncates embedding input. The document_extract task takes one optional key, `style`, naming the output dialect of the loaded document VLM. The generate and rerank tasks take no options of their own: whether generate accepts images depends on the server being started with --mmproj, and rerank needs the server started with --reranking. Both are properties of the server process, not of the alias.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,12 +11,12 @@
   "properties": {
     "base_url": {
       "type": "string",
-      "format": "uri",
+      "pattern": "^\\s*https?://",
       "description": "OpenAI-compatible root of the llama-server including the version segment, e.g. http://127.0.0.1:8080/v1. A trailing slash is ignored."
     },
     "tokenizer_base_url": {
       "type": "string",
-      "format": "uri",
+      "pattern": "^\\s*https?://",
       "description": "Embed task only. Server root used for the native /tokenize endpoint (which lives outside /v1). Defaults to base_url with one trailing /v1 segment removed."
     },
     "max_input_tokens": {
@@ -47,6 +48,94 @@
       "minimum": 1,
       "default": 60,
       "description": "Per-HTTP-request timeout for the /tokenize, /v1/embeddings, /v1/chat/completions and /v1/rerank calls. Document extraction sends one request per page, so this bounds a page rather than the document. The alias-level `timeout` still bounds the whole call."
+    }
+  },
+  "$defs": {
+    "embed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "$ref": "#/properties/base_url"
+        },
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "request_timeout_secs": {
+          "$ref": "#/properties/request_timeout_secs"
+        },
+        "tokenizer_base_url": {
+          "$ref": "#/properties/tokenizer_base_url"
+        },
+        "max_input_tokens": {
+          "$ref": "#/properties/max_input_tokens"
+        },
+        "embedding_dimensions": {
+          "$ref": "#/properties/embedding_dimensions"
+        }
+      },
+      "required": [
+        "base_url",
+        "max_input_tokens",
+        "embedding_dimensions"
+      ]
+    },
+    "generate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "$ref": "#/properties/base_url"
+        },
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "request_timeout_secs": {
+          "$ref": "#/properties/request_timeout_secs"
+        }
+      },
+      "required": [
+        "base_url"
+      ]
+    },
+    "rerank": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "$ref": "#/properties/base_url"
+        },
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "request_timeout_secs": {
+          "$ref": "#/properties/request_timeout_secs"
+        }
+      },
+      "required": [
+        "base_url"
+      ]
+    },
+    "document_extract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "$ref": "#/properties/base_url"
+        },
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "request_timeout_secs": {
+          "$ref": "#/properties/request_timeout_secs"
+        },
+        "style": {
+          "$ref": "#/properties/style"
+        }
+      },
+      "required": [
+        "base_url"
+      ]
     }
   }
 }

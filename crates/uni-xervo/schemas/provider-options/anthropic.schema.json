@@ -1,6 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rustic-ai/uni-xervo/main/crates/uni-xervo/schemas/provider-options/anthropic.schema.json",
   "title": "Anthropic Provider Options",
+  "description": "Options for the remote/anthropic provider. `$defs/<task>` holds the schema for one task; the top-level schema accepts the keys of any task.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -11,6 +13,20 @@
     "anthropic_version": {
       "type": "string",
       "description": "Anthropic API version header value (default: '2023-06-01')."
+    }
+  },
+  "$defs": {
+    "generate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key_env": {
+          "$ref": "#/properties/api_key_env"
+        },
+        "anthropic_version": {
+          "$ref": "#/properties/anthropic_version"
+        }
+      }
     }
   }
 }

@@ -119,6 +119,39 @@ impl ModelProvider for RemoteOpenAIProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    async fn verify(
+        &self,
+        spec: &ModelAliasSpec,
+    ) -> std::result::Result<crate::inspect::VerifyOutcome, crate::inspect::VerifyFailure> {
+        use crate::provider::remote_common::{
+            credential_env_name, missing_credential, verify_send,
+        };
+        let env = credential_env_name(&spec.options, "api_key_env", "OPENAI_API_KEY");
+        let key = std::env::var(&env).map_err(|_| missing_credential(&env))?;
+        // OpenAI-compatible servers all list models; a missing route reads
+        // as NotFound.
+        let url = format!("{}/models", resolve_base_url(&spec.options));
+        verify_send(
+            self.base.client.get(&url).bearer_auth(key),
+            &crate::inspect::redact_url(&url),
+        )
+        .await
+    }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        crate::inspect::ProviderDescription::new()
+            // Redact before trimming, so a query after the trailing `/`
+            // cannot keep it.
+            .with_endpoint(
+                crate::inspect::redact_url(&resolve_base_url(&spec.options)).trim_end_matches('/'),
+            )
+            .with_credential_env(crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_key_env",
+                "OPENAI_API_KEY",
+            ))
+    }
 }
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";

@@ -30,24 +30,301 @@ fn task_wire_name(task: ModelTask) -> &'static str {
     }
 }
 
-/// `true` for the seven multimodal tasks introduced alongside the trait
-/// surface. No bundled provider implements any of these yet; provider
-/// implementations land in follow-up PRs and will flip their entries to the
-/// "supported" branch in [`validate_provider_options`].
-fn is_multimodal_task(task: ModelTask) -> bool {
-    matches!(
-        task,
-        ModelTask::EmbedImage
-            | ModelTask::EmbedAudio
-            | ModelTask::EmbedMultimodal
-            | ModelTask::EmbedSparse
-            | ModelTask::EmbedMultiVector
-            | ModelTask::EmbedHybrid
-            | ModelTask::Nlp
-            | ModelTask::DocumentExtract
-            | ModelTask::Transcribe
-            | ModelTask::Ocr
-    )
+/// The option keys one task of a bundled provider accepts, on top of the
+/// provider's [`ProviderOptions::common`] keys.
+pub(crate) struct TaskOptions {
+    pub(crate) task: ModelTask,
+    pub(crate) keys: &'static [&'static str],
+}
+
+/// A bundled provider's supported tasks and the option keys each accepts.
+///
+/// This table is the one place the accepted `(provider, task)` pairs and
+/// option keys are declared: [`validate_provider_options`] rejects anything
+/// outside it, [`crate::schemas`] publishes it, and a test checks that every
+/// file under `schemas/provider-options/` declares exactly these keys per
+/// task and that each provider's `capabilities()` lists exactly these tasks.
+/// Value rules (types, ranges, enums) live in the per-provider validators
+/// below and are checked against the schemas by fixture cases.
+pub(crate) struct ProviderOptions {
+    pub(crate) id: &'static str,
+    /// Keys every task of the provider accepts.
+    pub(crate) common: &'static [&'static str],
+    pub(crate) tasks: &'static [TaskOptions],
+}
+
+impl ProviderOptions {
+    pub(crate) fn task(&self, task: ModelTask) -> Option<&TaskOptions> {
+        self.tasks.iter().find(|t| t.task == task)
+    }
+
+    /// Tasks whose task-specific keys include `key`.
+    fn tasks_with_key(&self, key: &str) -> Vec<ModelTask> {
+        self.tasks
+            .iter()
+            .filter(|t| t.keys.contains(&key))
+            .map(|t| t.task)
+            .collect()
+    }
+}
+
+const fn task(task: ModelTask, keys: &'static [&'static str]) -> TaskOptions {
+    TaskOptions { task, keys }
+}
+
+const ONNX_COMMON: &[&str] = &[
+    "accelerator_check",
+    "artifact",
+    "max_batch_size",
+    "execution_providers",
+    "graph_optimization_level",
+    "inter_op_num_threads",
+    "intra_op_num_threads",
+    "cache_dir",
+];
+
+/// Every bundled provider, in the order the schemas list them.
+pub(crate) const BUNDLED_PROVIDERS: &[ProviderOptions] = &[
+    ProviderOptions {
+        id: "remote/openai",
+        common: &["api_key_env", "base_url"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::Generate, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/mistral",
+        common: &["api_key_env"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::Generate, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/voyageai",
+        common: &["api_key_env"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::Rerank, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/gemini",
+        common: &["api_key_env", "api_version"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::EmbedMultimodal, &[]),
+            task(ModelTask::Generate, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/anthropic",
+        common: &["api_key_env", "anthropic_version"],
+        tasks: &[task(ModelTask::Generate, &[])],
+    },
+    ProviderOptions {
+        id: "remote/cohere",
+        common: &["api_key_env", "input_type"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::EmbedMultimodal, &[]),
+            task(ModelTask::Generate, &[]),
+            task(ModelTask::Rerank, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/azure-openai",
+        common: &["api_key_env", "resource_name", "api_version"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::Generate, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/vertexai",
+        common: &["api_token_env", "project_id", "location", "publisher"],
+        tasks: &[
+            task(ModelTask::Embed, &["embedding_dimensions"]),
+            task(ModelTask::Generate, &[]),
+        ],
+    },
+    ProviderOptions {
+        id: "remote/llamacpp",
+        common: &["base_url", "api_key_env", "request_timeout_secs"],
+        tasks: &[
+            task(
+                ModelTask::Embed,
+                &[
+                    "tokenizer_base_url",
+                    "max_input_tokens",
+                    "embedding_dimensions",
+                ],
+            ),
+            task(ModelTask::Generate, &[]),
+            task(ModelTask::Rerank, &[]),
+            task(ModelTask::DocumentExtract, &["style"]),
+        ],
+    },
+    ProviderOptions {
+        id: "local/candle",
+        common: &["cache_dir"],
+        tasks: &[task(ModelTask::Embed, &[])],
+    },
+    ProviderOptions {
+        id: "local/onnx",
+        common: ONNX_COMMON,
+        tasks: &[
+            task(
+                ModelTask::Embed,
+                &[
+                    "tokenizer_path",
+                    "pooling",
+                    "normalize",
+                    "dimensions",
+                    "max_seq_len",
+                    "token_type_ids",
+                    "output_name",
+                ],
+            ),
+            task(ModelTask::Rerank, &["max_seq_len", "style", "instruction"]),
+            task(ModelTask::Raw, &[]),
+            task(
+                ModelTask::Nlp,
+                &[
+                    // Shared.
+                    "tokenizer_path",
+                    "generation",
+                    // v1 cascade only.
+                    "onnx_path",
+                    "label_maps_path",
+                    "max_seq_len",
+                    // kniv v7 only.
+                    "variant",
+                    "calibration_path",
+                    "label_bank_path",
+                ],
+            ),
+            task(
+                ModelTask::EmbedImage,
+                &[
+                    "onnx_path",
+                    "image_size",
+                    "dimensions",
+                    "normalization",
+                    "pool",
+                    "normalize",
+                    "output_name",
+                ],
+            ),
+            task(
+                ModelTask::Ocr,
+                &[
+                    "onnx_path",
+                    "char_dict_path",
+                    "image_height",
+                    "image_width",
+                    "normalization",
+                    "blank_class",
+                    "use_space_char",
+                    "max_image_width",
+                    "output_name",
+                    // Optional DBNet detection stage.
+                    "det_onnx_path",
+                    "det_model_id",
+                    "det_limit_side",
+                    "det_bin_threshold",
+                    "det_box_score_threshold",
+                    "det_unclip_ratio",
+                    "det_min_box_size",
+                    "det_input_name",
+                    "det_output_name",
+                ],
+            ),
+            task(
+                ModelTask::DocumentExtract,
+                &["style", "onnx_path", "tokenizer_path", "max_seq_len"],
+            ),
+            task(
+                ModelTask::EmbedSparse,
+                &[
+                    "tokenizer_path",
+                    "sparse_method",
+                    "output_name",
+                    "output_index",
+                    "max_seq_len",
+                    "token_type_ids",
+                    "top_k",
+                ],
+            ),
+            task(
+                ModelTask::EmbedMultiVector,
+                &[
+                    "tokenizer_path",
+                    "dimensions",
+                    "normalize",
+                    "drop_special_tokens",
+                    "output_name",
+                    "output_index",
+                    "max_seq_len",
+                    "token_type_ids",
+                ],
+            ),
+            // Hybrid is preset-driven: the preset declares each head's output
+            // and recipe. Options only override pass-wide globals.
+            task(
+                ModelTask::EmbedHybrid,
+                &["tokenizer_path", "max_seq_len", "token_type_ids", "top_k"],
+            ),
+        ],
+    },
+    ProviderOptions {
+        id: "local/whisper-cpp",
+        common: &["model_path", "default_language", "cache_dir"],
+        tasks: &[task(ModelTask::Transcribe, &[])],
+    },
+];
+
+/// The table entry for a bundled provider, or `None` for a third-party one.
+pub(crate) fn bundled_provider(provider_id: &str) -> Option<&'static ProviderOptions> {
+    BUNDLED_PROVIDERS.iter().find(|p| p.id == provider_id)
+}
+
+/// Quote and join task names for an error message: `'embed', 'rerank'`.
+fn task_list(tasks: impl IntoIterator<Item = ModelTask>) -> String {
+    tasks
+        .into_iter()
+        .map(|t| format!("'{}'", task_wire_name(t)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Rewrite whole-number floats in `options` (`128.0`) as integers (`128`).
+///
+/// JSON does not distinguish the two and JSON Schema's `integer` accepts both,
+/// but `serde_json` keeps `128.0` a float, so every integer option read with
+/// `as_u64` would reject it. Tools that write numbers as floats (Python's
+/// `json`, many YAML loaders) would pass the published schema and then fail at
+/// startup. The runtime applies this once, where a spec enters it, so
+/// validation, providers and the model cache key all see the same value.
+/// Fractional floats are left alone.
+pub(crate) fn normalize_whole_floats(options: &mut Value) {
+    match options {
+        Value::Number(n) if n.is_f64() => {
+            let f = n.as_f64().unwrap_or(f64::NAN);
+            if f.is_finite() && f.fract() == 0.0 {
+                // `as` saturates, so check the round trip before converting.
+                if f >= 0.0 && f <= u64::MAX as f64 && (f as u64) as f64 == f {
+                    *options = Value::from(f as u64);
+                } else if f < 0.0 && f >= i64::MIN as f64 && (f as i64) as f64 == f {
+                    *options = Value::from(f as i64);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(normalize_whole_floats),
+        Value::Object(map) => map.values_mut().for_each(normalize_whole_floats),
+        _ => {}
+    }
 }
 
 /// Validate provider-specific options for the given `provider_id` and `task`.
@@ -55,58 +332,50 @@ fn is_multimodal_task(task: ModelTask) -> bool {
 /// Returns `Ok(())` if the options are valid or the provider is unknown (unknown
 /// providers are silently accepted to allow third-party extensions).
 ///
-/// Bundled providers reject every multimodal task (see [`is_multimodal_task`])
-/// because no impl ships in this release. Follow-up PRs that add concrete
-/// `ImageEmbeddingModel` / `NlpModel` / ... implementations on a provider
-/// must extend this dispatch to handle the relevant new task before catalog
-/// validation will accept the alias.
+/// For a bundled provider, the task must be one it supports and every option
+/// key one that task accepts (see [`BUNDLED_PROVIDERS`]); the provider's own
+/// validator then checks the values.
 pub fn validate_provider_options(
     provider_id: &str,
     task: ModelTask,
     options: &Value,
 ) -> Result<()> {
-    let known_provider = matches!(
-        provider_id,
-        "remote/openai"
-            | "remote/mistral"
-            | "remote/voyageai"
-            | "remote/gemini"
-            | "remote/anthropic"
-            | "remote/cohere"
-            | "remote/azure-openai"
-            | "remote/vertexai"
-            | "remote/llamacpp"
-            | "local/candle"
-            | "local/onnx"
-            | "local/whisper-cpp"
-    );
-
-    // Reject multimodal tasks at this gate **except** for (provider, task)
-    // pairs that now have a real implementation. As each follow-up PR lands
-    // a provider impl, its pair is moved out of this rejection list.
-    let supported_pair = matches!(
-        (provider_id, task),
-        ("local/onnx", ModelTask::Nlp)                  // PR-3
-        | ("remote/cohere", ModelTask::EmbedMultimodal) // PR-6
-        | ("remote/gemini", ModelTask::EmbedMultimodal) // PR-6
-        | ("local/onnx", ModelTask::EmbedImage) // PR-2a
-        | ("local/onnx", ModelTask::Ocr) // PR-2b
-        | ("local/whisper-cpp", ModelTask::Transcribe) // PR-4
-        | ("local/onnx", ModelTask::DocumentExtract) // PR-5
-        | ("remote/llamacpp", ModelTask::DocumentExtract) // a document VLM on llama-server
-        | ("local/onnx", ModelTask::EmbedSparse) // SPLADE / BGE-M3 sparse head
-        | ("local/onnx", ModelTask::EmbedMultiVector) // ColBERT / BGE-M3 multi-vector head
-        | ("local/onnx", ModelTask::EmbedHybrid) // BGE-M3 dense+sparse+ColBERT, single pass
-    );
-
-    if known_provider && is_multimodal_task(task) && !supported_pair {
+    let Some(provider) = bundled_provider(provider_id) else {
+        return Ok(());
+    };
+    let Some(task_options) = provider.task(task) else {
         return Err(RuntimeError::Config(format!(
-            "Provider '{}' does not support task '{}'. No bundled provider \
-             implements this task yet; see the multimodal API design doc \
-             for the rollout plan.",
+            "Provider '{}' does not support task '{}'; it supports {}",
             provider_id,
             task_wire_name(task),
+            task_list(provider.tasks.iter().map(|t| t.task)),
         )));
+    };
+
+    if let Value::Object(map) = options {
+        for key in map.keys() {
+            let key = key.as_str();
+            if provider.common.contains(&key) || task_options.keys.contains(&key) {
+                continue;
+            }
+            // Name the task a misplaced key belongs to, so the error says why
+            // it does not fit rather than just "unknown".
+            let owners = provider.tasks_with_key(key);
+            if owners.is_empty() {
+                return Err(RuntimeError::Config(format!(
+                    "Unknown option '{}' for provider '{}'",
+                    key, provider_id
+                )));
+            }
+            return Err(RuntimeError::Config(format!(
+                "Option '{}' for provider '{}' applies only to task{} {} (got '{}')",
+                key,
+                provider_id,
+                if owners.len() == 1 { "" } else { "s" },
+                task_list(owners),
+                task_wire_name(task),
+            )));
+        }
     }
 
     match provider_id {
@@ -139,8 +408,7 @@ pub fn validate_provider_options(
     }
 }
 
-/// Validate options for `local/whisper-cpp`. Accepts `model_path`,
-/// `default_language`, and `cache_dir`. Rejects unknown keys.
+/// Validate option values for `local/whisper-cpp`: all are strings.
 fn validate_whisper_cpp_options(
     provider_id: &str,
     _task: ModelTask,
@@ -149,8 +417,6 @@ fn validate_whisper_cpp_options(
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-    let allowed = &["model_path", "default_language", "cache_dir"];
-    reject_unknown_keys(provider_id, map, allowed)?;
     require_string_keys(
         provider_id,
         map,
@@ -173,23 +439,6 @@ fn as_object<'a>(
             provider_id
         ))),
     }
-}
-
-/// Return an error if `map` contains any key not in `allowed`.
-fn reject_unknown_keys(
-    provider_id: &str,
-    map: &serde_json::Map<String, Value>,
-    allowed: &[&str],
-) -> Result<()> {
-    for key in map.keys() {
-        if !allowed.contains(&key.as_str()) {
-            return Err(RuntimeError::Config(format!(
-                "Unknown option '{}' for provider '{}'",
-                key, provider_id
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Validate the kniv generation and reject options meant for the other one.
@@ -251,6 +500,25 @@ fn require_string_keys(
         {
             return Err(RuntimeError::Config(format!(
                 "Option '{}' for provider '{}' must be a string",
+                key, provider_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Require that all specified keys, if present, are booleans.
+fn require_bool_keys(
+    provider_id: &str,
+    map: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Result<()> {
+    for key in keys {
+        if let Some(value) = map.get(*key)
+            && !value.is_boolean()
+        {
+            return Err(RuntimeError::Config(format!(
+                "Option '{}' for provider '{}' must be a boolean",
                 key, provider_id
             )));
         }
@@ -377,7 +645,6 @@ fn validate_string_keys_only(
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-    reject_unknown_keys(provider_id, map, allowed_keys)?;
     require_string_keys(provider_id, map, allowed_keys)
 }
 
@@ -392,9 +659,6 @@ fn validate_with_embedding_dimensions(
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-    let mut all_keys: Vec<&str> = string_keys.to_vec();
-    all_keys.push("embedding_dimensions");
-    reject_unknown_keys(provider_id, map, &all_keys)?;
     require_string_keys(provider_id, map, string_keys)?;
     require_embedding_dimensions(provider_id, task, map)
 }
@@ -406,11 +670,6 @@ fn validate_openai_options(provider_id: &str, task: ModelTask, options: &Value) 
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-    reject_unknown_keys(
-        provider_id,
-        map,
-        &["api_key_env", "base_url", "embedding_dimensions"],
-    )?;
     require_string_keys(provider_id, map, &["api_key_env", "base_url"])?;
     require_absolute_http_url(provider_id, map, "base_url")?;
     require_embedding_dimensions(provider_id, task, map)
@@ -469,31 +728,7 @@ fn require_absolute_http_url(
 const LLAMACPP_DOC_STYLES: [&str; 3] = ["granite-docling", "mineru", "olmocr"];
 
 fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value) -> Result<()> {
-    /// Keys every task reads.
-    const COMMON: [&str; 3] = ["base_url", "api_key_env", "request_timeout_secs"];
-    /// Keys only `embed` reads.
-    const EMBED_ONLY: [&str; 3] = [
-        "tokenizer_base_url",
-        "max_input_tokens",
-        "embedding_dimensions",
-    ];
-
-    /// Keys only `document_extract` reads.
-    const DOCS_ONLY: [&str; 1] = ["style"];
-
     let is_embed = matches!(task, ModelTask::Embed);
-    let is_docs = matches!(task, ModelTask::DocumentExtract);
-    if !matches!(
-        task,
-        ModelTask::Embed | ModelTask::Generate | ModelTask::Rerank | ModelTask::DocumentExtract
-    ) {
-        return Err(RuntimeError::Config(format!(
-            "Provider '{}' supports tasks 'embed', 'generate', 'rerank' and \
-             'document_extract' (got '{}')",
-            provider_id,
-            task_wire_name(task)
-        )));
-    }
 
     let mut required: Vec<&str> = vec!["base_url"];
     if is_embed {
@@ -507,37 +742,6 @@ fn validate_llamacpp_options(provider_id: &str, task: ModelTask, options: &Value
             required.join(", ")
         )));
     };
-
-    // Name the task-specific keys explicitly before the unknown-key sweep, so
-    // a misplaced one says *why* it does not belong rather than "unknown".
-    for (keys, owner, belongs) in [
-        (&EMBED_ONLY[..], "embed", is_embed),
-        (&DOCS_ONLY[..], "document_extract", is_docs),
-    ] {
-        if belongs {
-            continue;
-        }
-        for key in keys {
-            if map.contains_key(*key) {
-                return Err(RuntimeError::Config(format!(
-                    "Option '{}' for provider '{}' applies only to task '{}' (got '{}')",
-                    key,
-                    provider_id,
-                    owner,
-                    task_wire_name(task)
-                )));
-            }
-        }
-    }
-
-    let mut allowed: Vec<&str> = COMMON.to_vec();
-    if is_embed {
-        allowed.extend(EMBED_ONLY);
-    }
-    if is_docs {
-        allowed.extend(DOCS_ONLY);
-    }
-    reject_unknown_keys(provider_id, map, &allowed)?;
 
     for key in required {
         if !map.contains_key(key) {
@@ -591,16 +795,6 @@ fn validate_azure_openai_options(
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-    reject_unknown_keys(
-        provider_id,
-        map,
-        &[
-            "api_key_env",
-            "resource_name",
-            "api_version",
-            "embedding_dimensions",
-        ],
-    )?;
     require_string_keys(
         provider_id,
         map,
@@ -615,17 +809,6 @@ fn validate_vertexai_options(provider_id: &str, task: ModelTask, options: &Value
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-    reject_unknown_keys(
-        provider_id,
-        map,
-        &[
-            "api_token_env",
-            "project_id",
-            "location",
-            "publisher",
-            "embedding_dimensions",
-        ],
-    )?;
     require_string_keys(
         provider_id,
         map,
@@ -638,133 +821,6 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
     let Some(map) = as_object(provider_id, options)? else {
         return Ok(());
     };
-
-    // Keys shared across every task. Per-task validators extend this list.
-    let common_keys: &[&str] = &[
-        "artifact",
-        "max_batch_size",
-        "execution_providers",
-        "graph_optimization_level",
-        "inter_op_num_threads",
-        "intra_op_num_threads",
-        "cache_dir",
-    ];
-
-    let allowed: Vec<&str> = match task {
-        ModelTask::Embed => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&[
-                "tokenizer_path",
-                "pooling",
-                "normalize",
-                "dimensions",
-                "max_seq_len",
-                "token_type_ids",
-                "output_name",
-            ]);
-            keys
-        }
-        ModelTask::Rerank => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&["max_seq_len", "style", "instruction"]);
-            keys
-        }
-        ModelTask::Nlp => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&[
-                // Shared.
-                "tokenizer_path",
-                "generation",
-                // v1 cascade only.
-                "onnx_path",
-                "label_maps_path",
-                "max_seq_len",
-                // kniv v7 only.
-                "variant",
-                "calibration_path",
-                "label_bank_path",
-            ]);
-            keys
-        }
-        ModelTask::EmbedImage => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&[
-                "onnx_path",
-                "image_size",
-                "dimensions",
-                "normalization",
-                "pool",
-                "normalize",
-                "output_name",
-            ]);
-            keys
-        }
-        ModelTask::Ocr => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&[
-                "onnx_path",
-                "char_dict_path",
-                "image_height",
-                "image_width",
-                "normalization",
-                "blank_class",
-                "output_name",
-                // Optional DBNet detection stage.
-                "det_onnx_path",
-                "det_model_id",
-                "det_limit_side",
-                "det_bin_threshold",
-                "det_box_score_threshold",
-                "det_unclip_ratio",
-                "det_min_box_size",
-                "det_input_name",
-                "det_output_name",
-            ]);
-            keys
-        }
-        ModelTask::DocumentExtract => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&["style", "onnx_path", "tokenizer_path", "max_seq_len"]);
-            keys
-        }
-        ModelTask::EmbedSparse => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&[
-                "tokenizer_path",
-                "sparse_method",
-                "output_name",
-                "output_index",
-                "max_seq_len",
-                "token_type_ids",
-                "top_k",
-            ]);
-            keys
-        }
-        ModelTask::EmbedMultiVector => {
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&[
-                "tokenizer_path",
-                "dimensions",
-                "normalize",
-                "drop_special_tokens",
-                "output_name",
-                "output_index",
-                "max_seq_len",
-                "token_type_ids",
-            ]);
-            keys
-        }
-        ModelTask::EmbedHybrid => {
-            // Hybrid is preset-driven: the preset declares each head's output and
-            // recipe. Options only override pass-wide globals shared by all heads.
-            let mut keys = common_keys.to_vec();
-            keys.extend_from_slice(&["tokenizer_path", "max_seq_len", "token_type_ids", "top_k"]);
-            keys
-        }
-        _ => common_keys.to_vec(),
-    };
-
-    reject_unknown_keys(provider_id, map, &allowed)?;
 
     require_positive_u64(provider_id, map, "max_batch_size")?;
     require_positive_u64(provider_id, map, "inter_op_num_threads")?;
@@ -816,6 +872,16 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         )?;
         require_positive_u64(provider_id, map, "image_height")?;
         require_positive_u64(provider_id, map, "image_width")?;
+        require_positive_u64(provider_id, map, "max_image_width")?;
+        require_non_negative_u64(provider_id, map, "blank_class")?;
+        if let Some(value) = map.get("use_space_char")
+            && !value.is_boolean()
+        {
+            return Err(RuntimeError::Config(format!(
+                "Option 'use_space_char' for provider '{}' must be a boolean",
+                provider_id
+            )));
+        }
         if let Some(value) = map.get("normalization") {
             let s = value.as_str().unwrap_or("");
             if !matches!(s, "siglip" | "imagenet") {
@@ -825,24 +891,23 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
                 )));
             }
         }
-        // Optional detection stage — validate only when enabled.
-        if map.contains_key("det_onnx_path") {
-            require_string_keys(
-                provider_id,
-                map,
-                &[
-                    "det_onnx_path",
-                    "det_model_id",
-                    "det_input_name",
-                    "det_output_name",
-                ],
-            )?;
-            require_positive_u64(provider_id, map, "det_limit_side")?;
-            require_positive_u64(provider_id, map, "det_min_box_size")?;
-            require_unit_interval(provider_id, map, "det_bin_threshold")?;
-            require_unit_interval(provider_id, map, "det_box_score_threshold")?;
-            require_positive_f64(provider_id, map, "det_unclip_ratio")?;
-        }
+        // Detection-stage keys are checked even when `det_onnx_path` is
+        // absent: a bad value is a mistake whether or not the stage is on.
+        require_string_keys(
+            provider_id,
+            map,
+            &[
+                "det_onnx_path",
+                "det_model_id",
+                "det_input_name",
+                "det_output_name",
+            ],
+        )?;
+        require_positive_u64(provider_id, map, "det_limit_side")?;
+        require_positive_u64(provider_id, map, "det_min_box_size")?;
+        require_unit_interval(provider_id, map, "det_bin_threshold")?;
+        require_unit_interval(provider_id, map, "det_box_score_threshold")?;
+        require_positive_f64(provider_id, map, "det_unclip_ratio")?;
     }
 
     if matches!(task, ModelTask::EmbedImage) {
@@ -978,8 +1043,16 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
         }
     }
 
+    if matches!(task, ModelTask::EmbedHybrid) {
+        require_string_keys(provider_id, map, &["tokenizer_path"])?;
+        require_positive_u64(provider_id, map, "max_seq_len")?;
+        require_positive_u64(provider_id, map, "top_k")?;
+        require_bool_keys(provider_id, map, &["token_type_ids"])?;
+    }
+
     if matches!(task, ModelTask::Rerank) {
         require_string_keys(provider_id, map, &["style", "instruction"])?;
+        require_positive_u64(provider_id, map, "max_seq_len")?;
         if let Some(style) = map.get("style").and_then(|v| v.as_str()) {
             match style {
                 "cross-encoder" | "generative" => {}
@@ -1009,6 +1082,15 @@ fn validate_local_onnx_options(provider_id: &str, task: ModelTask, options: &Val
                 )));
             }
         }
+    }
+
+    if let Some(value) = map.get("accelerator_check")
+        && !matches!(value.as_str(), Some("compare" | "probe" | "off"))
+    {
+        return Err(RuntimeError::Config(format!(
+            "Option 'accelerator_check' for provider '{}' must be one of: compare, probe, off",
+            provider_id
+        )));
     }
 
     if let Some(execution_providers) = map.get("execution_providers") {
@@ -1051,4 +1133,45 @@ fn validate_execution_provider_array(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn whole_floats_become_integers() {
+        let mut v = json!({
+            "max_seq_len": 128.0,
+            "neg": -2.0,
+            "ratio": 1.5,
+            "big": 1e300,
+            "nested": [3.0, {"k": 4.0}],
+            "already": 7,
+            "s": "8.0"
+        });
+        normalize_whole_floats(&mut v);
+        assert_eq!(
+            v,
+            json!({
+                "max_seq_len": 128,
+                "neg": -2,
+                "ratio": 1.5,
+                "big": 1e300,
+                "nested": [3, {"k": 4}],
+                "already": 7,
+                "s": "8.0"
+            })
+        );
+        assert!(v["max_seq_len"].is_u64());
+    }
+
+    #[test]
+    fn validation_accepts_whole_floats_once_normalized() {
+        let mut options = json!({"embedding_dimensions": 256.0});
+        assert!(validate_provider_options("remote/openai", ModelTask::Embed, &options).is_err());
+        normalize_whole_floats(&mut options);
+        assert!(validate_provider_options("remote/openai", ModelTask::Embed, &options).is_ok());
+    }
 }

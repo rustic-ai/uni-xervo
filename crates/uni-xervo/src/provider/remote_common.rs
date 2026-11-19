@@ -4,6 +4,7 @@
 
 use crate::api::{ModelAliasSpec, ModelRuntimeKey};
 use crate::error::{Result, RuntimeError};
+use crate::inspect::{VerifyErrorKind, VerifyFailure, VerifyOutcome};
 use crate::reliability::{CircuitBreakerConfig, CircuitBreakerWrapper};
 use crate::traits::{EmbedResult, TokenUsage};
 use reqwest::Client;
@@ -73,6 +74,41 @@ pub(crate) fn resolve_api_key(
 
     std::env::var(env_var_name)
         .map_err(|_| RuntimeError::Config(format!("{} env var not set", env_var_name)))
+}
+
+/// The name of the environment variable an alias reads its credential from:
+/// `options[option_key]`, or `default_env`. Reads the name only, never the
+/// variable, so it is safe for [`ModelProvider::describe`](crate::traits::ModelProvider::describe).
+#[cfg(any(
+    feature = "provider-openai",
+    feature = "provider-gemini",
+    feature = "provider-vertexai",
+    feature = "provider-mistral",
+    feature = "provider-anthropic",
+    feature = "provider-voyageai",
+    feature = "provider-cohere",
+    feature = "provider-azure-openai",
+))]
+pub(crate) fn credential_env_name(
+    options: &serde_json::Value,
+    option_key: &str,
+    default_env: &str,
+) -> String {
+    options
+        .get(option_key)
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_env)
+        .to_string()
+}
+
+/// A string option, or `default` when it is unset or not a string.
+#[cfg(any(feature = "provider-gemini", feature = "provider-vertexai"))]
+pub(crate) fn option_or<'a>(
+    options: &'a serde_json::Value,
+    key: &str,
+    default: &'a str,
+) -> &'a str {
+    options.get(key).and_then(|v| v.as_str()).unwrap_or(default)
 }
 
 /// Decode an OpenAI-format `/embeddings` response body into an [`EmbedResult`].
@@ -197,11 +233,130 @@ struct BreakerEntry {
     last_access: Instant,
 }
 
+/// Send a provider's verification request and classify the answer.
+///
+/// `display_url` is the request URL as it may be shown: redacted, and never
+/// carrying a credential. Neither request headers nor the response body are
+/// read into the result, and a transport error drops its URL
+/// (`reqwest::Error`'s message includes it, which would leak a key sent in
+/// the query string).
+#[allow(dead_code)] // Unused only in builds with no remote provider but llama.cpp.
+pub(crate) async fn verify_send(
+    request: reqwest::RequestBuilder,
+    display_url: &str,
+) -> std::result::Result<VerifyOutcome, VerifyFailure> {
+    verify_send_with(request, display_url, On400::Fail).await
+}
+
+/// What an HTTP 400 means for one provider's verification request.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum On400 {
+    /// An ordinary failure.
+    Fail,
+    /// The credential was rejected: Gemini answers a bad key with 400
+    /// `API_KEY_INVALID`.
+    Unauthorized,
+    /// The request got through: an empty body was posted to a real
+    /// endpoint, and the server checks the credential (and for Azure, that
+    /// the deployment exists) before the body. `unsupported` lists error
+    /// codes meaning the endpoint exists but cannot serve this alias's task
+    /// (Azure's `OperationNotSupported`); only the code is read from the
+    /// body, never shown in full.
+    Verified {
+        unsupported: &'static [&'static str],
+    },
+}
+
+/// Longest one verification request may take when a provider's `verify` is
+/// called directly; the runtime applies the alias's own, shorter bound.
+const VERIFY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// [`verify_send`], with what an HTTP 400 means for this request.
+#[allow(dead_code)]
+pub(crate) async fn verify_send_with(
+    request: reqwest::RequestBuilder,
+    display_url: &str,
+    on_400: On400,
+) -> std::result::Result<VerifyOutcome, VerifyFailure> {
+    use VerifyErrorKind as K;
+    let response = request
+        .timeout(VERIFY_REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() {
+                VerifyFailure::new(K::Timeout, format!("no answer from {display_url}"))
+            } else if e.is_connect() {
+                VerifyFailure::new(K::Unreachable, format!("cannot connect to {display_url}"))
+            } else {
+                VerifyFailure::new(K::Other, e.without_url().to_string())
+            }
+        })?;
+    let status = response.status();
+    let code = status.as_u16();
+    if status.is_success() {
+        return Ok(VerifyOutcome::Verified);
+    }
+    match (code, on_400) {
+        (400, On400::Unauthorized) => {
+            return Err(VerifyFailure::new(
+                K::Unauthorized,
+                "credential rejected (HTTP 400)",
+            ));
+        }
+        (400 | 422, On400::Verified { unsupported }) => {
+            let error_code = response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| body["error"]["code"].as_str().map(str::to_string));
+            return match error_code {
+                Some(c) if unsupported.contains(&c.as_str()) => Err(VerifyFailure::new(
+                    K::Config,
+                    format!("{display_url} cannot serve this alias's task ({c})"),
+                )),
+                _ => Ok(VerifyOutcome::Verified),
+            };
+        }
+        _ => {}
+    }
+    Err(match code {
+        401 | 403 => VerifyFailure::new(
+            K::Unauthorized,
+            format!("credential rejected (HTTP {code})"),
+        ),
+        404 => VerifyFailure::new(
+            K::NotFound,
+            format!("not found at {display_url} (HTTP 404)"),
+        ),
+        429 => VerifyFailure::new(K::RateLimited, "rate limited (HTTP 429)"),
+        500..=599 => VerifyFailure::new(K::Unavailable, format!("server error (HTTP {code})")),
+        _ => VerifyFailure::new(
+            K::Other,
+            format!("unexpected HTTP {code} from {display_url}"),
+        ),
+    })
+}
+
+/// A missing credential, as a verification failure naming the variable.
+#[allow(dead_code)]
+pub(crate) fn missing_credential(env_var: &str) -> VerifyFailure {
+    VerifyFailure::new(
+        VerifyErrorKind::Config,
+        format!("{env_var} env var not set"),
+    )
+}
+
 /// Shared circuit-breaker management for all remote providers.
 pub(crate) struct RemoteProviderBase {
     pub(crate) client: Client,
     breakers: Mutex<HashMap<ModelRuntimeKey, BreakerEntry>>,
     last_cleanup: Mutex<Instant>,
+    /// Test-only: send verification requests here instead of the provider's
+    /// real host, so they can run against a local stub server.
+    #[cfg(test)]
+    endpoint_override: Mutex<Option<String>>,
 }
 
 impl RemoteProviderBase {
@@ -214,7 +369,27 @@ impl RemoteProviderBase {
             client: Client::new(),
             breakers: Mutex::new(HashMap::new()),
             last_cleanup: Mutex::new(now),
+            #[cfg(test)]
+            endpoint_override: Mutex::new(None),
         }
+    }
+
+    /// The scheme and host verification requests go to: `default` (e.g.
+    /// `https://api.anthropic.com`), or a test stub's address.
+    #[allow(dead_code)] // Used by the providers whose host is fixed.
+    pub(crate) fn root(&self, default: &str) -> String {
+        #[cfg(test)]
+        if let Some(url) = self.endpoint_override.lock().unwrap().clone() {
+            return url;
+        }
+        default.to_string()
+    }
+
+    /// Point verification requests at `url` (a local stub) in tests.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn set_endpoint_override(&self, url: impl Into<String>) {
+        *self.endpoint_override.lock().unwrap() = Some(url.into());
     }
 
     pub(crate) fn circuit_breaker_for(&self, spec: &ModelAliasSpec) -> CircuitBreakerWrapper {

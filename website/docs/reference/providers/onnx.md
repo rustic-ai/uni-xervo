@@ -50,8 +50,9 @@ Options are validated per task (unknown keys are rejected with a precise `Runtim
 - `artifact` (string) — explicit `.onnx` filename within an HF repo (auto-detected if a single match exists).
 - `max_batch_size` (integer)
 - `execution_providers` — array of EP identifiers. Accepted by option validation: `"cpu"`, `"cuda"`, `"coreml"`, `"directml"`. Other identifiers (e.g. `"rocm"`, `"openvino"`, `"qnn"`, `"tensorrt"`, `"webgpu"`) are rejected at catalog load with `RuntimeError::Config`. Defaults to a feature-aware list: `["cuda", "cpu"]` under `gpu-cuda`, `["coreml", "cpu"]` under `gpu-metal`, `["cpu"]` otherwise. Vendor EPs are never default — opt in explicitly. Selecting `"cuda"`/`"coreml"` still requires the matching GPU feature (or a `provider-onnx-dynamic` build pointed at a vendor ORT library via `ORT_DYLIB_PATH`). **Per-spec**, so a single catalog can mix GPU and CPU placement on a `gpu-cuda` build (e.g. embedder on `["cpu"]`, reranker on `["cuda", "cpu"]`) — see the [mixed-catalog recipe](../../guides/onnx.md#mixing-gpu-and-cpu-placement-in-one-catalog). No other provider takes a per-spec device option: `local/candle` places from the build features alone, and `remote/llamacpp` runs inference in the server process, where the device is a `llama-server` flag. If a requested EP fails to initialize (missing cuDNN, wrong CUDA major version, etc.), ORT silently falls through to the next EP in the list — see [GPU setup → verifying the GPU EP actually loaded](../../guides/gpu-setup.md#verifying-the-gpu-ep-actually-loaded) for how to detect this. See `docs/migrations/0.9.0-feature-surface.md` for vendor-build setup.
-- `graph_optimization_level` — `"disable" | "basic" | "extended" | "all"`.
-- `inter_op_num_threads`, `intra_op_num_threads` (integers)
+- `accelerator_check` — `"compare"` (default) | `"probe"` | `"off"`. What a load does when the session attached an accelerator (`cuda`, `coreml`, `directml`). `"compare"` runs a fixed probe input through the accelerated session and through a CPU session of the same model and keeps the accelerator only if the outputs agree (relative L2 error at most 0.2 per output tensor); otherwise the alias falls back to CPU with a `warn` naming the error, or fails to load if `execution_providers` has no `"cpu"`. `"probe"` only checks that the probe runs without error, falling back to CPU if it does not. `"off"` skips both. CPU-only sessions never run it. It covers `embed`, `rerank`, `embed_sparse`, `embed_multi_vector`, `embed_hybrid` and both `ocr` stages (each checked on its own, so the detector can stay on the accelerator while the recognizer moves to CPU); the other tasks accept the key and do not probe yet. It costs one CPU session build and one forward pass at load.
+- `graph_optimization_level` — `"disable" | "basic" | "extended" | "all"`. Applies to every task; when unset, `raw` uses `"basic"` and every other task ORT's layout level (between `"extended"` and `"all"`).
+- `inter_op_num_threads`, `intra_op_num_threads` (integers) — ORT thread counts, for every task.
 - `cache_dir` (string) — overrides `UNI_CACHE_DIR` and the default `.uni_cache/onnx-…/` location.
 
 ### Embed-only keys
@@ -180,7 +181,7 @@ registration — before any download. v7 takes no `max_seq_len`: its window is
 UltraBERT, 512 for DeBERTa).
 
 `graph_optimization_level`, `intra_op_num_threads` and `inter_op_num_threads`
-are honoured on the v7 path. Set `intra_op_num_threads` when the model runs
+apply here as on every task. Set `intra_op_num_threads` when the model runs
 alongside an embedder, or ONNX Runtime takes every core.
 
 On GPUs use `"variant": "fp16"`: the INT8 graphs use dynamic per-channel
@@ -214,10 +215,24 @@ Recognition (always required):
 - `onnx_path` (string, required) — recognizer (CRNN/CTC) `.onnx` within the repo.
 - `char_dict_path` (string, required) — character dictionary file within
   the HF repo, one entry per line. Class 0 is the CTC blank by default.
-- `image_height` (integer, default 48), `image_width` (integer, default 320).
+- `image_height` (integer, default 48) — the height every text line is
+  resized to.
+- `image_width` (integer, default 320) — the narrowest a batch of lines is.
+  Each line keeps its aspect ratio (`ceil(image_height × w / h)` wide) and is
+  right-padded, so a long line is never squeezed into fewer CTC time steps
+  than it has characters. If the graph fixes its input width, lines are fitted
+  to that width instead, still keeping their aspect ratio.
+- `max_image_width` (integer ≥ `image_width`, default 3200) — the widest a
+  line is resized to.
 - `normalization` (`"siglip"` | `"imagenet"`, default `"imagenet"`). PP-OCR
   recognizers expect `"siglip"` (i.e. `(x/255 − 0.5)/0.5`).
-- `blank_class` (integer, default 0).
+- `blank_class` (integer, default 0) — the CTC blank's class index.
+- `use_space_char` (boolean, optional) — whether the recognizer has a space
+  class after the last dictionary entry, as PaddleOCR models trained with
+  `use_space_char=True` do (the space is not a line in the dictionary file).
+  Unset, it is detected from the model's class count: blank + dictionary + 1
+  means a space class, blank + dictionary means none. Any other count is a
+  configuration error, since the dictionary does not match the model.
 - `output_name` (string, optional).
 
 Optional detection stage (DBNet) — present `det_onnx_path` to enable two-stage

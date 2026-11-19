@@ -197,6 +197,8 @@ anyhow = "1.0"
 criterion = { version = "0.8", features = ["async_tokio"] }
 metrics-util = "0.20"
 tempfile = "3"
+# Checks the shipped JSON Schemas agree with runtime option validation.
+jsonschema = { version = "0.61", default-features = false }
 reqwest = { version = "0.13", features = ["rustls"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 

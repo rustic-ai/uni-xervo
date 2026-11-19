@@ -66,6 +66,109 @@ def static_batch_8() -> None:
     save_model("static_batch_8.onnx", graph)
 
 
+def ctc_fixed_batch(batch: int) -> None:
+    """A CTC text recognizer whose graph fixes the batch at `batch`.
+
+    Input `x [batch, 3, 48, width]`; output `[batch, 4, 4]` over four classes
+    (blank, `a`, `b`, and a trailing space class past a two-entry dictionary).
+    Every row decodes to "a b" whatever the pixels, which lets a test check
+    that lines reach a fixed-batch graph `batch` at a time and come back in
+    order. The input still feeds the output (times zero) so ORT checks its shape.
+    """
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [batch, 3, 48, "width"])
+    y = helper.make_tensor_value_info("logits", TensorProto.FLOAT, [batch, 4, 4])
+    # Per time step, the argmax class: a, space, b, blank -> "a b".
+    steps = [1, 3, 2, 0]
+    one_hot = np.zeros((batch, 4, 4), dtype=np.float32)
+    for t, c in enumerate(steps):
+        one_hot[:, t, c] = 1.0
+    table = numpy_helper.from_array(one_hot, name="table")
+    shape = numpy_helper.from_array(np.array([1, 1, 1], dtype=np.int64), name="shape")
+    zero = numpy_helper.from_array(np.array(0.0, dtype=np.float32), name="zero")
+    nodes = [
+        helper.make_node("ReduceMean", ["x"], ["mean"], keepdims=1),
+        helper.make_node("Reshape", ["mean", "shape"], ["mean3"]),
+        helper.make_node("Mul", ["mean3", "zero"], ["nothing"]),
+        helper.make_node("Add", ["table", "nothing"], ["logits"]),
+    ]
+    graph = helper.make_graph(
+        nodes, f"ctc_fixed_batch_{batch}", [x], [y], [table, shape, zero]
+    )
+    save_model(f"ctc_fixed_batch_{batch}.onnx", graph)
+
+
+def tiny_encoder() -> None:
+    """A text encoder with the usual BERT-style inputs and a 4-wide output.
+
+    `input_ids`, `attention_mask` `[batch, seq]` int64 → `last_hidden_state`
+    `[batch, seq, 4]`: each token's id, cast to float, in all four channels.
+    Enough for the encoder tasks to load and run on CPU.
+    """
+    ids = helper.make_tensor_value_info("input_ids", TensorProto.INT64, ["batch", "seq"])
+    mask = helper.make_tensor_value_info("attention_mask", TensorProto.INT64, ["batch", "seq"])
+    out = helper.make_tensor_value_info(
+        "last_hidden_state", TensorProto.FLOAT, ["batch", "seq", 4]
+    )
+    ones = numpy_helper.from_array(np.ones((1, 1, 4), dtype=np.float32), name="ones")
+    axes = numpy_helper.from_array(np.array([2], dtype=np.int64), name="axes")
+    nodes = [
+        helper.make_node("Mul", ["input_ids", "attention_mask"], ["masked"]),
+        helper.make_node("Cast", ["masked"], ["as_float"], to=TensorProto.FLOAT),
+        helper.make_node("Unsqueeze", ["as_float", "axes"], ["col"]),
+        helper.make_node("Mul", ["col", "ones"], ["last_hidden_state"]),
+    ]
+    graph = helper.make_graph(nodes, "tiny_encoder", [ids, mask], [out], [ones, axes])
+    save_model("tiny_encoder.onnx", graph)
+
+
+def tiny_image_encoder() -> None:
+    """An image encoder: `pixel_values [batch, 3, h, w]` → `[batch, 3]` channel means."""
+    x = helper.make_tensor_value_info("pixel_values", TensorProto.FLOAT, ["batch", 3, "h", "w"])
+    y = helper.make_tensor_value_info("image_embeds", TensorProto.FLOAT, ["batch", 3])
+    node = helper.make_node("ReduceMean", ["pixel_values"], ["image_embeds"], axes=[2, 3], keepdims=0)
+    graph = helper.make_graph([node], "tiny_image_encoder", [x], [y])
+    save_model("tiny_image_encoder.onnx", graph)
+
+
+def tiny_detector() -> None:
+    """A DBNet-shaped text detector: `x [1, 3, h, w]` → `[1, 1, h, w]`.
+
+    The output is the per-pixel channel mean passed through a sigmoid: a
+    probability map of the right shape for any page size, enough for the OCR
+    detection stage to load, run its load-time probe and report providers.
+    """
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, "h", "w"])
+    y = helper.make_tensor_value_info("prob", TensorProto.FLOAT, [1, 1, "h", "w"])
+    nodes = [
+        helper.make_node("ReduceMean", ["x"], ["mean"], axes=[1], keepdims=1),
+        helper.make_node("Sigmoid", ["mean"], ["prob"]),
+    ]
+    graph = helper.make_graph(nodes, "tiny_detector", [x], [y])
+    save_model("tiny_detector.onnx", graph)
+
+
+def tiny_tokenizer() -> None:
+    """A whitespace word-level tokenizer over a five-word vocabulary."""
+    import json
+
+    tokenizer = {
+        "version": "1.0",
+        "truncation": None,
+        "padding": None,
+        "added_tokens": [],
+        "normalizer": None,
+        "pre_tokenizer": {"type": "Whitespace"},
+        "post_processor": None,
+        "decoder": None,
+        "model": {
+            "type": "WordLevel",
+            "vocab": {"[UNK]": 0, "hello": 1, "world": 2, "a": 3, "b": 4},
+            "unk_token": "[UNK]",
+        },
+    }
+    (ROOT / "tiny_tokenizer.json").write_text(json.dumps(tokenizer, indent=2) + "\n", encoding="utf-8")
+
+
 def malformed() -> None:
     (ROOT / "malformed.onnx").write_text("not a valid onnx model\n", encoding="utf-8")
 
@@ -77,6 +180,12 @@ def main() -> None:
     two_input_two_output()
     dynamic_batch_linear()
     static_batch_8()
+    ctc_fixed_batch(1)
+    ctc_fixed_batch(2)
+    tiny_encoder()
+    tiny_image_encoder()
+    tiny_detector()
+    tiny_tokenizer()
     malformed()
 
 

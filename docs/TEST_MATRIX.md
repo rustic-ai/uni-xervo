@@ -1,133 +1,152 @@
 # Test Matrix
 
-Comprehensive test results for uni-xervo local backends. Remote provider tests (OpenAI, Anthropic, etc.) are excluded — they require API keys.
+Results of the deployment acceptance matrix, `scripts/acceptance.sh`, which
+runs every opt-in real-model suite for the local backends on one platform
+target. Remote providers need API keys and are not part of it (see
+`scripts/test-integration.sh`). How to run it, and what each suite covers,
+is in [TESTING.md](../TESTING.md#deployment-acceptance-matrix).
 
-**Last run**: 2026-03-12 | **Platform**: Linux x86_64 (CPU-only, no GPU) | **Rust**: stable
-
-> **Note**: this is a record of one run, not a live list. The
-> `local/mistralrs` sections below describe tests that were removed in 0.19.0
-> along with the provider; they are kept here because the numbers above were
-> measured with them in place.
-
----
+Each run below is a record of one machine on one day, not a live status. To
+add a platform, run `scripts/acceptance.sh <target>` there and copy its
+`target/acceptance/<target>/report.md` in.
 
 ## Summary
 
-| Category | Passed | Failed | Skipped | Total |
-|----------|--------|--------|---------|-------|
-| Regular (non-ignored) | 174 | 0 | 39 | 213 |
-| Expensive — local/onnx (Embed) | 2 | 0 | 0 | 2 |
-| Expensive — candle | 4 | 0 | 0 | 4 |
-| Expensive — mistralrs (small) | 11 | 1 | 0 | 12 |
-| Expensive — mistralrs (heavy) | 0 | 0 | 3 | 3 |
-| **Total** | **191** | **1** | **42** | **234** |
+| Platform | Target | Date | Commit | Suites passed | Failed | Skipped |
+|---|---|---|---|---|---|---|
+| macOS arm64 (Apple Silicon) | `cpu` | 2026-11-19 | `a76262a` | 11 | 0 | 1 (whisper.cpp: no cmake) |
+| macOS arm64 (Apple Silicon) | `coreml` | 2026-11-19 | `d837a30` + the accelerator check | 12 | 0 | 1 (whisper.cpp: no cmake) |
+| Linux x86_64 + NVIDIA | `cuda` | not yet run | | | | |
 
----
+The first `coreml` run, at `a76262a`, failed `multi-vector` (3 of 6) and
+`ocr` (1 of 3); see [Known issues](#known-issues) for what was wrong and how
+the accelerator check fixed it.
 
-## Local Provider Matrix — Expensive Tests (Real Models)
+Both runs used Rust 1.100.0 and the `ort` 2.0.0-rc.15 ONNX Runtime binding,
+with the models listed under [Models](#models).
 
-These tests download real models from HuggingFace and run actual inference. Requires `EXPENSIVE_TESTS=1`.
+## macOS arm64, `cpu`
 
-### local/onnx (Embed task — replaces the retired `local/fastembed` provider as of 0.8.0)
+| Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
+|---|---|---|---|---|
+| `onnx-models` (BGE small/large, Qwen3 embedding, rerankers, kniv v1 NLP, …) | pass | 11 / 0 / 0 | 4 s | 10.1 GiB |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 2 s | 0.9 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.2 GiB |
+| `sparse` (SPLADE v1/v2, BGE-M3 lexical) | pass | 4 / 0 / 0 | 2 s | 2.3 GiB |
+| `multi-vector` (ColBERT family, BGE-M3 ColBERT) | pass | 6 / 0 / 0 | 2 s | 2.0 GiB |
+| `hybrid-bge-m3` (widths, parity with per-task models) | pass | 3 / 0 / 0 | 5 s | 7.3 GiB |
+| `ocr` (PP-OCRv5 detection + recognition) | pass | 3 / 0 / 0 | 2 s | 0.5 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 2 s | 0.9 GiB |
+| `nlp-kniv-v7` (kniv-v7-tiny-en, model-agnostic tests) | pass | 2 / 0 / 0 | 4 s | 0.2 GiB |
+| `ep-reporting` | pass | 7 / 0 / 0 | 0 s | 0.1 GiB |
+| `ep-skip-dynamic` (real ORT 1.30 library) | pass | 2 / 0 / 0 | 1 s | 0.1 GiB |
+| `whisper` | skipped: `whisper-rs-sys` needs cmake, not installed | | | |
 
-| Interface | Model | Model Size | Test Name | Result | Time |
-|-----------|-------|-----------|-----------|--------|------|
-| embed | BGESmallENV15 | ~130 MB | `test_local_onnx_bge_small_embedding` | PASS | 0.4s |
+## macOS arm64, `coreml`
 
-### candle
+`local/onnx` built with `gpu-metal`, so every session's default provider list
+is `["coreml", "cpu"]`.
 
-| Interface | Model | Model Size | Test Name | Result | Time |
-|-----------|-------|-----------|-----------|--------|------|
-| embed | all-MiniLM-L6-v2 | ~80 MB | `test_candle_local_embedding` | PASS | 0.2s |
-| embed | bge-small-en-v1.5 | ~130 MB | `test_candle_bge_small_embedding` | PASS | 0.3s |
-| embed | bge-base-en-v1.5 | ~440 MB | `test_candle_bge_base_embedding` | PASS | 0.8s |
-| embed | all-MiniLM-L6-v2 (via Runtime) | ~80 MB | `test_runtime_candle_embed` | PASS | 0.2s |
+| Suite | Result | Tests passed / failed / skipped | Time | Peak RSS |
+|---|---|---|---|---|
+| `onnx-models` | pass | 11 / 0 / 0 | 27 s | 16.3 GiB |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 15 s | 2.1 GiB |
+| `rerank` | pass | 2 / 0 / 0 | 2 s | 0.7 GiB |
+| `sparse` | pass | 4 / 0 / 0 | 7 s | 9.8 GiB |
+| `multi-vector` (ModernBERT models fall back to CPU) | pass | 6 / 0 / 0 | 7 s | 12.0 GiB |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 36 s | 17.5 GiB |
+| `ocr` (detector on CoreML, recognizer on CPU) | pass | 3 / 0 / 0 | 8 s | 1.5 GiB |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 2 s | 0.9 GiB |
+| `nlp-kniv-v7` | pass | 2 / 0 / 0 | 4 s | 0.2 GiB |
+| `ep-reporting` (reports `["coreml", "cpu"]`) | pass | 9 / 0 / 0 | 1 s | 0.1 GiB |
+| `ep-skip-dynamic` | pass | 2 / 0 / 0 | 1 s | 0.1 GiB |
+| `coreml-inference` (embed and rerank on CoreML only) | pass | 2 / 0 / 0 | 2 s | 1.1 GiB |
+| `whisper` | skipped: no cmake | | | |
 
-### mistralrs — Embedding
+Times exclude the build. Peak RSS is for the whole test binary, whose tests
+run in parallel and each load their own models, so it is an upper bound on
+any one model, not a per-model figure.
 
-| Interface | Modality | Model | Model Size | Test Name | Result | Time |
-|-----------|----------|-------|-----------|-----------|--------|------|
-| embed | text | google/embeddinggemma-300m | ~1.2 GB | `test_mistralrs_local_embedding_gemma3` | PASS | 41s |
-| embed | text | Qwen/Qwen3-Embedding-0.6B | ~1.2 GB | `test_mistralrs_local_embedding_qwen3` | PASS | 121s |
-| embed | text | nomic-ai/nomic-embed-text-v1.5 | ~550 MB | `test_mistralrs_local_embedding_bert_arch_unsupported` | PASS (expected FAIL) | 0.03s |
+## Known issues
 
-> **Note**: nomic-embed-text-v1.5 uses NomicBertModel which is unsupported by mistralrs 0.7 embedding. The test verifies the correct error message is returned.
+### CoreML (`gpu-metal`)
 
-### mistralrs — Generation
+The first `coreml` run (commit `a76262a`) found two CoreML defects with
+ORT's default CoreML model format (NeuralNetwork). The same models pass on
+CPU, and both defects also occur on CoreML's CPU compute unit, so they come
+from CoreML's model conversion, not the GPU. Seen on an M2 Max, macOS 27.2.1.
 
-| Interface | Modality | Model | Format | Model Size | Test Name | Result | Time |
-|-----------|----------|-------|--------|-----------|-----------|--------|------|
-| generate | text | Qwen/Qwen2.5-0.5B-Instruct | safetensors | ~1 GB | `test_mistralrs_local_generation` | PASS | 103s |
-| generate | text | Qwen/Qwen3-0.6B | safetensors | ~1.2 GB | `test_mistralrs_local_generation_qwen3` | **FAIL** | 1878s |
-| generate | text | HuggingFaceTB/SmolLM2-135M-Instruct | safetensors (F32) | ~270 MB | `test_mistralrs_local_generation_smollm2_f32` | PASS | 146s |
-| generate | text | bartowski/SmolLM2-135M-Instruct-GGUF | GGUF (Q4_K_M) | ~80 MB | `test_mistralrs_local_generation_smollm2_gguf` | PASS | 28s |
-| generate | text | bartowski/Qwen_Qwen3-0.6B-GGUF | GGUF (Q4_K_M) | ~400 MB | `test_mistralrs_local_generation_qwen3_gguf` | PASS | 217s |
-| generate | text | HuggingFaceTB/SmolLM2-135M-Instruct | safetensors (F32) | ~270 MB | `test_mistralrs_text_generation_multimodal_fields` | PASS | 353s |
-| generate | vision | google/gemma-3n-E2B-it | safetensors | ~9 GB | `test_mistralrs_gemma3n_object_detection` | PASS | 1259s |
-| generate | text | google/gemma-3n-E2B-it | safetensors | ~9 GB | `test_mistralrs_gemma3n_text_generation` | PASS | 851s |
+- **PP-OCR recognition read text wrong, without any error.** On the
+  `maintenance_log.png` fixture, 3 of 4 lines came back garbled, for example
+  `"PUm&UOEC(g"` for "Pump Station Maintenance Log".
+- **ModernBERT ColBERT models failed at inference.** `lightonai/GTE-ModernColBERT-v1`
+  and `mixedbread-ai/mxbai-edge-colbert-v0-17m` and `-32m` attached CoreML,
+  passed a one-word load-time probe, then failed on real input with "Unable
+  to compute the prediction using a neural network model".
 
-> **FAIL detail**: `test_mistralrs_local_generation_qwen3` — Qwen3-0.6B raw safetensors generated empty text after 31 min on CPU. The model loaded successfully but inference timed out. This is likely a CPU-only performance issue; the GGUF variant of the same model passes.
+The load-time accelerator check (`accelerator_check`, on by default) now
+handles both with no per-model configuration. It runs a probe through the
+accelerated session and a CPU session and keeps the accelerator only when
+they agree:
 
-### mistralrs — Heavy Models (Skipped on CPU)
+- the OCR recognizer disagrees and moves to CPU, while the detector stays on
+  CoreML;
+- the ModernBERT probe errors on CoreML, so those aliases load on CPU.
 
-These tests require GPU or take prohibitively long on CPU. They were not run to completion.
+Relative L2 error between CoreML and CPU on the probe, against the 0.2
+tolerance:
 
-| Interface | Modality | Model | Model Size | Test Name | Status | Notes |
-|-----------|----------|-------|-----------|-----------|--------|-------|
-| generate | image | black-forest-labs/FLUX.1-schnell | ~23 GB | `test_mistralrs_diffusion_generation` | SKIP | Model loads OK; inference impractical on CPU (60+ min, not completed) |
-| generate | vision | Qwen/Qwen2-VL-2B-Instruct | ~4 GB | `test_mistralrs_vision_generation` | SKIP | Not run (CPU-only) |
-| generate | audio | nari-labs/Dia-1.6B | ~3 GB | `test_mistralrs_speech_generation` | SKIP | Not run (CPU-only) |
+| Model | Relative error | Result |
+|---|---|---|
+| BGE small and large, Qwen3, the rerankers, SPLADE, answerai ColBERT | 1e-7 to 6e-6 | stays on CoreML |
+| BGE-M3 (dense, sparse, ColBERT) | 0 | stays on CoreML |
+| PP-OCRv5 detector | 0.052 | stays on CoreML |
+| PP-OCRv5 recognizer | 0.66 | falls back to CPU |
+| ModernBERT ColBERT | probe errors | falls back to CPU |
 
----
+With that split, OCR reads the fixture correctly at about 160 ms a page,
+against 430 ms with both stages on CPU.
 
-## Regular Tests (Non-Ignored) — 174 Passed
+Switching CoreML to the ML Program format was tried and not adopted: neither
+PP-OCR model builds on it, and BERT-family models (BGE small, the MiniLM
+reranker, SPLADE) abort the whole process inside Metal (`'mps.matmul' op
+contracting dimensions differ`). A crash cannot be caught or fallen back from.
 
-These tests use mock providers and require no model downloads or API keys.
+## Models
 
-### By Test Suite
+The Hugging Face revisions both runs resolved (from the model cache). Set an
+alias's `revision` to one of these to reproduce a run.
 
-| Suite | Tests | Result |
-|-------|-------|--------|
-| api::tests | 10 | 10 PASS |
-| cache::tests | 7 | 7 PASS |
-| provider::mistralrs::tests | 11 | 11 PASS |
-| reliability::tests | 2 | 2 PASS |
-| runtime::tests | 3 | 3 PASS |
-| api_validation_test | 18 | 18 PASS |
-| deduplication_test | 6 | 6 PASS |
-| embedding_model_test | 9 | 9 PASS |
-| error_handling_test | 15 | 15 PASS |
-| generator_model_test | 17 | 17 PASS |
-| options_validation_mistralrs_test | 14 | 14 PASS |
-| options_validation_test | 4 | 4 PASS |
-| provider_capability_test | 8 | 8 PASS |
-| real_providers_test (mock) | 2 | 2 PASS |
-| reliability_test | 5 | 5 PASS |
-| reranker_model_test | 8 | 8 PASS |
-| runtime_lifecycle_test | 19 | 19 PASS |
-| warmup_policy_test | 13 | 13 PASS |
+| Repository | Commit | Snapshot size |
+|---|---|---|
+| `BAAI/bge-reranker-base` | `2cfc18c9415c912f9d8155881c133215df768a70` | 1.1 GB |
+| `Xenova/bge-large-en-v1.5` | `dfeef6070b90658e1b391a6940efdb0925c1de6f` | 1.2 GB |
+| `Xenova/bge-small-en-v1.5` | `ea104dacec62c0de699686887e3f920caeb4f3e3` | 128 MB |
+| `aapot/bge-m3-onnx` | `76a603396f5eb9f03ed51bbab8f4893fcea7b2fe` | 2.1 GB |
+| `answerdotai/answerai-colbert-small-v1` | `934fa8bb4ce2284f4c2baa232d81aca4d076fa5e` | 128 MB |
+| `cross-encoder/ms-marco-MiniLM-L6-v2` | `233902d25c440f23af6f7d6e94d2946bac0bee0a` | 87 MB |
+| `dragonscale-ai/kniv-deberta-nlp-base-en-xsmall` | `68af00aef58ef6dc4bb695612f2fd68d1f03fa27` | 294 MB |
+| `dragonscale-ai/kniv-v7-tiny-en` | `c6335931a9c911faaa6939a6b765e0c17d260a81` | 119 MB |
+| `lightonai/GTE-ModernColBERT-v1` | `25f6f7bb8237b7ae25ae1d9b805ce17c0d1cc639` | 573 MB |
+| `mixedbread-ai/mxbai-edge-colbert-v0-17m` | `592c6417c1c6687572043408ed1ae5196bce16b1` | 68 MB |
+| `mixedbread-ai/mxbai-edge-colbert-v0-32m` | `bb13a29ec9b1e7edd4ba8f7a0776c48b55cbad66` | 129 MB |
+| `monkt/paddleocr-onnx` | `7b02d0a30a07ba2b92ad1ff5a8941ae2c633de65` | 91 MB |
+| `onnx-community/Qwen3-Embedding-0.6B-ONNX` | `c25a394dd583836952667c12f008335071b3f43d` | 2.2 GB |
+| `onnx-community/Qwen3-Reranker-0.6B-ONNX` | `9995c50e2310679108a55f5ccd16ba8be9f17c20` | 960 MB |
+| `prithivida/Splade_PP_en_v1` | `762be6a7206e2f299182705972a65e5c46e62be2` | 508 MB |
+| `prithivida/Splade_PP_en_v2` | `f0d4aa214dcb60c274052a52c0497535e3aec64c` | 508 MB |
+| `protectai/bert-base-NER-onnx` | `84d28ab2bc28401b4353b26033eb043c8c8a0739` | 412 MB |
+| `smokxy/sequence_classification_onnx` | `ea7a6b194062bd82e8d92a909ce4e4543f203273` | 256 MB |
 
----
+## Not covered
 
-## How to Run
-
-### Regular tests (fast, no downloads)
-```bash
-cargo nextest run --features provider-candle,provider-onnx,provider-mistralrs
-```
-
-### All expensive local tests (downloads models)
-```bash
-EXPENSIVE_TESTS=1 cargo nextest run \
-  --features provider-candle,provider-onnx,provider-mistralrs \
-  --run-ignored all --no-capture --no-fail-fast \
-  -E 'test(~local_onnx) | test(~candle) | test(~mistralrs)'
-```
-
-### Expensive tests excluding heavy GPU models
-```bash
-EXPENSIVE_TESTS=1 cargo nextest run \
-  --features provider-candle,provider-onnx,provider-mistralrs \
-  --run-ignored all --no-capture --no-fail-fast \
-  -E '(test(~local_onnx) | test(~candle) | test(~mistralrs)) & not test(~diffusion) & not test(~vision) & not test(~speech)'
-```
+- **CUDA:** no NVIDIA host was available. Run `scripts/acceptance.sh cuda` on
+  one; the `cuda-inference` suite then runs too.
+- **whisper.cpp:** needs cmake to build (`brew install cmake`).
+- **kniv v7 golden tests:** need the xlarge releases (see
+  `tests/local_onnx_nlp_v7_golden_expensive_test.rs`). The matrix runs the v7
+  suite's model-agnostic tests on the tiny release instead.
+- **Document extraction on `local/onnx`:** there is no ONNX export of a target
+  document model yet. `remote/llamacpp` serves it, and needs a running server.
+- **Retrieval quality on real corpora:** that is a deployment concern. The
+  suites check ranking on fixed fixtures only.

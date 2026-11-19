@@ -72,9 +72,9 @@ pub fn preprocess_batch(
 /// recognition, which expects a fixed height — are not forced through a square
 /// resize. Produces an `NCHW` tensor `[batch, 3, height, width]`.
 ///
-/// Non-square inputs are stretched to the target (no letterboxing); an
-/// aspect-preserving letterbox is a possible follow-up for CRNN recognition
-/// quality (validate against a real model before adopting).
+/// Non-square inputs are stretched to the target (no letterboxing). CTC text
+/// recognition should use [`pack_text_lines`] instead, which keeps the aspect
+/// ratio.
 ///
 /// # Errors
 /// Returns an error if an input is `ImageInput::Url` (not fetched here) or if
@@ -148,6 +148,43 @@ pub fn preprocess_det(
     let scale_x = det_w as f32 / orig_w as f32;
     let scale_y = det_h as f32 / orig_h as f32;
     (fill_chw(img, det_h, det_w, norm), scale_x, scale_y)
+}
+
+/// Width a text-line image takes when resized to `height` with its aspect
+/// ratio kept, capped at `max_width` and never below 1.
+///
+/// Mirrors PaddleOCR's `resize_norm_img`: `ceil(height * w / h)`.
+#[must_use]
+pub fn aspect_width(img_w: u32, img_h: u32, height: u32, max_width: u32) -> u32 {
+    if img_h == 0 {
+        return 1;
+    }
+    let w = (f64::from(height) * f64::from(img_w) / f64::from(img_h)).ceil() as u32;
+    w.clamp(1, max_width.max(1))
+}
+
+/// Pack text-line images into one `[n, 3, height, width]` tensor for CTC
+/// recognition, keeping each image's aspect ratio.
+///
+/// Each image is resized to `height` × [`aspect_width`] (capped at `width`),
+/// written at the left edge, and the rest of its row is left at 0.0 — zero in
+/// normalized space, which is what PaddleOCR pads with. Stretching a long line
+/// to a fixed width instead leaves the recognizer fewer time steps than the
+/// line has characters, and its text comes out cut short.
+#[must_use]
+pub fn pack_text_lines(
+    images: &[&DynamicImage],
+    height: u32,
+    width: u32,
+    norm: Normalization,
+) -> Array4<f32> {
+    let mut tensor = Array4::<f32>::zeros((images.len(), 3, height as usize, width as usize));
+    for (i, img) in images.iter().enumerate() {
+        let (w, h) = img.dimensions();
+        let resized_w = aspect_width(w, h, height, width);
+        write_image_into(&mut tensor, i, img, height, resized_w, norm);
+    }
+    tensor
 }
 
 /// Round up to the nearest multiple of 32, with a 32px floor.
@@ -275,6 +312,36 @@ mod tests {
         let img = solid_image(20, 10);
         let tensor = fill_chw(&img, 16, 48, Normalization::SIGLIP);
         assert_eq!(tensor.shape(), &[1, 3, 16, 48]);
+    }
+
+    #[test]
+    fn aspect_width_keeps_ratio_and_caps() {
+        // 800x40 at height 48 -> 960 wide.
+        assert_eq!(aspect_width(800, 40, 48, 3200), 960);
+        // Capped at max_width.
+        assert_eq!(aspect_width(800, 40, 48, 320), 320);
+        // Rounds up, never zero.
+        assert_eq!(aspect_width(1, 100, 48, 320), 1);
+        assert_eq!(aspect_width(10, 0, 48, 320), 1);
+    }
+
+    #[test]
+    fn pack_text_lines_pads_right_with_zeros() {
+        // 40x20 -> 96 wide at height 48, inside a 200-wide tensor.
+        let short = solid_image(40, 20);
+        // 800x40 -> 960 wide, capped to the 200-wide tensor.
+        let long = solid_image(800, 40);
+        let t = pack_text_lines(&[&short, &long], 48, 200, Normalization::SIGLIP);
+        assert_eq!(t.shape(), &[2, 3, 48, 200]);
+        // Grey 128 under SigLIP normalization is ~0.0039, not exactly 0.
+        let grey = (128.0 / 255.0 - 0.5) / 0.5;
+        assert!((t[[0, 0, 10, 95]] - grey).abs() < 1e-3, "inside the image");
+        assert_eq!(t[[0, 0, 10, 96]], 0.0, "padding starts after 96 px");
+        assert_eq!(t[[0, 2, 47, 199]], 0.0);
+        assert!(
+            (t[[1, 0, 10, 199]] - grey).abs() < 1e-3,
+            "long line fills the row"
+        );
     }
 
     #[test]

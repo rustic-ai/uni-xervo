@@ -43,10 +43,7 @@ use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
-use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, new_session_builder,
-    parse_execution_providers_option,
-};
+use crate::provider::onnx_ep::{BuiltSession, SessionConfig, build_session, ep_ids};
 use crate::traits::{EmbedResult, ImageEmbeddingModel, ImageInput};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,15 +159,16 @@ struct OnnxImageEmbedder {
     pool: PoolKind,
     normalize: bool,
     output_name: Option<String>,
+    /// Reported by [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers).
+    execution_providers: Vec<String>,
 }
 
 impl OnnxImageEmbedder {
     async fn load(spec: &ModelAliasSpec) -> Result<Self> {
         let cfg = ImageEmbedConfig::resolve(spec)?;
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
+        session_cfg.check_execution_providers(&spec.alias)?;
         #[cfg(feature = "provider-onnx-dynamic")]
         preflight_ort_dylib(&spec.alias, "local/onnx")?;
 
@@ -192,7 +190,10 @@ impl OnnxImageEmbedder {
             "Loading ONNX image embedder"
         );
 
-        let session = build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: built_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
         Ok(Self {
             session: Mutex::new(session),
             alias: spec.alias.clone(),
@@ -203,6 +204,7 @@ impl OnnxImageEmbedder {
             pool: cfg.pool,
             normalize: cfg.normalize,
             output_name: cfg.output_name,
+            execution_providers: ep_ids(&built_eps),
         })
     }
 }
@@ -210,6 +212,10 @@ impl OnnxImageEmbedder {
 impl crate::traits::ModelInfo for OnnxImageEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    fn active_execution_providers(&self) -> Vec<String> {
+        self.execution_providers.clone()
     }
 }
 
@@ -371,40 +377,5 @@ async fn download_image_artifact(
         .map_err(|e| RuntimeError::OnnxDownloadFailure {
             alias: alias.to_string(),
             cause: format!("Could not download '{onnx_path}': {e}"),
-        })
-}
-
-fn build_session(
-    path: &Path,
-    spec: &ModelAliasSpec,
-    execution_providers: Option<&[OnnxExecutionProvider]>,
-) -> Result<Session> {
-    let builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: spec.alias.clone(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
-    let mut builder = builder
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-    let dispatch = build_execution_providers(execution_providers, &spec.alias, "local/onnx")?;
-    builder =
-        builder
-            .with_execution_providers(dispatch)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: spec.alias.clone(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-    builder
-        .commit_from_file(path)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
         })
 }

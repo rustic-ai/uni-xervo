@@ -29,6 +29,7 @@ nav:
       - ONNX Runtime: guides/onnx.md
       - GPU Setup: guides/gpu-setup.md
       - Config Validation: guides/config-validation.md
+      - Startup Readiness: guides/readiness.md
       - Multimodal Generation: guides/multimodal-generation.md
       - Structured NLP: guides/nlp.md
       - Multimodal Trait Surface: guides/multimodal-traits.md

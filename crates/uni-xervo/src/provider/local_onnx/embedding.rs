@@ -33,8 +33,7 @@ use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
 use crate::provider::onnx_ep::{
-    EpProbe, OnnxExecutionProvider, build_execution_providers, effective_ep_list, ep_ids,
-    new_session_builder, parse_execution_providers_option, replace_session,
+    BuiltSession, EpProbe, PROBE_TEXTS, ProbeOutput, SessionConfig, build_session, ep_ids,
     verify_execution_providers,
 };
 use crate::traits::{EmbedResult, EmbeddingModel};
@@ -209,14 +208,13 @@ impl OnnxEmbedder {
     async fn load(spec: &ModelAliasSpec) -> Result<Self> {
         let cfg = EmbedConfig::resolve(spec)?;
 
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
 
         // Validate the requested EP list FIRST (before preflight or I/O).
         // Misconfigurations (e.g. CUDA without `gpu-cuda`) fail fast with a
         // precise error rather than a generic dylib-missing one.
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        session_cfg.check_execution_providers(&spec.alias)?;
 
         // Preflight (load-dynamic only) sidesteps pykeio/ort#560 deadlock.
         #[cfg(feature = "provider-onnx-dynamic")]
@@ -255,7 +253,10 @@ impl OnnxEmbedder {
             }
         })?;
 
-        let session = build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: built_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
 
         // Inspect session inputs once. Encoder-style embedders (BGE,
         // MiniLM, MPNet, ModernBERT) declare only input_ids /
@@ -284,16 +285,12 @@ impl OnnxEmbedder {
         };
         let eps = verify_execution_providers(
             &model,
-            effective_ep_list(execution_providers.as_deref()),
+            &model.session,
+            built_eps,
+            session_cfg.accelerator_check,
             &spec.alias,
             &model_path,
-            |m| {
-                replace_session(
-                    &m.session,
-                    build_session(&model_path, spec, Some(&[OnnxExecutionProvider::Cpu]))?,
-                    &spec.alias,
-                )
-            },
+            || Ok(build_session(&model_path, &spec.alias, &session_cfg.cpu_only())?.session),
         )
         .await?;
         model.active_eps = ep_ids(&eps);
@@ -361,8 +358,8 @@ impl crate::traits::ModelInfo for OnnxEmbedder {
 
 #[async_trait]
 impl EpProbe for OnnxEmbedder {
-    async fn probe(&self) -> Result<()> {
-        self.embed(&["probe"]).await.map(drop)
+    async fn probe(&self) -> Result<ProbeOutput> {
+        Ok(self.embed(&PROBE_TEXTS).await?.vectors)
     }
 }
 
@@ -717,44 +714,6 @@ pub(super) async fn download_model_files(
             })?;
 
     Ok((model_file, tokenizer_file))
-}
-
-pub(super) fn build_session(
-    path: &Path,
-    spec: &ModelAliasSpec,
-    execution_providers: Option<&[OnnxExecutionProvider]>,
-) -> Result<Session> {
-    let builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: spec.alias.clone(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
-
-    let mut builder = builder
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-
-    let dispatch = build_execution_providers(execution_providers, &spec.alias, "local/onnx")?;
-    builder =
-        builder
-            .with_execution_providers(dispatch)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: spec.alias.clone(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-
-    builder
-        .commit_from_file(path)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })
 }
 
 /// Inspect a built session for the decoder-LM-only inputs an embedder

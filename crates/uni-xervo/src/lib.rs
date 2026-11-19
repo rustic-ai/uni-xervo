@@ -91,11 +91,13 @@ pub mod error;
     feature = "provider-whisper-cpp"
 ))]
 mod hf;
+pub mod inspect;
 mod options_validation;
 pub mod prelude;
 pub mod provider;
 pub mod reliability;
 pub mod runtime;
+pub mod schemas;
 pub mod score;
 pub mod traits;
 

@@ -38,10 +38,7 @@ use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
-use crate::provider::onnx_ep::{
-    OnnxExecutionProvider, build_execution_providers, new_session_builder,
-    parse_execution_providers_option,
-};
+use crate::provider::onnx_ep::{BuiltSession, SessionConfig, build_session, ep_ids};
 use crate::traits::{
     DepLink, NerEntity, NlpLabelMaps, NlpModel, NlpRequest, NlpResult, NlpSentence, NlpTasks,
     NlpToken, SpeechAct, SrlFrame, SrlRole,
@@ -158,17 +155,18 @@ struct OnnxNlpModel {
     alias: String,
     model_id: String,
     max_seq_len: usize,
+    /// Reported by [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers).
+    execution_providers: Vec<String>,
 }
 
 impl OnnxNlpModel {
     async fn load(spec: &ModelAliasSpec) -> Result<Self> {
         let cfg = NlpConfig::resolve(spec)?;
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
 
         // Validate EP list FIRST so misconfigurations fail with a precise error.
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        session_cfg.check_execution_providers(&spec.alias)?;
 
         #[cfg(feature = "provider-onnx-dynamic")]
         preflight_ort_dylib(&spec.alias, "local/onnx")?;
@@ -202,7 +200,10 @@ impl OnnxNlpModel {
         })?;
 
         let labels = parse_label_maps(&label_maps_path)?;
-        let session = build_session(&model_path, spec, execution_providers.as_deref())?;
+        let BuiltSession {
+            session,
+            execution_providers: built_eps,
+        } = build_session(&model_path, &spec.alias, &session_cfg)?;
 
         Ok(Self {
             session: Mutex::new(session),
@@ -211,6 +212,7 @@ impl OnnxNlpModel {
             alias: spec.alias.clone(),
             model_id: spec.model_id.clone(),
             max_seq_len: cfg.max_seq_len,
+            execution_providers: ep_ids(&built_eps),
         })
     }
 
@@ -523,6 +525,10 @@ struct CascadeOutputs {
 impl crate::traits::ModelInfo for OnnxNlpModel {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    fn active_execution_providers(&self) -> Vec<String> {
+        self.execution_providers.clone()
     }
 }
 
@@ -870,41 +876,6 @@ async fn download_nlp_artifacts(
                 cause: format!("Could not download label maps '{label_maps_path}': {e}"),
             })?;
     Ok((model_file, tokenizer_file, label_file))
-}
-
-fn build_session(
-    path: &Path,
-    spec: &ModelAliasSpec,
-    execution_providers: Option<&[OnnxExecutionProvider]>,
-) -> Result<Session> {
-    let builder = new_session_builder()?.map_err(|e| RuntimeError::OnnxLoadFailure {
-        alias: spec.alias.clone(),
-        path: path.to_path_buf(),
-        cause: e.to_string(),
-    })?;
-    let mut builder = builder
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })?;
-    let dispatch = build_execution_providers(execution_providers, &spec.alias, "local/onnx")?;
-    builder =
-        builder
-            .with_execution_providers(dispatch)
-            .map_err(|e| RuntimeError::OnnxLoadFailure {
-                alias: spec.alias.clone(),
-                path: path.to_path_buf(),
-                cause: e.to_string(),
-            })?;
-    builder
-        .commit_from_file(path)
-        .map_err(|e| RuntimeError::OnnxLoadFailure {
-            alias: spec.alias.clone(),
-            path: path.to_path_buf(),
-            cause: e.to_string(),
-        })
 }
 
 // ---------------------------------------------------------------------------

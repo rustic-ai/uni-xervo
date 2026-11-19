@@ -51,11 +51,12 @@ use crate::cache::resolve_cache_dir;
 use crate::error::{Result, RuntimeError};
 #[cfg(feature = "provider-onnx-dynamic")]
 use crate::provider::onnx_ep::preflight_ort_dylib;
-use crate::provider::onnx_ep::{build_execution_providers, parse_execution_providers_option};
+use crate::provider::onnx_ep::{SessionConfig, ep_ids};
 use crate::traits::{
     DepLink, NerEntity, NlpCalibration, NlpLabelMaps, NlpModel, NlpRequest, NlpResult, NlpSentence,
     NlpTasks, NlpToken, NlpWindow, SpeechAct, SrlFrame, SrlRole,
 };
+use ort::session::builder::GraphOptimizationLevel;
 
 use graphs::{GRAPH_NAMES, Graphs, variant_candidates, variant_chain};
 use meta::OnnxMeta;
@@ -325,11 +326,10 @@ impl KnivV7Model {
             }
         }
 
-        let execution_providers =
-            parse_execution_providers_option(spec.options.get("execution_providers"))?;
+        let session_cfg =
+            SessionConfig::from_options(&spec.options, GraphOptimizationLevel::Level3)?;
         // Validate the EP list before anything expensive happens.
-        let _ =
-            build_execution_providers(execution_providers.as_deref(), &spec.alias, "local/onnx")?;
+        session_cfg.check_execution_providers(&spec.alias)?;
         #[cfg(feature = "provider-onnx-dynamic")]
         preflight_ort_dylib(&spec.alias, "local/onnx")?;
 
@@ -378,7 +378,11 @@ impl KnivV7Model {
             )));
         }
 
-        let graphs = Graphs::new(artifacts.graphs, spec, execution_providers);
+        let graphs = Graphs::new(artifacts.graphs, &spec.alias, session_cfg);
+        // Build `plain` now: every request runs it, so this moves its cost to
+        // load rather than adding any, and the model can report the execution
+        // providers it runs on. The other graphs stay lazy.
+        graphs.build("plain")?;
         info!(
             alias = %spec.alias,
             model_id = %spec.model_id,
@@ -432,6 +436,12 @@ impl KnivV7Model {
 impl crate::traits::ModelInfo for KnivV7Model {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    /// The providers the `plain` graph, built at load, attached, narrowed by
+    /// any graph built since that attached fewer.
+    fn active_execution_providers(&self) -> Vec<String> {
+        ep_ids(&self.graphs.execution_providers())
     }
 }
 
