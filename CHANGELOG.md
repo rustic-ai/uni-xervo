@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Loading the same cached model from several processes no longer fails at
+  random.** `hf-hub` 1.0 rewrites `refs/main` on every cached download with a
+  truncate-then-write, so a process reading it at the wrong moment got an
+  empty commit hash and a path such as `snapshots/tokenizer.json` that does
+  not exist. That call also wrote the empty ref back, and later loads kept
+  returning the bad path. It showed up when several processes share one cache,
+  as `cargo nextest` runs do. Downloads now hold a per-repository lock file
+  under `<cache>/.locks/`, a ref holding no commit hash is removed before
+  downloading so the revision is resolved afresh, and a path outside
+  `snapshots/<commit>/` is retried once and then reported as an error. A
+  cache already left in that state recovers on its next load. (#67)
+
 - **OCR keeps the spaces between words.** PaddleOCR recognizers trained with
   `use_space_char=True` output blank + dictionary + space classes, with the
   space past the end of the dictionary file. The decoder found no dictionary
