@@ -438,8 +438,8 @@ impl crate::traits::ModelInfo for KnivV7Model {
         &self.model_id
     }
 
-    /// The providers the `plain` graph, built at load, runs on, narrowed by
-    /// any graph built since on fewer.
+    /// The providers the `plain` graph, built at load, was built with (every
+    /// graph shares one configuration; see [`Graphs::execution_providers`]).
     fn active_execution_providers(&self) -> Vec<String> {
         ep_ids(&self.graphs.execution_providers())
     }

@@ -278,9 +278,11 @@ impl Graphs {
         self.session(graph).map(|_| ())
     }
 
-    /// The execution providers every graph built so far runs on: one built on
-    /// fewer providers than the rest narrows the list. Empty before any
-    /// session is built.
+    /// The execution providers the graphs built so far share. Every graph is
+    /// built from one [`SessionConfig`], so today this is that config's list;
+    /// keeping the common subset is for when a session can report the
+    /// providers that actually attached (rustic-ai/uni-xervo#64), which may
+    /// differ per graph. Empty before any session is built.
     pub fn execution_providers(&self) -> Vec<OnnxExecutionProvider> {
         self.execution_providers
             .lock()

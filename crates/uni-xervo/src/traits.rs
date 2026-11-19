@@ -112,11 +112,16 @@ pub trait ModelInfo: Send + Sync {
     /// loaded; it is empty for remote and non-ONNX models, and for
     /// `local/onnx` document extraction, which runs no ORT session yet.
     ///
-    /// When the load-time probe falls back to CPU, this is `["cpu"]`. A model
-    /// built from several sessions reports the providers all of them use:
-    /// OCR with a detector lists only those both stages run on, and a kniv v7
-    /// model starts from its `plain` graph and narrows if a graph built later
-    /// runs on fewer.
+    /// Dense embedding, reranking (cross-encoder and generative) and the
+    /// sparse, multi-vector and hybrid embedders run a short inference at
+    /// load; if it fails on an accelerator and the list includes `cpu`, the
+    /// model is rebuilt on CPU and this reads `["cpu"]`. The other `local/onnx`
+    /// models (NLP, OCR, image embedding, raw) run no such probe, so an
+    /// accelerator that fails at inference is not reflected here.
+    ///
+    /// A model built from several sessions (OCR with a detector, kniv v7's
+    /// graphs) builds them all from one configuration, so they share one
+    /// list today.
     ///
     /// This is the *requested* list minus any entry whose backing feature
     /// isn't compiled into this binary — so a list that reads `["cpu"]`

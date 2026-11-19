@@ -3,9 +3,9 @@
 //!
 //! Runs offline: each alias loads tiny generated graphs from a cache
 //! pre-filled at a pinned commit, which the Hugging Face client reads without
-//! touching the network. On a CPU-only build every model must report
-//! `["cpu"]`; before #65 the NLP, OCR, image, sparse, multi-vector and hybrid
-//! models reported nothing.
+//! touching the network. Every model must report the build's default list
+//! (`["cpu"]` without a GPU feature); before #65 the NLP, OCR, image, sparse,
+//! multi-vector and hybrid models reported nothing.
 
 #![cfg(feature = "provider-onnx")]
 
@@ -80,7 +80,14 @@ async fn runtime(
         .unwrap()
 }
 
-const CPU: [&str; 1] = ["cpu"];
+/// What a model reports with no `execution_providers` option: the build's
+/// default list, which leads with the accelerator a GPU feature enables.
+#[cfg(feature = "gpu-cuda")]
+const DEFAULT_EPS: [&str; 2] = ["cuda", "cpu"];
+#[cfg(all(feature = "gpu-metal", not(feature = "gpu-cuda")))]
+const DEFAULT_EPS: [&str; 2] = ["coreml", "cpu"];
+#[cfg(not(any(feature = "gpu-cuda", feature = "gpu-metal")))]
+const DEFAULT_EPS: [&str; 1] = ["cpu"];
 
 #[tokio::test]
 async fn ocr_reports_cpu_with_and_without_a_detector() {
@@ -95,14 +102,22 @@ async fn ocr_reports_cpu_with_and_without_a_detector() {
     let base = json!({ "onnx_path": "rec.onnx", "char_dict_path": "dict.txt" });
     let rt = runtime(ModelTask::Ocr, "fixture/ocr", &cache, base.clone()).await;
     let ocr = rt.ocr_model("test/model").await.unwrap();
-    assert_eq!(ocr.active_execution_providers(), CPU, "recognizer only");
+    assert_eq!(
+        ocr.active_execution_providers(),
+        DEFAULT_EPS,
+        "recognizer only"
+    );
 
     // The detector is only built here, never run, so any graph will do.
     let mut with_det = base;
     with_det["det_onnx_path"] = json!("det.onnx");
     let rt = runtime(ModelTask::Ocr, "fixture/ocr", &cache, with_det).await;
     let ocr = rt.ocr_model("test/model").await.unwrap();
-    assert_eq!(ocr.active_execution_providers(), CPU, "with a detector");
+    assert_eq!(
+        ocr.active_execution_providers(),
+        DEFAULT_EPS,
+        "with a detector"
+    );
 }
 
 #[tokio::test]
@@ -119,7 +134,7 @@ async fn image_embedder_reports_cpu() {
     )
     .await;
     let model = rt.image_embedder("test/model").await.unwrap();
-    assert_eq!(model.active_execution_providers(), CPU);
+    assert_eq!(model.active_execution_providers(), DEFAULT_EPS);
 }
 
 #[tokio::test]
@@ -139,7 +154,7 @@ async fn sparse_embedder_reports_cpu() {
     )
     .await;
     let model = rt.sparse_embedder("test/model").await.unwrap();
-    assert_eq!(model.active_execution_providers(), CPU);
+    assert_eq!(model.active_execution_providers(), DEFAULT_EPS);
 }
 
 #[tokio::test]
@@ -159,7 +174,7 @@ async fn multi_vector_embedder_reports_cpu() {
     )
     .await;
     let model = rt.multi_vector_embedder("test/model").await.unwrap();
-    assert_eq!(model.active_execution_providers(), CPU);
+    assert_eq!(model.active_execution_providers(), DEFAULT_EPS);
 }
 
 #[tokio::test]
@@ -176,12 +191,12 @@ async fn hybrid_embedder_and_its_views_report_cpu() {
     );
     let rt = runtime(ModelTask::EmbedHybrid, "BGEM3Hybrid", &cache, json!({})).await;
     let hybrid = rt.hybrid_embedder("test/model").await.unwrap();
-    assert_eq!(hybrid.active_execution_providers(), CPU);
+    assert_eq!(hybrid.active_execution_providers(), DEFAULT_EPS);
     // The single-head views of a hybrid alias forward the same list.
     let dense = rt.embedding("test/model").await.unwrap();
-    assert_eq!(dense.active_execution_providers(), CPU);
+    assert_eq!(dense.active_execution_providers(), DEFAULT_EPS);
     let sparse = rt.sparse_embedder("test/model").await.unwrap();
-    assert_eq!(sparse.active_execution_providers(), CPU);
+    assert_eq!(sparse.active_execution_providers(), DEFAULT_EPS);
 }
 
 #[tokio::test]
@@ -207,7 +222,7 @@ async fn nlp_v1_reports_cpu() {
     )
     .await;
     let model = rt.nlp_model("test/model").await.unwrap();
-    assert_eq!(model.active_execution_providers(), CPU);
+    assert_eq!(model.active_execution_providers(), DEFAULT_EPS);
 }
 
 #[tokio::test]
@@ -237,5 +252,5 @@ async fn raw_model_reports_cpu() {
         .await
         .unwrap();
     let model = rt.raw_tensor_model("test/model").await.unwrap();
-    assert_eq!(model.active_execution_providers(), CPU);
+    assert_eq!(model.active_execution_providers(), DEFAULT_EPS);
 }
