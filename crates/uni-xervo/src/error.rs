@@ -13,7 +13,11 @@ pub type Result<T> = std::result::Result<T, RuntimeError>;
 /// Variants are intentionally coarse-grained so that callers can match on error
 /// *category* (e.g. retryable vs permanent) rather than on provider-specific
 /// details.
+///
+/// `#[non_exhaustive]`: new failure categories are added without a breaking
+/// release, so a downstream `match` needs a wildcard arm.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RuntimeError {
     /// Invalid or missing configuration (bad alias format, unknown option, etc.).
     #[error("Configuration error: {0}")]

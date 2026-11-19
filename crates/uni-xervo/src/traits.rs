@@ -47,7 +47,10 @@ pub struct ProviderCapabilities {
 }
 
 /// Health status reported by a provider.
+///
+/// `#[non_exhaustive]` so a finer-grained status can be added later.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ProviderHealth {
     /// The provider is fully operational.
     Healthy,

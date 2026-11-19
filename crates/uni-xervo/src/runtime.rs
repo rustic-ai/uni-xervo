@@ -1057,10 +1057,11 @@ impl ModelRuntimeBuilder {
                 )));
             }
             validate_provider_options(&spec.provider_id, spec.task, &spec.options)?;
-            if catalog_map.insert(spec.alias.clone(), spec).is_some() {
-                return Err(RuntimeError::Config(
-                    "Duplicate alias in catalog".to_string(),
-                ));
+            let alias = spec.alias.clone();
+            if catalog_map.insert(alias.clone(), spec).is_some() {
+                return Err(RuntimeError::Config(format!(
+                    "Duplicate alias '{alias}' in catalog"
+                )));
             }
         }
 

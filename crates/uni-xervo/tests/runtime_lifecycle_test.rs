@@ -47,7 +47,7 @@ async fn test_builder_duplicate_alias_rejection() {
 
     assert!(runtime.is_err());
     if let Err(err) = runtime {
-        assert!(err.to_string().contains("Duplicate alias"));
+        assert!(err.to_string().contains("Duplicate alias 'embed/test'"), "{err}");
     }
 }
 

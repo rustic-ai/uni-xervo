@@ -21,10 +21,13 @@ fail when the runtime is built. Each of these was a misconfiguration that
   used to decode silently to the wrong text, now fails at load;
 - a model `revision` that is a path (`../x`).
 
-Error messages for an unsupported task and for a key that belongs to another
-task have new wording. `graph_optimization_level` and the thread-count options
+`RuntimeError`, `ProviderHealth` and `WarmupPolicy` are now
+`#[non_exhaustive]`, so a `match` on them outside this crate needs a wildcard
+arm. Error messages for an unsupported task, for a key that belongs to another
+task, and for a duplicate alias in a catalog (which now names the alias) have
+new wording. `graph_optimization_level` and the thread-count options
 now take effect for every `local/onnx` task, so an alias that set them and was
-silently ignored will now run with them. No public signature changed.
+silently ignored will now run with them. No function signature changed.
 
 ### Added
 

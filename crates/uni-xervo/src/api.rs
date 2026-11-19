@@ -46,6 +46,7 @@ pub enum ModelTask {
 /// Controls when a model or provider is initialized during runtime startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WarmupPolicy {
     /// Load immediately during [`ModelRuntime::builder().build()`](crate::runtime::ModelRuntimeBuilder::build).
     /// Startup blocks until the load completes (or fails).
