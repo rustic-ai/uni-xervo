@@ -18,6 +18,7 @@ add a platform, run `scripts/acceptance.sh <target>` there and copy its
 | macOS arm64 (Apple M2 Max) | `coreml` | 2026-11-19 | `0313805` + the fixes below | 14 | 0 | 1 (whisper.cpp: no cmake) |
 | Linux x86_64 (Intel Core Ultra 9 185H) | `cpu` | 2026-11-19 | `c371778` + the fixes below | 14 | 0 | 0 |
 | Linux x86_64 + NVIDIA RTX 4070 Laptop (8 GB) | `cuda` | 2026-11-19 | `c371778` + the fixes below | 15 | 0 | 0 |
+| Windows Server 2022 x86_64 (Azure D16s_v5, Xeon Platinum 8370C) | `cpu` | 2026-11-19 | `b793542` | 14 | 0 | 0 |
 
 At `0313805` the Mac runs failed the kniv v7 UltraBERT goldens on both
 targets and `onnx-models` on `coreml`; the suites marked † were rerun after
@@ -84,6 +85,37 @@ are allowed (see [Known issues](#macos-arm64)).
 RSS here. Times exclude the build. On `cpu`, peak RSS is for the whole test binary,
 whose tests run in parallel, so it is an upper bound on any one model; on
 `coreml` the tests run one at a time, which is why its times are longer.
+
+## Windows x86_64, `cpu`
+
+Windows Server 2022 Datacenter Azure Edition on an Azure `Standard_D16s_v5`
+(16 vCPU, 64 GB), with the MSVC 2022 Build Tools, Rust 1.100.0, cmake 4.5.1
+and LLVM 23.1.6 (libclang for whisper.cpp's bindings). `scripts/acceptance.sh`
+ran under Git for Windows' bash 5.3.15, which has no `/usr/bin/time`, so peak
+RSS is not measured. `ORT_DYLIB_PATH` named the ONNX Runtime 1.31.1 wheel's
+`onnxruntime.dll`.
+
+| Suite | Result | Tests passed / failed / skipped | Time |
+|---|---|---|---|
+| `onnx-models` | pass | 11 / 0 / 0 | 132 s |
+| `onnx-hf-download` | pass | 2 / 0 / 0 | 42 s |
+| `rerank` | pass | 2 / 0 / 0 | 33 s |
+| `sparse` | pass | 4 / 0 / 0 | 42 s |
+| `multi-vector` | pass | 6 / 0 / 0 | 49 s |
+| `hybrid-bge-m3` | pass | 3 / 0 / 0 | 48 s |
+| `ocr` | pass | 3 / 0 / 0 | 35 s |
+| `pdf-to-ocr` | pass | 1 / 0 / 0 | 32 s |
+| `nlp-kniv-v7` (UltraBERT linux-x86_64 goldens, tolerant: 5 of 834 differ, 0.60%) | pass | 4 / 0 / 0 | 80 s |
+| `nlp-kniv-v7-deberta` (DeBERTa, tolerant: 3 of 745 differ, 0.40%) | pass | 4 / 0 / 0 | 116 s |
+| `nlp-kniv-v7-exact` (tolerant off linux-x86_64: 6 of 834 differ, 0.72%) | pass | 1 / 0 / 0 | 15 s |
+| `ep-reporting` | pass | 7 / 0 / 0 | 30 s |
+| `ep-skip-dynamic` (ONNX Runtime 1.31.1 wheel's `onnxruntime.dll`) | pass | 2 / 0 / 0 | 1 s |
+| `whisper` | pass | 1 / 0 / 0 | 7 s |
+
+Times include part of each suite's compile on a cold cache, so they are
+longer than the other platforms'. The per-commit gate (`scripts/test.sh`)
+passed 971 tests after the two fixes under
+[Windows](#windows-x86_64) in Known issues; the publish dry-run passed.
 
 ## Linux x86_64, `cpu`
 
@@ -213,6 +245,22 @@ the kniv v7 golden suites on a Mac:
   mode on the bundled build and in exact mode on the wheel (UltraBERT 844,
   DeBERTa 810 decisions; fact margins within 2.7e-3).
 
+### Windows x86_64
+
+Found by the first Windows run, at `b793542`. The acceptance matrix passed;
+the per-commit gate failed two unit tests, both fixed:
+
+- **A rooted path without a drive letter was read as a Hugging Face repo.**
+  On Windows `/tmp/model.onnx` is not absolute (it has no prefix), so the
+  ONNX provider took it for a repo id. A rooted path is now always local.
+- **The runtime verify test for an unreachable endpoint reported a timeout.**
+  Windows takes about 2 s to refuse a connection to a closed local port (it
+  retries the SYN), longer than the test's 1 s load timeout. The test now
+  allows 10 s; the classification itself was right.
+
+The kniv v7 goldens stay within budget on Windows x86_64 (0.60% and 0.40%),
+so it needs no golden set of its own.
+
 ### Linux / CUDA (`gpu-cuda`)
 
 Each of these let a `cuda` run pass while models ran on CPU, before the
@@ -267,6 +315,8 @@ alias's `revision` to one of these to reproduce a run.
 
 ## Not covered
 
+- **DirectML on Windows:** the matrix has no `directml` target, and the
+  Azure subscription used had no GPU quota.
 - **Exact kniv v7 goldens beyond linux-x86_64 and darwin-arm64:** only those
   two platforms have golden sets; elsewhere the comparison is tolerant
   against the linux-x86_64 set (Linux on arm64 may need its own).

@@ -202,6 +202,10 @@ session costs one extra CPU session build and one forward pass. Set
 
 ### Fixed
 
+- **A rooted model path without a drive letter is read as local on
+  Windows.** `local/onnx` treated `/models/x.onnx` as a Hugging Face repo id
+  there, because Windows does not count a path without a drive as absolute.
+
 - **`active_execution_providers()` reports the providers a session
   attached, not the ones requested.** A provider that was compiled in but
   failed to register (its library or driver missing) was still reported, so
