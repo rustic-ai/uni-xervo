@@ -522,11 +522,12 @@ mod runtime {
     async fn an_unreachable_endpoint_fails_fast_naming_the_alias() {
         set_key("UNI_XERVO_RT_DOWN");
         let url = unreachable_url().await;
-        let rt = runtime_with(
-            &url,
-            vec![anthropic_spec("chat/down", "claude-x", "UNI_XERVO_RT_DOWN")],
-        )
-        .await;
+        // Windows takes about 2 s to refuse a connection to a closed local
+        // port (it retries the SYN), so a 1 s load timeout would end the check
+        // first and report a timeout.
+        let mut spec = anthropic_spec("chat/down", "claude-x", "UNI_XERVO_RT_DOWN");
+        spec.load_timeout = Some(10);
+        let rt = runtime_with(&url, vec![spec]).await;
         let err = rt
             .verify(&["chat/down"])
             .await

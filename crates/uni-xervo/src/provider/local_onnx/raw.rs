@@ -296,7 +296,10 @@ async fn resolve_model_path(
 
 fn classify_model_source(base_dir: Option<&Path>, model_id: &str) -> ModelSource {
     let path = PathBuf::from(model_id);
-    if path.is_absolute() {
+    // A rooted path is local even where it is not absolute: on Windows
+    // `/models/x.onnx` (no drive letter) has a root but no prefix. No Hugging
+    // Face repo id starts with a separator.
+    if path.is_absolute() || path.has_root() {
         return ModelSource::LocalPath(path);
     }
 
