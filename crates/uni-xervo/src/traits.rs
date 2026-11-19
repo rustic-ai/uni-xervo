@@ -107,30 +107,31 @@ pub trait ModelInfo: Send + Sync {
     /// The underlying model identifier (e.g. a HuggingFace repo ID or API model name).
     fn model_id(&self) -> &str;
 
-    /// Names of the ONNX Runtime execution providers this session was built
-    /// with, in priority order. Every `local/onnx` model reports it once
+    /// Names of the ONNX Runtime execution providers this model's session
+    /// attached, in priority order. Every `local/onnx` model reports it once
     /// loaded; it is empty for remote and non-ONNX models, and for
     /// `local/onnx` document extraction, which runs no ORT session yet.
     ///
-    /// Dense embedding, reranking (cross-encoder and generative) and the
-    /// sparse, multi-vector and hybrid embedders run a short inference at
-    /// load; if it fails on an accelerator and the list includes `cpu`, the
-    /// model is rebuilt on CPU and this reads `["cpu"]`. The other `local/onnx`
-    /// models (NLP, OCR, image embedding, raw) run no such probe, so an
-    /// accelerator that fails at inference is not reflected here.
+    /// A provider is listed only if it was requested (or in the build's
+    /// default list), compiled into this binary, and registered with the
+    /// session. So `["cuda", "cpu"]` reads `["cpu"]` when the build lacks
+    /// `gpu-cuda`, when the CUDA library or driver fails to load, or when the
+    /// session fails to build on CUDA (no usable device) and is rebuilt on
+    /// CPU. Each of those logs a warning.
     ///
-    /// A model built from several sessions (OCR with a detector, kniv v7's
-    /// graphs) builds them all from one configuration, so they share one
-    /// list today.
+    /// Attached is not the same as used for every node: ORT still places
+    /// operators an accelerator cannot run on CPU, and no API exposes that
+    /// split. Dense embedding, reranking (cross-encoder and generative) and
+    /// the sparse, multi-vector and hybrid embedders also run a short
+    /// inference at load, and fall back to `["cpu"]` if it fails on the
+    /// accelerator; the other `local/onnx` models (NLP, OCR, image embedding,
+    /// raw) do not, so an accelerator that attaches but fails at inference is
+    /// not reflected for them.
     ///
-    /// This is the *requested* list minus any entry whose backing feature
-    /// isn't compiled into this binary — so a list that reads `["cpu"]`
-    /// despite `["cuda", "cpu"]` having been asked for tells you the build
-    /// lacks `gpu-cuda`.
-    ///
-    /// It is still not "attached": an EP listed here may yet fail to register
-    /// at session-build time (no device, no driver) and be skipped by ORT.
-    /// The ORT 2.0 Rust binding does not expose the finally-attached set.
+    /// A model built from several sessions reports the providers all of them
+    /// attached: OCR with a detector lists only those both stages have, and a
+    /// kniv v7 model starts from its `plain` graph and narrows if a graph
+    /// built later attached fewer.
     fn active_execution_providers(&self) -> Vec<String> {
         Vec::new()
     }

@@ -366,10 +366,8 @@ impl OnnxOcrModel {
                 )
                 .await?;
                 let det = build_session(&det_path, &spec.alias, &session_cfg)?;
-                // Both stages share one config, so their lists match today.
-                // Keeping only the common providers is for when a session can
-                // report what actually attached (#64): a provider only one
-                // stage got does not make the alias run on it.
+                // Report what the whole pipeline runs on: a provider only one
+                // stage attached does not make the alias run on it.
                 execution_providers =
                     common_execution_providers(&execution_providers, &det.execution_providers);
                 Some(Detector {
@@ -409,8 +407,8 @@ impl crate::traits::ModelInfo for OnnxOcrModel {
         &self.model_id
     }
 
-    /// The providers the recognizer was built with; with a detector, those
-    /// both stages share, in the recognizer's order.
+    /// The providers the recognizer attached; with a detector, only those
+    /// both stages attached, in the recognizer's order.
     fn active_execution_providers(&self) -> Vec<String> {
         self.execution_providers.clone()
     }

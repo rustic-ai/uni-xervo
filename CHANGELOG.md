@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`active_execution_providers()` reports the providers a session
+  attached, not the ones requested.** A provider that was compiled in but
+  failed to register (its library or driver missing) was still reported, so
+  a `gpu-cuda` build on a host without a usable GPU said `["cuda", "cpu"]`
+  while running on CPU. Sessions now register providers one at a time and
+  report only those that registered, logging each one skipped. A session
+  that registers an accelerator but then fails to build on it, with `cpu` in
+  the list, is rebuilt on CPU and reports `["cpu"]`, with a warning; before,
+  that was a load error. A CPU-free list whose accelerator fails is still a
+  load error. OCR with a detector and kniv v7's lazily built graphs report
+  only the providers every session attached. (#64)
+
 ## [0.20.0] - 2026-11-19
 
 ### Upgrading from 0.19

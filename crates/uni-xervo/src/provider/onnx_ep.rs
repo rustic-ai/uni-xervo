@@ -307,9 +307,10 @@ impl SessionConfig {
 /// A built session and the execution providers it was built with.
 pub(crate) struct BuiltSession {
     pub(crate) session: ort::session::Session,
-    /// What [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
-    /// reports for a model running on this session, until a load-time probe
-    /// falls back to CPU.
+    /// The providers that registered with the session, in priority order
+    /// (`[cpu]` after a CPU rebuild). What
+    /// [`ModelInfo::active_execution_providers`](crate::traits::ModelInfo::active_execution_providers)
+    /// reports, until a load-time probe falls back to CPU.
     pub(crate) execution_providers: Vec<OnnxExecutionProvider>,
 }
 
@@ -317,39 +318,123 @@ pub(crate) struct BuiltSession {
 ///
 /// The one place a `local/onnx` session is built, so every task honours the
 /// same options and reports the execution providers it ended up with.
+///
+/// Providers are registered one at a time and only those that registered are
+/// reported (an accelerator whose library or device is missing is skipped,
+/// with a warning, unless it is the strict last entry of a CPU-free list).
+/// If the session then fails to commit with an accelerator attached and the
+/// list has a `cpu` entry, it is built again on CPU alone and reports
+/// `["cpu"]`: some accelerators register fine and only fail once the model is
+/// placed on them.
 pub(crate) fn build_session(
     path: &std::path::Path,
     alias: &str,
     cfg: &SessionConfig,
 ) -> Result<BuiltSession> {
+    let plan =
+        planned_execution_providers(cfg.execution_providers.as_deref(), alias, "local/onnx")?;
+    match commit_session(path, alias, cfg, &plan) {
+        Ok(built) => Ok(built),
+        Err(CommitError::AfterRegistration { error, attached })
+            if retry_commit_on_cpu(&plan, &attached) =>
+        {
+            tracing::warn!(
+                alias = %alias,
+                attached = %join_eps(&attached),
+                error = %error,
+                "ONNX session failed to build on the requested execution providers; \
+                 falling back to CPU"
+            );
+            commit_session(path, alias, cfg, &[(OnnxExecutionProvider::Cpu, false)])
+                .map_err(CommitError::into_error)
+        }
+        Err(e) => Err(e.into_error()),
+    }
+}
+
+/// A failed [`commit_session`], telling apart a failure once providers had
+/// registered, which a CPU retry may fix.
+enum CommitError {
+    Before(RuntimeError),
+    AfterRegistration {
+        error: RuntimeError,
+        attached: Vec<OnnxExecutionProvider>,
+    },
+}
+
+impl CommitError {
+    fn into_error(self) -> RuntimeError {
+        match self {
+            Self::Before(e) | Self::AfterRegistration { error: e, .. } => e,
+        }
+    }
+}
+
+fn commit_session(
+    path: &std::path::Path,
+    alias: &str,
+    cfg: &SessionConfig,
+    plan: &[(OnnxExecutionProvider, bool)],
+) -> std::result::Result<BuiltSession, CommitError> {
     let load_err = |e: &dyn std::fmt::Display| RuntimeError::OnnxLoadFailure {
         alias: alias.to_string(),
         path: path.to_path_buf(),
         cause: e.to_string(),
     };
-    let mut builder = new_session_builder()?.map_err(|e| load_err(&e))?;
+    let before = |e: RuntimeError| CommitError::Before(e);
+    let mut builder = new_session_builder()
+        .map_err(before)?
+        .map_err(|e| before(load_err(&e)))?;
     builder = builder
         .with_optimization_level(cfg.optimization_level)
-        .map_err(|e| load_err(&e))?;
+        .map_err(|e| before(load_err(&e)))?;
     if let Some(n) = cfg.intra_threads {
-        builder = builder.with_intra_threads(n).map_err(|e| load_err(&e))?;
+        builder = builder
+            .with_intra_threads(n)
+            .map_err(|e| before(load_err(&e)))?;
     }
     if let Some(n) = cfg.inter_threads {
-        builder = builder.with_inter_threads(n).map_err(|e| load_err(&e))?;
+        builder = builder
+            .with_inter_threads(n)
+            .map_err(|e| before(load_err(&e)))?;
     }
-    let dispatch =
-        build_execution_providers(cfg.execution_providers.as_deref(), alias, "local/onnx")?;
-    builder = builder
-        .with_execution_providers(dispatch)
-        .map_err(|e| load_err(&e))?;
+    let mut dispatch_err = None;
+    let registration = register_execution_providers(plan, alias, path, |provider, strict| {
+        let dispatch = match execution_provider_dispatch(provider, strict, alias, "local/onnx") {
+            Ok(d) => d,
+            Err(e) => {
+                // Unreachable after planning: the plan holds only compiled-in
+                // providers. Kept as an error rather than a panic.
+                let message = e.to_string();
+                dispatch_err = Some(e);
+                return Err(message);
+            }
+        };
+        dispatch.register(&mut builder).map_err(|e| e.to_string())
+    })
+    .map_err(before)?;
+    if let Some(e) = dispatch_err {
+        return Err(before(e));
+    }
+    let mut attached = registration.attached;
+    if attached.is_empty() {
+        // Nothing registered (every entry skipped): ORT runs the graph on its
+        // built-in CPU provider.
+        attached.push(OnnxExecutionProvider::Cpu);
+    }
     // Keep downloads of the same repo from recreating the snapshot links
     // ORT is resolving (the graph's external-data sidecar among them).
     let _read_lock = crate::hf::lock_cached_repo_for_reading(path);
-    let session = builder.commit_from_file(path).map_err(|e| load_err(&e))?;
-    Ok(BuiltSession {
-        session,
-        execution_providers: cfg.effective_execution_providers(),
-    })
+    match builder.commit_from_file(path) {
+        Ok(session) => Ok(BuiltSession {
+            session,
+            execution_providers: attached,
+        }),
+        Err(e) => Err(CommitError::AfterRegistration {
+            error: load_err(&e),
+            attached,
+        }),
+    }
 }
 
 /// The providers in `a` that are also in `b`, in `a`'s order: what a model
@@ -570,6 +655,24 @@ pub(crate) fn build_execution_providers(
     alias: &str,
     provider_label: &str,
 ) -> Result<Vec<ExecutionProviderDispatch>> {
+    planned_execution_providers(configured, alias, provider_label)?
+        .into_iter()
+        .map(|(provider, strict)| {
+            execution_provider_dispatch(provider, strict, alias, provider_label)
+        })
+        .collect()
+}
+
+/// The providers a session registers, in order, each paired with whether its
+/// registration failure is an error (`strict`) rather than a skip.
+///
+/// The filtering and strictness rules of [`build_execution_providers`]
+/// (see this module's header), without building the dispatches.
+fn planned_execution_providers(
+    configured: Option<&[OnnxExecutionProvider]>,
+    alias: &str,
+    provider_label: &str,
+) -> Result<Vec<(OnnxExecutionProvider, bool)>> {
     let requested = resolve_ep_list(configured);
     let (kept, dropped) = partition_available(&requested);
 
@@ -599,13 +702,74 @@ pub(crate) fn build_execution_providers(
 
     let strict_at = strict_index(&kept, configured.is_some());
 
-    kept.into_iter()
+    Ok(kept
+        .into_iter()
         .enumerate()
-        .map(|(index, provider)| {
-            let strict = strict_at == Some(index);
-            execution_provider_dispatch(provider, strict, alias, provider_label)
-        })
-        .collect()
+        .map(|(index, provider)| (provider, strict_at == Some(index)))
+        .collect())
+}
+
+/// Which planned providers registered with a session builder.
+#[derive(Debug, Default, PartialEq)]
+struct Registration {
+    /// Registered, in priority order.
+    attached: Vec<OnnxExecutionProvider>,
+    /// Failed to register and were skipped, with ORT's reason.
+    skipped: Vec<(OnnxExecutionProvider, String)>,
+}
+
+/// Register each planned provider in order through `register`, recording
+/// which attached.
+///
+/// ORT's own `with_execution_providers` does the same loop but only logs a
+/// skipped provider, so the session could not say what it runs on. Doing it
+/// here keeps the module's strictness rules: a strict entry that fails is a
+/// load error, any other is skipped with a warning.
+fn register_execution_providers(
+    plan: &[(OnnxExecutionProvider, bool)],
+    alias: &str,
+    path: &std::path::Path,
+    mut register: impl FnMut(OnnxExecutionProvider, bool) -> std::result::Result<(), String>,
+) -> Result<Registration> {
+    let mut registration = Registration::default();
+    for &(provider, strict) in plan {
+        match register(provider, strict) {
+            Ok(()) => registration.attached.push(provider),
+            Err(cause) if strict => {
+                return Err(RuntimeError::OnnxLoadFailure {
+                    alias: alias.to_string(),
+                    path: path.to_path_buf(),
+                    cause: format!(
+                        "execution provider \"{}\" failed to register and the list has no \
+                         \"cpu\" entry to fall back to: {cause}",
+                        provider.as_str()
+                    ),
+                });
+            }
+            Err(cause) => {
+                tracing::warn!(
+                    alias = %alias,
+                    provider = provider.as_str(),
+                    error = %cause,
+                    "ONNX execution provider failed to register; continuing without it"
+                );
+                registration.skipped.push((provider, cause));
+            }
+        }
+    }
+    Ok(registration)
+}
+
+/// Whether a session whose commit failed should be built again on CPU alone:
+/// an accelerator attached (so it may be what failed, e.g. CUDA with no usable
+/// device), the plan has a `cpu` fallback, and the attempt was not already
+/// CPU-only.
+fn retry_commit_on_cpu(
+    plan: &[(OnnxExecutionProvider, bool)],
+    attached: &[OnnxExecutionProvider],
+) -> bool {
+    plan.iter().any(|(ep, _)| *ep == OnnxExecutionProvider::Cpu)
+        && attached.iter().any(|ep| *ep != OnnxExecutionProvider::Cpu)
 }
 
 /// Comma-separated EP ids, for log fields and error messages.
@@ -995,6 +1159,97 @@ mod tests {
                 [Cuda, Cpu]
             );
             assert!(common_execution_providers(&[Cuda], &[Cpu]).is_empty());
+        }
+    }
+
+    mod registration {
+        use super::*;
+        use OnnxExecutionProvider::{CoreMl, Cpu, Cuda};
+        use std::path::Path;
+
+        fn register(
+            plan: &[(OnnxExecutionProvider, bool)],
+            failing: &[OnnxExecutionProvider],
+        ) -> Result<Registration> {
+            register_execution_providers(plan, "a", Path::new("m.onnx"), |ep, _| {
+                if failing.contains(&ep) {
+                    Err(format!("{} library not found", ep.as_str()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        #[test]
+        fn all_register() {
+            let r = register(&[(Cuda, false), (Cpu, false)], &[]).unwrap();
+            assert_eq!(r.attached, [Cuda, Cpu]);
+            assert!(r.skipped.is_empty());
+        }
+
+        /// The #64 case: CUDA compiled in but unusable reports CPU only.
+        #[test]
+        fn a_skipped_accelerator_is_not_reported() {
+            let r = register(&[(Cuda, false), (Cpu, false)], &[Cuda]).unwrap();
+            assert_eq!(r.attached, [Cpu]);
+            assert_eq!(r.skipped.len(), 1);
+            assert_eq!(r.skipped[0].0, Cuda);
+            assert!(r.skipped[0].1.contains("library not found"));
+        }
+
+        #[test]
+        fn order_is_kept_around_a_skip() {
+            let r = register(&[(Cuda, false), (CoreMl, false), (Cpu, false)], &[Cuda]).unwrap();
+            assert_eq!(r.attached, [CoreMl, Cpu]);
+        }
+
+        #[test]
+        fn a_strict_entry_that_fails_is_a_load_error() {
+            let err = register(&[(CoreMl, false), (Cuda, true)], &[Cuda]).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("\"cuda\" failed to register"), "{msg}");
+            assert!(msg.contains("library not found"), "{msg}");
+        }
+
+        #[test]
+        fn strictness_is_passed_to_the_registrar() {
+            let mut seen = Vec::new();
+            register_execution_providers(
+                &[(Cuda, false), (Cpu, true)],
+                "a",
+                Path::new("m.onnx"),
+                |ep, strict| {
+                    seen.push((ep, strict));
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(seen, [(Cuda, false), (Cpu, true)]);
+        }
+
+        #[test]
+        fn a_failed_commit_retries_on_cpu_only_with_a_cpu_fallback() {
+            let with_cpu = [(Cuda, false), (Cpu, false)];
+            assert!(retry_commit_on_cpu(&with_cpu, &[Cuda, Cpu]));
+            // Already on CPU alone: retrying would fail the same way.
+            assert!(!retry_commit_on_cpu(&with_cpu, &[Cpu]));
+            // No cpu entry: the caller asked for the accelerator or nothing.
+            assert!(!retry_commit_on_cpu(&[(Cuda, true)], &[Cuda]));
+        }
+
+        #[test]
+        fn plan_marks_the_strict_entry() {
+            let plan = planned_execution_providers(Some(&[Cpu]), "a", "local/onnx").unwrap();
+            assert_eq!(plan, [(Cpu, false)]);
+            assert_eq!(
+                planned_execution_providers(None, "a", "local/onnx")
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, strict)| *strict)
+                    .count(),
+                0,
+                "the default list is never strict"
+            );
         }
     }
 
