@@ -31,6 +31,27 @@ silently ignored will now run with them. No function signature changed.
 
 ### Added
 
+- **`ModelRuntime` can be inspected without loading anything.** A readiness
+  report or capability listing no longer needs its own copy of the catalog
+  (#61):
+  - `aliases()` and `alias(name)` return an `AliasSnapshot` per alias: task,
+    provider, model, revision, warmup policy, whether it is required, its
+    `LoadState` (`Registered`, `Loading`, `Loaded`, or `Failed` with the
+    error and when), the execution providers once loaded, and, for remote
+    aliases, the endpoint with credentials and query stripped and the name
+    of the environment variable holding its credential. `options` are never
+    exposed.
+  - `providers()` lists the registered providers and the tasks each supports.
+  - `prefetch_report(&[alias])` and `prefetch_all_report()` load aliases one
+    at a time like `prefetch`, but carry on past failures and return every
+    alias's result.
+  - Load failures, including timeouts, model-warmup errors and background
+    warmup, are now recorded per model until a later load succeeds; before,
+    they were only logged. A model-warmup error is now also logged.
+  - `ModelProvider::describe(&spec)` (defaulted) is how a provider fills in
+    the endpoint and credential name; every bundled remote provider
+    implements it.
+
 - **`uni_xervo::schemas` publishes the catalog rules for configuration
   tools.** `MODEL_CATALOG` and `provider_options_schema(id)` return the JSON
   Schemas this crate version validates against; `bundled_providers()`,

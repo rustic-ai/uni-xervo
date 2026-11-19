@@ -168,6 +168,18 @@ impl ModelProvider for RemoteLlamaCppProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        let mut description = crate::inspect::ProviderDescription::new();
+        if let Some(base) = spec.options.get("base_url").and_then(|v| v.as_str()) {
+            description = description.with_endpoint(base.trim().trim_end_matches('/'));
+        }
+        // llama-server takes a key only when started with --api-key.
+        if let Some(env) = spec.options.get("api_key_env").and_then(|v| v.as_str()) {
+            description = description.with_credential_env(env);
+        }
+        description
+    }
 }
 
 // ---------------------------------------------------------------------------

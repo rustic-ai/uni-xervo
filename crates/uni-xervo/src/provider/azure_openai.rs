@@ -163,6 +163,23 @@ impl ModelProvider for RemoteAzureOpenAIProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        let description = crate::inspect::ProviderDescription::new().with_credential_env(
+            crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_key_env",
+                "AZURE_OPENAI_API_KEY",
+            ),
+        );
+        match spec.options.get("resource_name").and_then(|v| v.as_str()) {
+            Some(resource) => description.with_endpoint(format!(
+                "https://{resource}.openai.azure.com/openai/deployments/{}",
+                spec.model_id
+            )),
+            None => description,
+        }
+    }
 }
 
 struct AzureOpenAIEmbeddingModel {

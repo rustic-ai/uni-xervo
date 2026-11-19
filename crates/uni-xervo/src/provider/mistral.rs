@@ -109,6 +109,16 @@ impl ModelProvider for RemoteMistralProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        crate::inspect::ProviderDescription::new()
+            .with_endpoint("https://api.mistral.ai/v1")
+            .with_credential_env(crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_key_env",
+                "MISTRAL_API_KEY",
+            ))
+    }
 }
 
 struct MistralEmbeddingModel {

@@ -119,6 +119,20 @@ impl ModelProvider for RemoteOpenAIProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        crate::inspect::ProviderDescription::new()
+            // Redact before trimming, so a query after the trailing `/`
+            // cannot keep it.
+            .with_endpoint(
+                crate::inspect::redact_url(&resolve_base_url(&spec.options)).trim_end_matches('/'),
+            )
+            .with_credential_env(crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_key_env",
+                "OPENAI_API_KEY",
+            ))
+    }
 }
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";

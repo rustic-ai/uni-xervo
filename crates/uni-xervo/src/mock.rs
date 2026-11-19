@@ -796,6 +796,8 @@ pub struct MockProvider {
     model_delay_ms: u64,
     model_fail_count: u32,
     fail_on_load: bool,
+    /// Fail this many loads, then succeed.
+    fail_first_loads: u32,
     model_warmup_tracker: Option<Arc<AtomicU32>>,
     /// Heads the mock hybrid model advertises (`EmbedHybrid` loads only).
     hybrid_heads: crate::traits::HeadSet,
@@ -815,6 +817,7 @@ impl MockProvider {
             model_delay_ms: 0,
             model_fail_count: 0,
             fail_on_load: false,
+            fail_first_loads: 0,
             model_warmup_tracker: None,
             hybrid_heads: crate::traits::HeadSet::ALL,
             hybrid_report_widths: true,
@@ -903,6 +906,12 @@ impl MockProvider {
         self
     }
 
+    /// Fail the first `count` loads, then load normally.
+    pub fn with_failing_first_loads(mut self, count: u32) -> Self {
+        self.fail_first_loads = count;
+        self
+    }
+
     pub fn with_load_delay(mut self, delay_ms: u64) -> Self {
         self.load_delay_ms = delay_ms;
         self
@@ -930,13 +939,13 @@ impl ModelProvider for MockProvider {
     }
 
     async fn load(&self, spec: &ModelAliasSpec) -> Result<LoadedModelHandle> {
-        self.load_count.fetch_add(1, Ordering::SeqCst);
+        let attempt = self.load_count.fetch_add(1, Ordering::SeqCst);
 
         if self.load_delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(self.load_delay_ms)).await;
         }
 
-        if self.fail_on_load {
+        if self.fail_on_load || attempt < self.fail_first_loads {
             return Err(RuntimeError::Load("Mock load failure".to_string()));
         }
 

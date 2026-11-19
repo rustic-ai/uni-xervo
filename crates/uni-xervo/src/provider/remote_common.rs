@@ -75,6 +75,41 @@ pub(crate) fn resolve_api_key(
         .map_err(|_| RuntimeError::Config(format!("{} env var not set", env_var_name)))
 }
 
+/// The name of the environment variable an alias reads its credential from:
+/// `options[option_key]`, or `default_env`. Reads the name only, never the
+/// variable, so it is safe for [`ModelProvider::describe`](crate::traits::ModelProvider::describe).
+#[cfg(any(
+    feature = "provider-openai",
+    feature = "provider-gemini",
+    feature = "provider-vertexai",
+    feature = "provider-mistral",
+    feature = "provider-anthropic",
+    feature = "provider-voyageai",
+    feature = "provider-cohere",
+    feature = "provider-azure-openai",
+))]
+pub(crate) fn credential_env_name(
+    options: &serde_json::Value,
+    option_key: &str,
+    default_env: &str,
+) -> String {
+    options
+        .get(option_key)
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_env)
+        .to_string()
+}
+
+/// A string option, or `default` when it is unset or not a string.
+#[cfg(any(feature = "provider-gemini", feature = "provider-vertexai"))]
+pub(crate) fn option_or<'a>(
+    options: &'a serde_json::Value,
+    key: &str,
+    default: &'a str,
+) -> &'a str {
+    options.get(key).and_then(|v| v.as_str()).unwrap_or(default)
+}
+
 /// Decode an OpenAI-format `/embeddings` response body into an [`EmbedResult`].
 ///
 /// Two modes:

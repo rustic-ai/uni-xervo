@@ -91,6 +91,7 @@ pub mod error;
     feature = "provider-whisper-cpp"
 ))]
 mod hf;
+pub mod inspect;
 mod options_validation;
 pub mod prelude;
 pub mod provider;

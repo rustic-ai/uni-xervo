@@ -226,6 +226,23 @@ impl ModelProvider for RemoteVertexAIProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        let location =
+            crate::provider::remote_common::option_or(&spec.options, "location", "us-central1");
+        let host = if location == "global" {
+            "aiplatform.googleapis.com".to_string()
+        } else {
+            format!("{location}-aiplatform.googleapis.com")
+        };
+        crate::inspect::ProviderDescription::new()
+            .with_endpoint(format!("https://{host}/v1"))
+            .with_credential_env(crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_token_env",
+                "VERTEX_AI_TOKEN",
+            ))
+    }
 }
 
 /// Embedding model backed by the Vertex AI prediction API.

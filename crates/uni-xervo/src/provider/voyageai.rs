@@ -110,6 +110,16 @@ impl ModelProvider for RemoteVoyageAIProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        crate::inspect::ProviderDescription::new()
+            .with_endpoint("https://api.voyageai.com/v1")
+            .with_credential_env(crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_key_env",
+                "VOYAGE_API_KEY",
+            ))
+    }
 }
 
 struct VoyageAIEmbeddingModel {

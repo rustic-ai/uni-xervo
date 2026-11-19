@@ -92,6 +92,17 @@ pub trait ModelProvider: Send + Sync {
     async fn warmup(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Describe an alias for [`ModelRuntime::aliases`](crate::runtime::ModelRuntime::aliases):
+    /// where it sends requests and which environment variable holds its
+    /// credential.
+    ///
+    /// Synchronous and free of I/O, and it must never read a secret's value:
+    /// it is called for every snapshot. The default describes nothing, which
+    /// suits local providers.
+    fn describe(&self, _spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        crate::inspect::ProviderDescription::default()
+    }
 }
 
 /// A type-erased, reference-counted handle to a loaded model instance.

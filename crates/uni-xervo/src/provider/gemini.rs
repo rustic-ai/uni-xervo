@@ -138,6 +138,21 @@ impl ModelProvider for RemoteGeminiProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth::Healthy
     }
+
+    fn describe(&self, spec: &ModelAliasSpec) -> crate::inspect::ProviderDescription {
+        let version =
+            crate::provider::remote_common::option_or(&spec.options, "api_version", "v1beta");
+        crate::inspect::ProviderDescription::new()
+            .with_endpoint(format!(
+                "https://generativelanguage.googleapis.com/{version}/models/{}",
+                spec.model_id
+            ))
+            .with_credential_env(crate::provider::remote_common::credential_env_name(
+                &spec.options,
+                "api_key_env",
+                "GEMINI_API_KEY",
+            ))
+    }
 }
 
 /// Embedding model backed by the Gemini batch embedding API.
