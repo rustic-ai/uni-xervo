@@ -301,6 +301,11 @@ async fn hybrid_alias_serves_single_head_accessors() {
             .vocab_size(),
         "vocab size must match the per-task sparse handle"
     );
+    assert_eq!(
+        sparse.vocab_size(),
+        250002,
+        "BGE-M3 uses XLM-R's vocabulary"
+    );
     let via_hybrid = sparse.embed(&texts).await.unwrap();
     let via_task = runtime
         .sparse_embedder("sparse/bgem3")

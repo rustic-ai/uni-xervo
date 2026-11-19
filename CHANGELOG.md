@@ -113,6 +113,15 @@ silently ignored will now run with them. No function signature changed.
   `token_type_ids`), and the OCR `det_*` keys even when `det_onnx_path` is not
   set.
 
+### Documentation
+
+- **One BGE-M3 alias serves every head (#60).** The multi-vector guide now
+  shows that `embedding`, `sparse_embedder` and `multi_vector_embedder` all
+  accept an `embed_hybrid` alias and share its one loaded model, so a
+  service needs one BGE-M3 load rather than one per task. It also warns
+  against mixing vectors from the BAAI `BGEM3` export and the
+  `aapot/bge-m3-onnx` hybrid in one index.
+
 ### Fixed
 
 - **`active_execution_providers()` reports the providers a session
