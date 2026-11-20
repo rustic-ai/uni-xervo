@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `ModelRuntime::verify` and `verify_all` now return a future that is `Send`
+  for every lifetime, so they can be called inside `tokio::spawn`,
+  `pyo3_async_runtimes::tokio::future_into_py` and other code that requires
+  a `Send` future. In 0.20.0 such callers failed to compile with
+  "implementation of `FnOnce` is not general enough" (#73). New compile-time
+  tests check every public async method of `ModelRuntime` and of the PDF
+  extractor.
+
 ## [0.20.0] - 2026-11-19
 
 ### Upgrading from 0.19
