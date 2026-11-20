@@ -358,16 +358,19 @@ impl ModelRuntime {
         use futures::StreamExt;
         // A few at a time: a large catalog sent at once can trip a
         // provider's rate limit, which would then read as a failure.
-        let results: Vec<Result<VerifyOutcome>> = futures::stream::iter(aliases)
-            .map(|alias| self.verify_one(alias))
+        //
+        // The stream owns its items. A closure that takes `&&str` and returns
+        // a future borrowing it is not inferred as higher-ranked, which makes
+        // this future `Send` for one lifetime only, and callers that spawn it
+        // fail to compile (rustic-ai/uni-xervo#73,
+        // tests/runtime_send_test.rs).
+        let names: Vec<String> = aliases.iter().map(|a| (*a).to_string()).collect();
+        let results: Vec<Result<VerifyOutcome>> = futures::stream::iter(names.clone())
+            .map(|alias| async move { self.verify_one(&alias).await })
             .buffered(MAX_CONCURRENT_VERIFICATIONS)
             .collect()
             .await;
-        aliases
-            .iter()
-            .map(|a| (*a).to_string())
-            .zip(results)
-            .collect()
+        names.into_iter().zip(results).collect()
     }
 
     /// [`verify`](Self::verify) every alias in the catalog, in alias order.
